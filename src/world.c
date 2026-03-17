@@ -512,3 +512,20 @@ void world_get_meshes(World* world, ChunkMesh** out_meshes, uint32_t* out_count)
     *out_meshes = world->render_meshes;
     *out_count = world->render_count;
 }
+
+BlockID world_get_block(World* world, int x, int y, int z)
+{
+    if (y < 0 || y >= CHUNK_Y) return BLOCK_AIR;
+
+    int cx = (int)floorf((float)x / 16.0f);
+    int cz = (int)floorf((float)z / 16.0f);
+
+    Chunk* chunk = chunk_map_get(&world->map, cx, cz);
+    if (!chunk) return BLOCK_AIR;
+    if (atomic_load(&chunk->state) < CHUNK_GENERATED) return BLOCK_AIR;
+
+    int lx = ((x % 16) + 16) % 16;
+    int lz = ((z % 16) + 16) % 16;
+
+    return chunk_get_block(chunk, lx, y, lz);
+}

@@ -99,6 +99,8 @@ add_executable(minecraft
     src/worldgen.c
     src/mesher.c
     src/world.c
+    src/player.c
+    src/physics.c
     src/vma_impl.cpp
 )
 
