@@ -74,7 +74,8 @@ typedef struct Renderer {
 } Renderer;
 
 bool renderer_init(Renderer* r, GLFWwindow* window);
-void renderer_draw_frame(Renderer* r);
+void renderer_draw_frame(Renderer* r, ChunkMesh* meshes, uint32_t mesh_count,
+                         mat4 view, mat4 proj, vec3 sun_dir);
 void renderer_cleanup(Renderer* r);
 
 VkCommandBuffer renderer_begin_single_cmd(Renderer* r);
