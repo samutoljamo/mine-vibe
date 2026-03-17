@@ -32,25 +32,44 @@ Replace the single Perlin FBM heightmap with a three-layer system using FastNois
 
 ### Layer 2: Mountain Ridged Noise
 
-- Type: `FNL_FRACTAL_RIDGED` (native FastNoiseLite support)
+- Base noise type: `FNL_NOISE_PERLIN`
+- Fractal type: `FNL_FRACTAL_RIDGED` (native FastNoiseLite support)
 - Frequency: ~0.005
 - Octaves: 4
+- Output range: [-1, 1]. Clamp negative values: `ridged = fmaxf(raw_ridged, 0.0f)` to preserve sharp ridge character where noise crosses zero.
 - Purpose: Sharp ridges and valleys for mountain terrain
 
 ### Layer 3: Mountain Mask
 
-- Type: Perlin
+- Type: Perlin FBM
 - Frequency: ~0.003
 - Octaves: 2
+- Output range: [-1, 1]. Remap to [0, 1]: `mask = (raw_mask + 1.0f) * 0.5f`
 - Purpose: Controls where mountains appear (0 = flat plains, 1 = full mountains)
 
+### Seed Assignments
+
+Each noise field uses a distinct seed to prevent correlation:
+
+- Continentalness: `seed`
+- Ridged: `seed + 1`
+- Mask: `seed + 2`
+- Spaghetti A: `seed + 100`
+- Spaghetti B: `seed + 200`
+- Cheese: `seed + 300`
+- Trees: `seed + 12345` (existing)
+
 ### Height Formula
+
+After clamping/remapping:
 
 ```
 base_height = 64 + continentalness * 16           // range ~48–80
 mountain_contribution = ridged * mask * 80         // range 0–80
-final_height = base_height + mountain_contribution // range ~48–160
+final_height = clamp(base_height + mountain_contribution, 1, CHUNK_Y - 1)
 ```
+
+The height computation is factored into a shared static helper `compute_height()` called by both `worldgen_generate()` and `worldgen_get_height()` to prevent formula divergence.
 
 Sea level remains at 62. Layer fill structure unchanged (bedrock → stone → dirt → grass/sand).
 
@@ -72,14 +91,23 @@ Two overlapping 3D noise systems carved as a second pass after terrain fill:
 - Carving condition: `noise > 0.6`
 - Produces larger open caverns
 
+### Carving Order
+
+Generation order within a chunk: (1) compute heightmap, (2) fill terrain layers, (3) carve caves, (4) place trees. Trees check the post-carving surface so they don't root over cave voids.
+
 ### Carving Rules
 
 A block is carved (set to `BLOCK_AIR`) if either spaghetti OR cheese conditions are met, subject to:
 
-- **Never carve bedrock** (y < 5)
+- **Never carve bedrock blocks**: check block type (`== BLOCK_BEDROCK`), not y-level. This covers both the y=0 pure bedrock and the y=1..9 mixed bedrock/stone layer.
 - **Never carve surface**: skip the surface block and 1 block below it
-- **Surface proximity bias**: for depth below surface < 8, linearly reduce carving probability by multiplying thresholds by `depth / 8.0`. This keeps caves mostly buried but allows occasional openings on steep mountain faces.
-- **Skip non-solid blocks**: only evaluate noise for stone/dirt blocks (air, water, bedrock are skipped)
+- **Surface proximity bias**: for `depth = surface_height - y` where depth < 8, scale carving to make it harder near the surface:
+  - Spaghetti: multiply thresholds (0.04) by `depth / 8.0` (smaller threshold = harder to carve)
+  - Cheese: raise threshold: `noise > 0.6 + (1.0 - depth / 8.0) * 0.4` (higher threshold = harder to carve)
+  - "Surface" means the terrain solid height (`h` from the heightmap), not the water surface.
+- **Skip non-carving blocks**: only evaluate noise for stone and dirt blocks (skip air, water, bedrock)
+
+**Known limitation**: Cave carving may leave floating dirt blocks 2-3 blocks above a carved void. Acceptable for now; a gravity pass for sand/dirt could be added later.
 
 ## Bug Fixes
 
@@ -87,7 +115,7 @@ A block is carved (set to `BLOCK_AIR`) if either spaghetti OR cheese conditions 
 
 **Root cause**: When surface height `h < SEA_LEVEL - 2`, `is_beach` is false, so `BLOCK_GRASS` is placed at y=h even though it's underwater. Tree placement checks for grass but not water above.
 
-**Fix**: In tree placement loop, add `if (h <= SEA_LEVEL) continue;` before spawning trees.
+**Fix**: In tree placement loop, add `if (h < SEA_LEVEL) continue;` before spawning trees. (Strictly less-than: h=SEA_LEVEL is at the water line with no water above, but such blocks are sand due to beach logic and won't have grass anyway.)
 
 ### Camera Inside Terrain
 
