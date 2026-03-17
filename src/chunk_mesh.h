@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "vertex.h"
+
 typedef struct ChunkMesh {
     VkBuffer       vertex_buffer;
     VmaAllocation  vertex_alloc;
@@ -18,5 +20,13 @@ typedef struct ChunkMesh {
     vec3           chunk_origin;
     bool           uploaded;
 } ChunkMesh;
+
+typedef struct Renderer Renderer;
+
+bool chunk_mesh_upload(Renderer* r, ChunkMesh* mesh,
+                       BlockVertex* vertices, uint32_t vertex_count,
+                       uint32_t* indices, uint32_t index_count);
+
+void chunk_mesh_destroy(VmaAllocator allocator, ChunkMesh* mesh);
 
 #endif
