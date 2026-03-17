@@ -4,17 +4,16 @@
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
 #include "renderer.h"
-#include "camera.h"
+#include "player.h"
 #include "world.h"
-#include "worldgen.h"
 #include "chunk_mesh.h"
 
-static Camera g_camera;
+static Player g_player;
 
 static void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
     (void)window;
-    camera_process_mouse(&g_camera, xpos, ypos);
+    camera_process_mouse(&g_player.camera, xpos, ypos);
 }
 
 static void key_callback(GLFWwindow* window, int key, int scancode,
@@ -45,37 +44,11 @@ int main(void)
         return 1;
     }
 
-    int spawn_seed = 42;
-    int spawn_y = worldgen_get_height(0, 0, spawn_seed) + 2;
-    camera_init(&g_camera, (vec3){0, (float)spawn_y, 0});
-    World* world = world_create(&renderer, spawn_seed, 32);
+    player_init(&g_player, (vec3){0, 80, 0});
+    World* world = world_create(&renderer, 42, 32);
 
     vec3 sun_dir = { -0.5f, -0.8f, -0.3f };
     glm_vec3_normalize(sun_dir);
-
-    /* Loading loop: wait until 25% of the view circle is ready */
-    {
-        int rd = world_get_render_distance(world);
-        uint32_t threshold = (uint32_t)(0.25f * 3.14159f * (float)(rd * rd));
-
-        mat4 loading_view = GLM_MAT4_IDENTITY_INIT;
-        mat4 loading_proj = GLM_MAT4_IDENTITY_INIT;
-
-        while (!glfwWindowShouldClose(window)) {
-            glfwPollEvents();
-            world_update(world, g_camera.position);
-
-            uint32_t ready = world_get_ready_count(world);
-            if (ready >= threshold)
-                break;
-
-            char title[64];
-            snprintf(title, sizeof(title), "Loading... %u / %u chunks", ready, threshold);
-            glfwSetWindowTitle(window, title);
-
-            renderer_draw_frame(&renderer, NULL, 0, loading_view, loading_proj, sun_dir);
-        }
-    }
 
     double last_time = glfwGetTime();
     int frame_count = 0;
@@ -87,19 +60,19 @@ int main(void)
         last_time = now;
 
         glfwPollEvents();
-        camera_process_keyboard(&g_camera, window, dt);
+        player_update(&g_player, window, world, dt);
 
-        world_update(world, g_camera.position);
+        world_update(world, g_player.position);
 
         ChunkMesh* meshes;
         uint32_t mesh_count;
         world_get_meshes(world, &meshes, &mesh_count);
 
         mat4 view, proj;
-        camera_get_view(&g_camera, view);
+        camera_get_view(&g_player.camera, g_player.eye_pos, view);
         float aspect = (float)renderer.swapchain.extent.width
                      / (float)renderer.swapchain.extent.height;
-        camera_get_proj(&g_camera, aspect, proj);
+        camera_get_proj(&g_player.camera, aspect, proj);
 
         renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir);
 
@@ -111,7 +84,8 @@ int main(void)
                      "Minecraft | FPS: %d | Chunks: %u | Pos: %.0f, %.0f, %.0f",
                      (int)(frame_count / (now - fps_timer)),
                      mesh_count,
-                     g_camera.position[0], g_camera.position[1], g_camera.position[2]);
+                     g_player.eye_pos[0], g_player.eye_pos[1],
+                     g_player.eye_pos[2]);
             glfwSetWindowTitle(window, title);
             frame_count = 0;
             fps_timer = now;
