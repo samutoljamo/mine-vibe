@@ -2,57 +2,32 @@
 #include "renderer.h"
 #include <string.h>
 
-static bool upload_buffer(Renderer* r, const void* data, VkDeviceSize size,
-                          VkBufferUsageFlags usage,
-                          VkBuffer* out_buffer, VmaAllocation* out_alloc)
+/* Use host-visible buffers directly instead of staging + vkQueueWaitIdle.
+ * This eliminates per-upload GPU stalls. The GPU reads from mappable memory,
+ * which is slightly slower per-draw but avoids the massive pipeline stalls
+ * that were causing 10 FPS. */
+
+static bool create_mapped_buffer(VmaAllocator allocator, const void* data,
+                                  VkDeviceSize size, VkBufferUsageFlags usage,
+                                  VkBuffer* out_buffer, VmaAllocation* out_alloc)
 {
-    /* Create staging buffer (host-visible, mapped) */
-    VkBufferCreateInfo staging_info = {
+    VkBufferCreateInfo buf_info = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size  = size,
-        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .usage = usage,
     };
-    VmaAllocationCreateInfo staging_alloc_info = {
+    VmaAllocationCreateInfo alloc_info = {
         .usage = VMA_MEMORY_USAGE_AUTO,
-        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+               | VMA_ALLOCATION_CREATE_MAPPED_BIT,
     };
-    VkBuffer staging_buffer;
-    VmaAllocation staging_alloc;
-    VmaAllocationInfo staging_map_info;
-
-    if (vmaCreateBuffer(r->allocator, &staging_info, &staging_alloc_info,
-                        &staging_buffer, &staging_alloc, &staging_map_info) != VK_SUCCESS) {
+    VmaAllocationInfo map_info;
+    if (vmaCreateBuffer(allocator, &buf_info, &alloc_info,
+                        out_buffer, out_alloc, &map_info) != VK_SUCCESS) {
         return false;
     }
-
-    memcpy(staging_map_info.pMappedData, data, size);
-
-    /* Create GPU buffer (device-local, transfer dst) */
-    VkBufferCreateInfo gpu_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size  = size,
-        .usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-    };
-    VmaAllocationCreateInfo gpu_alloc_info = {
-        .usage = VMA_MEMORY_USAGE_AUTO,
-        .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
-    };
-
-    if (vmaCreateBuffer(r->allocator, &gpu_info, &gpu_alloc_info,
-                        out_buffer, out_alloc, NULL) != VK_SUCCESS) {
-        vmaDestroyBuffer(r->allocator, staging_buffer, staging_alloc);
-        return false;
-    }
-
-    /* Copy via single-shot command buffer */
-    VkCommandBuffer cmd = renderer_begin_single_cmd(r);
-    VkBufferCopy region = { .size = size };
-    vkCmdCopyBuffer(cmd, staging_buffer, *out_buffer, 1, &region);
-    renderer_end_single_cmd(r, cmd);
-
-    /* Destroy staging buffer */
-    vmaDestroyBuffer(r->allocator, staging_buffer, staging_alloc);
+    memcpy(map_info.pMappedData, data, size);
+    vmaFlushAllocation(allocator, *out_alloc, 0, size);
     return true;
 }
 
@@ -65,13 +40,15 @@ bool chunk_mesh_upload(Renderer* r, ChunkMesh* mesh,
     VkDeviceSize vb_size = (VkDeviceSize)vertex_count * sizeof(BlockVertex);
     VkDeviceSize ib_size = (VkDeviceSize)index_count * sizeof(uint32_t);
 
-    if (!upload_buffer(r, vertices, vb_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                       &mesh->vertex_buffer, &mesh->vertex_alloc)) {
+    if (!create_mapped_buffer(r->allocator, vertices, vb_size,
+                              VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                              &mesh->vertex_buffer, &mesh->vertex_alloc)) {
         return false;
     }
 
-    if (!upload_buffer(r, indices, ib_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                       &mesh->index_buffer, &mesh->index_alloc)) {
+    if (!create_mapped_buffer(r->allocator, indices, ib_size,
+                              VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                              &mesh->index_buffer, &mesh->index_alloc)) {
         vmaDestroyBuffer(r->allocator, mesh->vertex_buffer, mesh->vertex_alloc);
         memset(mesh, 0, sizeof(*mesh));
         return false;

@@ -296,7 +296,7 @@ void world_update(World* world, vec3 player_pos)
                 /* Mesh result */
                 MeshData* md = r->mesh_data;
 
-                if (md->vertex_count > 0 && uploads < 8) {
+                if (md->vertex_count > 0 && uploads < 64) {
                     /* Destroy old mesh if any */
                     if (chunk->mesh.uploaded) {
                         chunk_mesh_destroy(world->renderer->allocator, &chunk->mesh);
