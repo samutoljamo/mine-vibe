@@ -107,7 +107,7 @@ void camera_get_view(Camera* cam, mat4 out)
 
 void camera_get_proj(Camera* cam, float aspect, mat4 out)
 {
-    glm_perspective(cam->fov, aspect, 0.1f, 1000.0f, out);
+    glm_perspective(cam->fov, aspect, 1.0f, 2000.0f, out);
     /* Flip Y for Vulkan (Vulkan Y-down, OpenGL Y-up) */
     out[1][1] *= -1.0f;
 }

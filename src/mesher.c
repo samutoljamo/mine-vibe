@@ -4,7 +4,8 @@
 #include <string.h>
 
 /* Atlas: 16 tiles per row in 256x256 texture */
-#define TILE_UV (1.0f / 16.0f)
+#define TILE_UV     (1.0f / 16.0f)
+#define HALF_TEXEL  (0.5f / 256.0f)  /* inset UVs to avoid sampling adjacent tiles */
 
 void mesh_data_init(MeshData* md)
 {
@@ -132,10 +133,10 @@ static void get_tile_uv(uint8_t tile, float* u0, float* v0, float* u1, float* v1
 {
     int tx = tile % 16;
     int ty = tile / 16;
-    *u0 = (float)tx * TILE_UV;
-    *v0 = (float)ty * TILE_UV;
-    *u1 = *u0 + TILE_UV;
-    *v1 = *v0 + TILE_UV;
+    *u0 = (float)tx * TILE_UV + HALF_TEXEL;
+    *v0 = (float)ty * TILE_UV + HALF_TEXEL;
+    *u1 = (float)(tx + 1) * TILE_UV - HALF_TEXEL;
+    *v1 = (float)(ty + 1) * TILE_UV - HALF_TEXEL;
 }
 
 void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors, MeshData* out)

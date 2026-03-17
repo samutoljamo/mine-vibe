@@ -1,5 +1,6 @@
 #include "texture.h"
 #include "renderer.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +8,7 @@
 #define ATLAS_SIZE 256
 #define TILE_SIZE  16
 #define TILES_PER_ROW (ATLAS_SIZE / TILE_SIZE)
+#define ATLAS_MIP_LEVELS 4  /* 256 -> 128 -> 64 -> 32; keeps bleeding minimal */
 
 /* ------------------------------------------------------------------ */
 /*  Procedural atlas generation                                       */
@@ -88,13 +90,8 @@ static uint8_t* generate_atlas_pixels(void)
     uint8_t* pixels = malloc(size);
     if (!pixels) return NULL;
 
-    /* Default: magenta for unmapped tiles (debug) */
-    for (size_t i = 0; i < size; i += 4) {
-        pixels[i + 0] = 255;
-        pixels[i + 1] = 0;
-        pixels[i + 2] = 255;
-        pixels[i + 3] = 255;
-    }
+    /* Default: black transparent for unmapped tiles (avoids mipmap bleeding) */
+    memset(pixels, 0, size);
 
     /* tile 0: stone */
     fill_tile(pixels, 0, 120, 120, 120, 255);
@@ -126,7 +123,8 @@ static uint8_t* generate_atlas_pixels(void)
 
 static void transition_image_layout(VkCommandBuffer cmd, VkImage image,
                                     VkImageLayout old_layout,
-                                    VkImageLayout new_layout)
+                                    VkImageLayout new_layout,
+                                    uint32_t mip_levels)
 {
     VkImageMemoryBarrier barrier = {
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -138,7 +136,7 @@ static void transition_image_layout(VkCommandBuffer cmd, VkImage image,
         .subresourceRange    = {
             .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel   = 0,
-            .levelCount     = 1,
+            .levelCount     = mip_levels,
             .baseArrayLayer = 0,
             .layerCount     = 1,
         },
@@ -170,6 +168,88 @@ static void transition_image_layout(VkCommandBuffer cmd, VkImage image,
 
     vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0,
                          0, NULL, 0, NULL, 1, &barrier);
+}
+
+static void generate_mipmaps(VkCommandBuffer cmd, VkImage image,
+                              int32_t width, int32_t height, uint32_t mip_levels)
+{
+    VkImageMemoryBarrier barrier = {
+        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image               = image,
+        .subresourceRange    = {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount     = 1,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        },
+    };
+
+    int32_t mip_w = width;
+    int32_t mip_h = height;
+
+    for (uint32_t i = 1; i < mip_levels; i++) {
+        /* Transition mip i-1 from TRANSFER_DST to TRANSFER_SRC */
+        barrier.subresourceRange.baseMipLevel = i - 1;
+        barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &barrier);
+
+        int32_t next_w = mip_w > 1 ? mip_w / 2 : 1;
+        int32_t next_h = mip_h > 1 ? mip_h / 2 : 1;
+
+        VkImageBlit blit = {
+            .srcSubresource = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel       = i - 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            },
+            .srcOffsets = { { 0, 0, 0 }, { mip_w, mip_h, 1 } },
+            .dstSubresource = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel       = i,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            },
+            .dstOffsets = { { 0, 0, 0 }, { next_w, next_h, 1 } },
+        };
+
+        vkCmdBlitImage(cmd,
+                       image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blit, VK_FILTER_LINEAR);
+
+        /* Transition mip i-1 to SHADER_READ_ONLY */
+        barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &barrier);
+
+        mip_w = next_w;
+        mip_h = next_h;
+    }
+
+    /* Transition the last mip level to SHADER_READ_ONLY */
+    barrier.subresourceRange.baseMipLevel = mip_levels - 1;
+    barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &barrier);
 }
 
 /* ------------------------------------------------------------------ */
@@ -220,11 +300,13 @@ bool texture_create_atlas(Renderer* r)
         .imageType     = VK_IMAGE_TYPE_2D,
         .format        = VK_FORMAT_R8G8B8A8_SRGB,
         .extent        = { ATLAS_SIZE, ATLAS_SIZE, 1 },
-        .mipLevels     = 1,
+        .mipLevels     = ATLAS_MIP_LEVELS,
         .arrayLayers   = 1,
         .samples       = VK_SAMPLE_COUNT_1_BIT,
         .tiling        = VK_IMAGE_TILING_OPTIMAL,
-        .usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                       | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                       | VK_IMAGE_USAGE_SAMPLED_BIT,
         .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -244,9 +326,11 @@ bool texture_create_atlas(Renderer* r)
     /* Transfer via single-shot command buffer */
     VkCommandBuffer cmd = renderer_begin_single_cmd(r);
 
+    /* Transition all mip levels to TRANSFER_DST */
     transition_image_layout(cmd, r->atlas_image,
                             VK_IMAGE_LAYOUT_UNDEFINED,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            ATLAS_MIP_LEVELS);
 
     VkBufferImageCopy region = {
         .bufferOffset      = 0,
@@ -265,9 +349,9 @@ bool texture_create_atlas(Renderer* r)
     vkCmdCopyBufferToImage(cmd, staging_buf, r->atlas_image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    transition_image_layout(cmd, r->atlas_image,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    /* Generate mipmaps (also transitions all levels to SHADER_READ_ONLY) */
+    generate_mipmaps(cmd, r->atlas_image,
+                     ATLAS_SIZE, ATLAS_SIZE, ATLAS_MIP_LEVELS);
 
     renderer_end_single_cmd(r, cmd);
 
@@ -283,7 +367,7 @@ bool texture_create_atlas(Renderer* r)
         .subresourceRange = {
             .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel   = 0,
-            .levelCount     = 1,
+            .levelCount     = ATLAS_MIP_LEVELS,
             .baseArrayLayer = 0,
             .layerCount     = 1,
         },
@@ -298,14 +382,14 @@ bool texture_create_atlas(Renderer* r)
     VkSamplerCreateInfo sampler_ci = {
         .sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter    = VK_FILTER_NEAREST,
-        .minFilter    = VK_FILTER_NEAREST,
+        .minFilter    = VK_FILTER_LINEAR,
         .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST,
         .mipLodBias   = 0.0f,
         .minLod       = 0.0f,
-        .maxLod       = 0.0f,
+        .maxLod       = (float)(ATLAS_MIP_LEVELS - 1),
     };
 
     if (vkCreateSampler(r->device, &sampler_ci, NULL, &r->atlas_sampler) != VK_SUCCESS) {

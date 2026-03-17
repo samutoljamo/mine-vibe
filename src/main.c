@@ -48,7 +48,7 @@ int main(void)
     int spawn_seed = 42;
     int spawn_y = worldgen_get_height(0, 0, spawn_seed) + 2;
     camera_init(&g_camera, (vec3){0, (float)spawn_y, 0});
-    World* world = world_create(&renderer, spawn_seed, 128);
+    World* world = world_create(&renderer, spawn_seed, 32);
 
     vec3 sun_dir = { -0.5f, -0.8f, -0.3f };
     glm_vec3_normalize(sun_dir);
