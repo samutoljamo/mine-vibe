@@ -35,7 +35,7 @@ void player_init(Player* player, vec3 start_pos)
     player->noclip          = true;
     player->prev_space      = false;
     player->prev_v          = false;
-    player->last_space_time = 0.0f;
+    player->last_space_time = -1.0f;
     player->accumulator     = 0.0f;
 }
 
@@ -218,7 +218,7 @@ void player_update(Player* player, GLFWwindow* window, World* world, float dt)
     /* Mode switching: double-tap space */
     if (space_pressed) {
         float now = (float)glfwGetTime();
-        if (player->last_space_time > 0.0f
+        if (player->last_space_time >= 0.0f
             && (now - player->last_space_time) < DOUBLETAP_WINDOW) {
             if (player->mode == MODE_WALKING) {
                 player->mode = MODE_FREE;
