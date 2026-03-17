@@ -66,6 +66,104 @@ static int compute_height(TerrainNoise* tn, float wx, float wz)
     return h;
 }
 
+/* Noise state bundle for cave generation */
+typedef struct {
+    fnl_state spaghetti_a;
+    fnl_state spaghetti_b;
+    fnl_state cheese;
+} CaveNoise;
+
+static void cave_noise_init(CaveNoise* cn, int seed)
+{
+    /* Spaghetti cave A */
+    cn->spaghetti_a = fnlCreateState();
+    cn->spaghetti_a.noise_type = FNL_NOISE_PERLIN;
+    cn->spaghetti_a.fractal_type = FNL_FRACTAL_FBM;
+    cn->spaghetti_a.octaves = 3;
+    cn->spaghetti_a.frequency = 0.03f;
+    cn->spaghetti_a.seed = seed + 100;
+
+    /* Spaghetti cave B */
+    cn->spaghetti_b = fnlCreateState();
+    cn->spaghetti_b.noise_type = FNL_NOISE_PERLIN;
+    cn->spaghetti_b.fractal_type = FNL_FRACTAL_FBM;
+    cn->spaghetti_b.octaves = 3;
+    cn->spaghetti_b.frequency = 0.03f;
+    cn->spaghetti_b.seed = seed + 200;
+
+    /* Cheese caves */
+    cn->cheese = fnlCreateState();
+    cn->cheese.noise_type = FNL_NOISE_PERLIN;
+    cn->cheese.fractal_type = FNL_FRACTAL_FBM;
+    cn->cheese.octaves = 2;
+    cn->cheese.frequency = 0.015f;
+    cn->cheese.seed = seed + 300;
+}
+
+static void carve_caves(Chunk* chunk, CaveNoise* cn,
+                        int height_map[CHUNK_X][CHUNK_Z])
+{
+    int base_x = chunk->cx * CHUNK_X;
+    int base_z = chunk->cz * CHUNK_Z;
+
+    for (int x = 0; x < CHUNK_X; x++) {
+        for (int z = 0; z < CHUNK_Z; z++) {
+            int surface_h = height_map[x][z];
+            float wx = (float)(base_x + x);
+            float wz = (float)(base_z + z);
+
+            for (int y = 0; y < surface_h; y++) {
+                BlockID block = chunk_get_block(chunk, x, y, z);
+
+                /* Only carve stone and dirt */
+                if (block != BLOCK_STONE && block != BLOCK_DIRT) continue;
+
+                int depth = surface_h - y;
+
+                /* Hard-skip surface and 1 below */
+                if (depth <= 1) continue;
+
+                float wy = (float)y;
+                bool carve = false;
+
+                if (depth < 8) {
+                    /* Surface proximity — reduced carving */
+                    float scale = (float)depth / 8.0f;
+
+                    float sa = fnlGetNoise3D(&cn->spaghetti_a, wx, wy, wz);
+                    float sb = fnlGetNoise3D(&cn->spaghetti_b, wx, wy, wz);
+                    float spaghetti_thresh = 0.04f * scale;
+                    if (fabsf(sa) < spaghetti_thresh && fabsf(sb) < spaghetti_thresh)
+                        carve = true;
+
+                    if (!carve) {
+                        float ch = fnlGetNoise3D(&cn->cheese, wx, wy, wz);
+                        float cheese_thresh = 0.6f + (1.0f - scale) * 0.4f;
+                        if (ch > cheese_thresh)
+                            carve = true;
+                    }
+                } else {
+                    /* Deep underground — full carving */
+                    float sa = fnlGetNoise3D(&cn->spaghetti_a, wx, wy, wz);
+                    float sb = fnlGetNoise3D(&cn->spaghetti_b, wx, wy, wz);
+                    if (fabsf(sa) < 0.04f && fabsf(sb) < 0.04f)
+                        carve = true;
+
+                    if (!carve) {
+                        float ch = fnlGetNoise3D(&cn->cheese, wx, wy, wz);
+                        if (ch > 0.6f)
+                            carve = true;
+                    }
+                }
+
+                if (carve) {
+                    chunk_set_block(chunk, x, y, z, BLOCK_AIR);
+                }
+            }
+        }
+    }
+}
+
 void worldgen_generate(Chunk* chunk, int seed)
 {
     TerrainNoise terrain;
@@ -119,6 +217,11 @@ void worldgen_generate(Chunk* chunk, int seed)
             }
         }
     }
+
+    /* Carve caves */
+    CaveNoise cn;
+    cave_noise_init(&cn, seed);
+    carve_caves(chunk, &cn, height_map);
 
     /* Place trees: ~2% chance on grass blocks, constrained to [2..13] local X/Z */
     for (int x = 2; x <= 13; x++) {
