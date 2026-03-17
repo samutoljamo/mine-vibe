@@ -53,6 +53,30 @@ int main(void)
     vec3 sun_dir = { -0.5f, -0.8f, -0.3f };
     glm_vec3_normalize(sun_dir);
 
+    /* Loading loop: wait until 25% of the view circle is ready */
+    {
+        int rd = world_get_render_distance(world);
+        uint32_t threshold = (uint32_t)(0.25f * 3.14159f * (float)(rd * rd));
+
+        mat4 loading_view = GLM_MAT4_IDENTITY_INIT;
+        mat4 loading_proj = GLM_MAT4_IDENTITY_INIT;
+
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            world_update(world, g_camera.position);
+
+            uint32_t ready = world_get_ready_count(world);
+            if (ready >= threshold)
+                break;
+
+            char title[64];
+            snprintf(title, sizeof(title), "Loading... %u / %u chunks", ready, threshold);
+            glfwSetWindowTitle(window, title);
+
+            renderer_draw_frame(&renderer, NULL, 0, loading_view, loading_proj, sun_dir);
+        }
+    }
+
     double last_time = glfwGetTime();
     int frame_count = 0;
     double fps_timer = last_time;

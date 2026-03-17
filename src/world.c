@@ -513,6 +513,16 @@ void world_get_meshes(World* world, ChunkMesh** out_meshes, uint32_t* out_count)
     *out_count = world->render_count;
 }
 
+uint32_t world_get_ready_count(const World* world)
+{
+    return world->render_count;
+}
+
+int world_get_render_distance(const World* world)
+{
+    return world->render_distance;
+}
+
 BlockID world_get_block(World* world, int x, int y, int z)
 {
     if (y < 0 || y >= CHUNK_Y) return BLOCK_AIR;
