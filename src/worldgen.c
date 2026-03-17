@@ -17,17 +17,61 @@ static int hash_pos(int x, int z, int seed)
     return (int)(h & 0x7FFFFFFF);
 }
 
+/* Noise state bundle for terrain height computation */
+typedef struct {
+    fnl_state continental;
+    fnl_state ridged;
+    fnl_state mask;
+} TerrainNoise;
+
+static void terrain_noise_init(TerrainNoise* tn, int seed)
+{
+    /* Layer 1: Base continentalness — smooth, large-scale height variation */
+    tn->continental = fnlCreateState();
+    tn->continental.noise_type = FNL_NOISE_PERLIN;
+    tn->continental.fractal_type = FNL_FRACTAL_FBM;
+    tn->continental.octaves = 2;
+    tn->continental.frequency = 0.002f;
+    tn->continental.seed = seed;
+
+    /* Layer 2: Mountain ridged noise — sharp ridges where noise crosses zero */
+    tn->ridged = fnlCreateState();
+    tn->ridged.noise_type = FNL_NOISE_PERLIN;
+    tn->ridged.fractal_type = FNL_FRACTAL_RIDGED;
+    tn->ridged.octaves = 4;
+    tn->ridged.frequency = 0.005f;
+    tn->ridged.seed = seed + 1;
+
+    /* Layer 3: Mountain mask — controls where mountains appear */
+    tn->mask = fnlCreateState();
+    tn->mask.noise_type = FNL_NOISE_PERLIN;
+    tn->mask.fractal_type = FNL_FRACTAL_FBM;
+    tn->mask.octaves = 2;
+    tn->mask.frequency = 0.003f;
+    tn->mask.seed = seed + 2;
+}
+
+static int compute_height(TerrainNoise* tn, float wx, float wz)
+{
+    float c = fnlGetNoise2D(&tn->continental, wx, wz);
+    float r = fmaxf(fnlGetNoise2D(&tn->ridged, wx, wz), 0.0f);
+    float m = (fnlGetNoise2D(&tn->mask, wx, wz) + 1.0f) * 0.5f;
+
+    float base = 64.0f + c * 16.0f;
+    float mountain = r * m * 80.0f;
+    int h = (int)(base + mountain);
+
+    if (h < 1) h = 1;
+    if (h >= CHUNK_Y) h = CHUNK_Y - 1;
+    return h;
+}
+
 void worldgen_generate(Chunk* chunk, int seed)
 {
-    /* Terrain noise: Perlin FBM, 3 octaves, frequency 0.005 */
-    fnl_state terrain_noise = fnlCreateState();
-    terrain_noise.noise_type = FNL_NOISE_PERLIN;
-    terrain_noise.fractal_type = FNL_FRACTAL_FBM;
-    terrain_noise.octaves = 3;
-    terrain_noise.frequency = 0.005f;
-    terrain_noise.seed = seed;
+    TerrainNoise tn;
+    terrain_noise_init(&tn, seed);
 
-    /* Tree placement noise */
+    /* Tree placement noise (unchanged) */
     fnl_state tree_noise = fnlCreateState();
     tree_noise.noise_type = FNL_NOISE_OPENSIMPLEX2;
     tree_noise.frequency = 0.5f;
@@ -36,14 +80,13 @@ void worldgen_generate(Chunk* chunk, int seed)
     int base_x = chunk->cx * CHUNK_X;
     int base_z = chunk->cz * CHUNK_Z;
 
-    /* Compute height map */
+    /* Compute height map using 3-layer noise */
     int height_map[CHUNK_X][CHUNK_Z];
     for (int x = 0; x < CHUNK_X; x++) {
         for (int z = 0; z < CHUNK_Z; z++) {
             float wx = (float)(base_x + x);
             float wz = (float)(base_z + z);
-            float n = fnlGetNoise2D(&terrain_noise, wx, wz);
-            height_map[x][z] = 64 + (int)(n * 20.0f);
+            height_map[x][z] = compute_height(&tn, wx, wz);
         }
     }
 
