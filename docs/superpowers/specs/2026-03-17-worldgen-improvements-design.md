@@ -100,8 +100,8 @@ Generation order within a chunk: (1) compute heightmap, (2) fill terrain layers,
 A block is carved (set to `BLOCK_AIR`) if either spaghetti OR cheese conditions are met, subject to:
 
 - **Never carve bedrock blocks**: check block type (`== BLOCK_BEDROCK`), not y-level. This covers both the y=0 pure bedrock and the y=1..9 mixed bedrock/stone layer.
-- **Never carve surface**: skip the surface block and 1 block below it
-- **Surface proximity bias**: for `depth = surface_height - y` where depth < 8, scale carving to make it harder near the surface:
+- **Hard-skip surface**: if `depth <= 1` (surface block and 1 below), skip entirely — no noise evaluation.
+- **Surface proximity bias**: for `depth` in [2, 7], scale carving to make it harder near the surface:
   - Spaghetti: multiply thresholds (0.04) by `depth / 8.0` (smaller threshold = harder to carve)
   - Cheese: raise threshold: `noise > 0.6 + (1.0 - depth / 8.0) * 0.4` (higher threshold = harder to carve)
   - "Surface" means the terrain solid height (`h` from the heightmap), not the water surface.
