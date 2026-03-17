@@ -68,8 +68,8 @@ static int compute_height(TerrainNoise* tn, float wx, float wz)
 
 void worldgen_generate(Chunk* chunk, int seed)
 {
-    TerrainNoise tn;
-    terrain_noise_init(&tn, seed);
+    TerrainNoise terrain;
+    terrain_noise_init(&terrain, seed);
 
     /* Tree placement noise (unchanged) */
     fnl_state tree_noise = fnlCreateState();
@@ -86,7 +86,7 @@ void worldgen_generate(Chunk* chunk, int seed)
         for (int z = 0; z < CHUNK_Z; z++) {
             float wx = (float)(base_x + x);
             float wz = (float)(base_z + z);
-            height_map[x][z] = compute_height(&tn, wx, wz);
+            height_map[x][z] = compute_height(&terrain, wx, wz);
         }
     }
 
