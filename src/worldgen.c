@@ -227,6 +227,7 @@ void worldgen_generate(Chunk* chunk, int seed)
     for (int x = 2; x <= 13; x++) {
         for (int z = 2; z <= 13; z++) {
             int h = height_map[x][z];
+            if (h < SEA_LEVEL) continue;
             if (chunk_get_block(chunk, x, h, z) != BLOCK_GRASS) continue;
 
             float tn = fnlGetNoise2D(&tree_noise,
