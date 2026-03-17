@@ -6,6 +6,7 @@
 #include "renderer.h"
 #include "camera.h"
 #include "world.h"
+#include "worldgen.h"
 #include "chunk_mesh.h"
 
 static Camera g_camera;
@@ -44,8 +45,10 @@ int main(void)
         return 1;
     }
 
-    camera_init(&g_camera, (vec3){0, 80, 0});
-    World* world = world_create(&renderer, 42, 32);
+    int spawn_seed = 42;
+    int spawn_y = worldgen_get_height(0, 0, spawn_seed) + 2;
+    camera_init(&g_camera, (vec3){0, (float)spawn_y, 0});
+    World* world = world_create(&renderer, spawn_seed, 128);
 
     vec3 sun_dir = { -0.5f, -0.8f, -0.3f };
     glm_vec3_normalize(sun_dir);

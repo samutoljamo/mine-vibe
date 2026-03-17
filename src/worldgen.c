@@ -269,3 +269,10 @@ void worldgen_generate(Chunk* chunk, int seed)
 
     atomic_store(&chunk->state, CHUNK_GENERATED);
 }
+
+int worldgen_get_height(int x, int z, int seed)
+{
+    TerrainNoise terrain;
+    terrain_noise_init(&terrain, seed);
+    return compute_height(&terrain, (float)x, (float)z);
+}
