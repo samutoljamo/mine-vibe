@@ -1,4 +1,6 @@
 #include "renderer.h"
+#include "pipeline.h"
+#include "texture.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -596,6 +598,90 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
     /* --- UBOs --- */
     if (!create_ubos(r))
         return false;
+
+    /* --- Descriptor set layout --- */
+    if (!pipeline_create_descriptor_layout(r->device, &r->descriptor_set_layout))
+        return false;
+
+    /* --- Graphics pipeline --- */
+    if (!pipeline_create(r->device, r->render_pass, r->descriptor_set_layout,
+                         "build/shaders/block.vert.spv",
+                         "build/shaders/block.frag.spv",
+                         &r->pipeline_layout, &r->pipeline))
+        return false;
+
+    /* --- Descriptor pool --- */
+    {
+        VkDescriptorPoolSize pool_sizes[] = {
+            {
+                .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+            },
+            {
+                .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+            },
+        };
+
+        VkDescriptorPoolCreateInfo pool_ci = {
+            .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets       = MAX_FRAMES_IN_FLIGHT,
+            .poolSizeCount = 2,
+            .pPoolSizes    = pool_sizes,
+        };
+
+        if (vkCreateDescriptorPool(r->device, &pool_ci, NULL, &r->descriptor_pool) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create descriptor pool\n");
+            return false;
+        }
+    }
+
+    /* --- Allocate descriptor sets --- */
+    {
+        VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            layouts[i] = r->descriptor_set_layout;
+
+        VkDescriptorSetAllocateInfo alloc_info = {
+            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool     = r->descriptor_pool,
+            .descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
+            .pSetLayouts        = layouts,
+        };
+
+        if (vkAllocateDescriptorSets(r->device, &alloc_info, r->descriptor_sets) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to allocate descriptor sets\n");
+            return false;
+        }
+    }
+
+    /* --- Write UBO descriptors (binding 0) --- */
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkDescriptorBufferInfo buf_info = {
+            .buffer = r->ubo_buffers[i],
+            .offset = 0,
+            .range  = sizeof(GlobalUBO),
+        };
+
+        VkWriteDescriptorSet write = {
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet          = r->descriptor_sets[i],
+            .dstBinding      = 0,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo     = &buf_info,
+        };
+
+        vkUpdateDescriptorSets(r->device, 1, &write, 0, NULL);
+    }
+
+    /* --- Texture atlas --- */
+    if (!texture_create_atlas(r))
+        return false;
+
+    /* --- Write texture descriptors (binding 1) --- */
+    texture_write_descriptors(r);
 
     /* --- Framebuffer resize callback --- */
     glfwSetWindowUserPointer(window, r);
