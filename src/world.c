@@ -327,8 +327,10 @@ void world_update(World* world, vec3 player_pos)
                     /* Empty mesh - mark as ready but nothing to draw */
                     atomic_store(&chunk->state, CHUNK_READY);
                 } else {
-                    /* Upload limit hit - put back to MESHED for retry */
-                    atomic_store(&chunk->state, CHUNK_MESHED);
+                    /* Upload limit hit - set back to GENERATED so it
+                     * re-enters the mesh pipeline next frame (mesh data
+                     * is freed below, so we can't retry the upload). */
+                    atomic_store(&chunk->state, CHUNK_GENERATED);
                 }
 
                 mesh_data_free(md);
