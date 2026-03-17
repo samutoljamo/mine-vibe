@@ -115,6 +115,8 @@ static void carve_caves(Chunk* chunk, CaveNoise* cn,
             for (int y = 0; y < surface_h; y++) {
                 BlockID block = chunk_get_block(chunk, x, y, z);
 
+                /* Never carve bedrock */
+                if (block == BLOCK_BEDROCK) continue;
                 /* Only carve stone and dirt */
                 if (block != BLOCK_STONE && block != BLOCK_DIRT) continue;
 
