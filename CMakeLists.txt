@@ -149,6 +149,11 @@ target_include_directories(test_block_physics PRIVATE
 target_link_libraries(test_block_physics PRIVATE cglm m)
 add_test(NAME block_physics COMMAND test_block_physics)
 
+add_executable(test_hud tests/test_hud.c src/hud.c src/block.c)
+target_include_directories(test_hud PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_hud PRIVATE m)
+add_test(NAME hud COMMAND test_hud)
+
 # Agent JSON unit tests (no Vulkan/GLFW required)
 add_executable(test_agent tests/test_agent_json.c src/agent.c)
 target_include_directories(test_agent PRIVATE ${CMAKE_SOURCE_DIR}/src)
