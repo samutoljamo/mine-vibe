@@ -111,6 +111,12 @@ add_executable(minecraft
     src/hud.c
     src/agent.c
     src/player_model.c
+    src/net.c
+    src/reliable.c
+    src/net_thread.c
+    src/server.c
+    src/client.c
+    src/remote_player.c
     src/vma_impl.cpp
     src/assets_generated.c
     src/shaders_generated.c
@@ -170,3 +176,7 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_agent PRIVATE m)
 endif()
 add_test(NAME agent_json COMMAND test_agent)
+
+add_executable(test_net tests/test_net.c src/net.c src/reliable.c)
+target_include_directories(test_net PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME net COMMAND test_net)

@@ -230,6 +230,11 @@ World* world_create(Renderer* renderer, int seed, int render_distance)
     return world;
 }
 
+World* world_create_headless(int seed, int render_distance)
+{
+    return world_create(NULL, seed, render_distance);
+}
+
 void world_destroy(World* world)
 {
     /* Signal shutdown */
@@ -273,7 +278,7 @@ void world_destroy(World* world)
     uint32_t idx = 0;
     Chunk* chunk;
     while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL) {
-        if (chunk->mesh.uploaded) {
+        if (chunk->mesh.uploaded && world->renderer) {
             chunk_mesh_destroy(world->renderer->allocator, &chunk->mesh);
         }
         chunk_destroy(chunk);
@@ -321,33 +326,35 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
                 MeshData* md = r->mesh_data;
 
                 if (md->vertex_count > 0 && uploads < 64) {
-                    /* Destroy old mesh if any */
-                    if (chunk->mesh.uploaded) {
-                        chunk_mesh_destroy(world->renderer->allocator, &chunk->mesh);
+                    if (world->renderer) {
+                        /* Destroy old mesh if any */
+                        if (chunk->mesh.uploaded) {
+                            chunk_mesh_destroy(world->renderer->allocator, &chunk->mesh);
+                        }
+                        memset(&chunk->mesh, 0, sizeof(ChunkMesh));
+
+                        /* Set origin and AABB */
+                        chunk->mesh.chunk_origin[0] = (float)(chunk->cx * CHUNK_X);
+                        chunk->mesh.chunk_origin[1] = 0.0f;
+                        chunk->mesh.chunk_origin[2] = (float)(chunk->cz * CHUNK_Z);
+
+                        chunk->mesh.aabb_min[0] = chunk->mesh.chunk_origin[0];
+                        chunk->mesh.aabb_min[1] = 0.0f;
+                        chunk->mesh.aabb_min[2] = chunk->mesh.chunk_origin[2];
+
+                        chunk->mesh.aabb_max[0] = chunk->mesh.chunk_origin[0] + (float)CHUNK_X;
+                        chunk->mesh.aabb_max[1] = (float)CHUNK_Y;
+                        chunk->mesh.aabb_max[2] = chunk->mesh.chunk_origin[2] + (float)CHUNK_Z;
+
+                        chunk_mesh_upload(world->renderer, &chunk->mesh,
+                                          md->vertices, md->vertex_count,
+                                          md->indices, md->index_count);
+                        uploads++;
                     }
-                    memset(&chunk->mesh, 0, sizeof(ChunkMesh));
-
-                    /* Set origin and AABB */
-                    chunk->mesh.chunk_origin[0] = (float)(chunk->cx * CHUNK_X);
-                    chunk->mesh.chunk_origin[1] = 0.0f;
-                    chunk->mesh.chunk_origin[2] = (float)(chunk->cz * CHUNK_Z);
-
-                    chunk->mesh.aabb_min[0] = chunk->mesh.chunk_origin[0];
-                    chunk->mesh.aabb_min[1] = 0.0f;
-                    chunk->mesh.aabb_min[2] = chunk->mesh.chunk_origin[2];
-
-                    chunk->mesh.aabb_max[0] = chunk->mesh.chunk_origin[0] + (float)CHUNK_X;
-                    chunk->mesh.aabb_max[1] = (float)CHUNK_Y;
-                    chunk->mesh.aabb_max[2] = chunk->mesh.chunk_origin[2] + (float)CHUNK_Z;
-
-                    chunk_mesh_upload(world->renderer, &chunk->mesh,
-                                      md->vertices, md->vertex_count,
-                                      md->indices, md->index_count);
 
                     atomic_store(&chunk->state, CHUNK_READY);
                     if (agent_is_active())
                         agent_notify_chunk_loaded(chunk->cx, chunk->cz);
-                    uploads++;
 
                 } else if (md->vertex_count == 0) {
                     /* Empty mesh - mark as ready but nothing to draw */
@@ -416,7 +423,7 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
         for (int i = 0; i < remove_count; i++) {
             chunk = to_remove[i];
             chunk_map_remove(&world->map, chunk->cx, chunk->cz);
-            if (chunk->mesh.uploaded)
+            if (chunk->mesh.uploaded && world->renderer)
                 chunk_mesh_destroy(world->renderer->allocator, &chunk->mesh);
             chunk_destroy(chunk);
         }

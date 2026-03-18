@@ -8,7 +8,6 @@
 #define PLAYER_EYE_H     1.62f
 #define FLY_SPEED        20.0f
 #define WALK_SPEED       4.3f
-#define SPRINT_SPEED     5.6f
 #define SWIM_SPEED       2.0f
 #define GRAVITY          25.2f
 #define JUMP_VEL         7.95f
@@ -19,7 +18,6 @@
 #define DRAG_AIR         0.98f
 #define DRAG_WATER       0.80f
 #define WATER_Y_DRAG     0.80f
-#define PHYSICS_DT       (1.0f / 60.0f)
 #define DOUBLETAP_WINDOW 0.3f
 
 void player_init(Player* player, vec3 start_pos)
@@ -207,7 +205,7 @@ static void tick_walking(Player* player, GLFWwindow* window, World* world)
     }
 
     float speed = WALK_SPEED;
-    if (player->sprinting) speed = SPRINT_SPEED;
+    if (player->sprinting) speed = PLAYER_SPRINT_SPEED;
     if (player->in_water)  speed = SWIM_SPEED;
 
     /* Snap-to-speed: set horizontal velocity directly */

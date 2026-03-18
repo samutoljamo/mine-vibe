@@ -8,6 +8,10 @@
 typedef struct GLFWwindow GLFWwindow;
 typedef struct World World;
 
+/* Physics constants — shared with server-side simulation */
+#define PHYSICS_DT          (1.0f / 60.0f)
+#define PLAYER_SPRINT_SPEED 5.6f
+
 typedef enum PlayerMode {
     MODE_FREE,
     MODE_WALKING,

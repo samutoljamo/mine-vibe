@@ -102,6 +102,13 @@ typedef struct Renderer {
     /* Window */
     GLFWwindow*                 window;
     bool                        framebuffer_resized;
+
+    /* Remote player placeholder mesh */
+    VkBuffer      player_vb;
+    VmaAllocation player_vb_alloc;
+    VkBuffer      player_ib;
+    VmaAllocation player_ib_alloc;
+    uint32_t      player_index_count;
 } Renderer;
 
 bool renderer_init(Renderer* r, GLFWwindow* window);
@@ -112,6 +119,17 @@ void renderer_draw_frame(Renderer* r,
                          const HUD* hud, bool dump_frame, const char* dump_path);
 void renderer_cleanup(Renderer* r);
 bool renderer_dump_frame(Renderer* r, const char *path);
+
+/* Draw placeholder boxes for remote players.
+ * positions: array of count world-space positions (feet).
+ * Uses the existing block pipeline with a static unit-cube mesh.
+ * Must be called from within an active render pass (i.e. between
+ * renderer_draw_frame's begin/end render pass). */
+void renderer_init_player_mesh(Renderer* r);
+void renderer_draw_remote_players(Renderer* r,
+                                   const float (*positions)[3],
+                                   uint32_t count,
+                                   mat4 view, mat4 proj);
 
 VkCommandBuffer renderer_begin_single_cmd(Renderer* r);
 void            renderer_end_single_cmd(Renderer* r, VkCommandBuffer cmd);
