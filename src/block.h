@@ -23,6 +23,7 @@ typedef struct BlockDef {
     const char* name;
     bool        is_solid;
     bool        is_transparent;
+    bool        is_gravity;      /* falls when unsupported */
     uint8_t     tex_top;
     uint8_t     tex_side;
     uint8_t     tex_bottom;
@@ -36,6 +37,10 @@ static inline bool block_is_solid(BlockID id) {
 
 static inline bool block_is_transparent(BlockID id) {
     return block_get_def(id)->is_transparent;
+}
+
+static inline bool block_is_gravity(BlockID id) {
+    return block_get_def(id)->is_gravity;
 }
 
 #endif
