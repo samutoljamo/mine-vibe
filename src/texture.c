@@ -1,121 +1,11 @@
 #include "texture.h"
 #include "renderer.h"
+#include "assets.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define ATLAS_SIZE 256
-#define TILE_SIZE  16
-#define TILES_PER_ROW (ATLAS_SIZE / TILE_SIZE)
-#define ATLAS_MIP_LEVELS 4  /* 256 -> 128 -> 64 -> 32; keeps bleeding minimal */
-
-/* ------------------------------------------------------------------ */
-/*  Procedural atlas generation                                       */
-/* ------------------------------------------------------------------ */
-
-static void fill_tile(uint8_t* pixels, int tile_index,
-                      uint8_t r, uint8_t g, uint8_t b, uint8_t a)
-{
-    int tile_x = tile_index % TILES_PER_ROW;
-    int tile_y = tile_index / TILES_PER_ROW;
-    int base_x = tile_x * TILE_SIZE;
-    int base_y = tile_y * TILE_SIZE;
-
-    for (int py = 0; py < TILE_SIZE; py++) {
-        for (int px = 0; px < TILE_SIZE; px++) {
-            int x = base_x + px;
-            int y = base_y + py;
-            int idx = (y * ATLAS_SIZE + x) * 4;
-
-            /* XOR-based variation */
-            uint8_t v = (uint8_t)((px ^ py) & 0x0F);
-            int vr = (int)r + v - 8;
-            int vg = (int)g + v - 8;
-            int vb = (int)b + v - 8;
-            if (vr < 0) vr = 0; if (vr > 255) vr = 255;
-            if (vg < 0) vg = 0; if (vg > 255) vg = 255;
-            if (vb < 0) vb = 0; if (vb > 255) vb = 255;
-
-            pixels[idx + 0] = (uint8_t)vr;
-            pixels[idx + 1] = (uint8_t)vg;
-            pixels[idx + 2] = (uint8_t)vb;
-            pixels[idx + 3] = a;
-        }
-    }
-}
-
-static void fill_tile_grass_side(uint8_t* pixels, int tile_index)
-{
-    int tile_x = tile_index % TILES_PER_ROW;
-    int tile_y = tile_index / TILES_PER_ROW;
-    int base_x = tile_x * TILE_SIZE;
-    int base_y = tile_y * TILE_SIZE;
-
-    for (int py = 0; py < TILE_SIZE; py++) {
-        for (int px = 0; px < TILE_SIZE; px++) {
-            int x = base_x + px;
-            int y = base_y + py;
-            int idx = (y * ATLAS_SIZE + x) * 4;
-
-            uint8_t v = (uint8_t)((px ^ py) & 0x0F);
-            uint8_t r, g, b;
-
-            if (py < 4) {
-                /* Green strip on top 4 pixels */
-                r = 76;  g = 153; b = 0;
-            } else {
-                /* Brown body */
-                r = 139; g = 105; b = 60;
-            }
-
-            int vr = (int)r + v - 8;
-            int vg = (int)g + v - 8;
-            int vb = (int)b + v - 8;
-            if (vr < 0) vr = 0; if (vr > 255) vr = 255;
-            if (vg < 0) vg = 0; if (vg > 255) vg = 255;
-            if (vb < 0) vb = 0; if (vb > 255) vb = 255;
-
-            pixels[idx + 0] = (uint8_t)vr;
-            pixels[idx + 1] = (uint8_t)vg;
-            pixels[idx + 2] = (uint8_t)vb;
-            pixels[idx + 3] = 255;
-        }
-    }
-}
-
-static uint8_t* generate_atlas_pixels(void)
-{
-    size_t size = ATLAS_SIZE * ATLAS_SIZE * 4;
-    uint8_t* pixels = malloc(size);
-    if (!pixels) return NULL;
-
-    /* Default: black transparent for unmapped tiles (avoids mipmap bleeding) */
-    memset(pixels, 0, size);
-
-    /* tile 0: stone */
-    fill_tile(pixels, 0, 120, 120, 120, 255);
-    /* tile 1: dirt */
-    fill_tile(pixels, 1, 139, 90, 43, 255);
-    /* tile 2: grass top */
-    fill_tile(pixels, 2, 76, 153, 0, 255);
-    /* tile 3: grass side */
-    fill_tile_grass_side(pixels, 3);
-    /* tile 4: sand */
-    fill_tile(pixels, 4, 210, 190, 140, 255);
-    /* tile 5: wood top */
-    fill_tile(pixels, 5, 160, 120, 60, 255);
-    /* tile 6: wood side */
-    fill_tile(pixels, 6, 120, 80, 40, 255);
-    /* tile 7: leaves */
-    fill_tile(pixels, 7, 40, 120, 20, 200);
-    /* tile 16: water */
-    fill_tile(pixels, 16, 30, 80, 180, 200);
-    /* tile 17: bedrock */
-    fill_tile(pixels, 17, 60, 60, 60, 255);
-
-    return pixels;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Image layout transitions                                          */
@@ -258,13 +148,7 @@ static void generate_mipmaps(VkCommandBuffer cmd, VkImage image,
 
 bool texture_create_atlas(Renderer* r)
 {
-    /* Generate pixels */
-    uint8_t* pixels = generate_atlas_pixels();
-    if (!pixels) {
-        fprintf(stderr, "Failed to generate atlas pixels\n");
-        return false;
-    }
-
+    const uint8_t* pixels = g_atlas_pixels;
     VkDeviceSize image_size = ATLAS_SIZE * ATLAS_SIZE * 4;
 
     /* Create staging buffer */
@@ -287,12 +171,10 @@ bool texture_create_atlas(Renderer* r)
                         &staging_buf, &staging_alloc, &staging_info) != VK_SUCCESS)
     {
         fprintf(stderr, "Failed to create staging buffer for atlas\n");
-        free(pixels);
         return false;
     }
 
     memcpy(staging_info.pMappedData, pixels, image_size);
-    free(pixels);
 
     /* Create GPU image */
     VkImageCreateInfo image_ci = {
@@ -375,6 +257,7 @@ bool texture_create_atlas(Renderer* r)
 
     if (vkCreateImageView(r->device, &view_ci, NULL, &r->atlas_view) != VK_SUCCESS) {
         fprintf(stderr, "Failed to create atlas image view\n");
+        vmaDestroyImage(r->allocator, r->atlas_image, r->atlas_alloc);
         return false;
     }
 
@@ -394,10 +277,141 @@ bool texture_create_atlas(Renderer* r)
 
     if (vkCreateSampler(r->device, &sampler_ci, NULL, &r->atlas_sampler) != VK_SUCCESS) {
         fprintf(stderr, "Failed to create atlas sampler\n");
+        vkDestroyImageView(r->device, r->atlas_view, NULL);
+        vmaDestroyImage(r->allocator, r->atlas_image, r->atlas_alloc);
         return false;
     }
 
     return true;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Player skin texture                                               */
+/* ------------------------------------------------------------------ */
+
+bool texture_create_player_skin(Renderer* r)
+{
+    const uint8_t* pixels = g_player_skin_pixels;
+    VkDeviceSize image_size = SKIN_WIDTH * SKIN_HEIGHT * 4;
+
+    /* Staging buffer */
+    VkBufferCreateInfo staging_buf_ci = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size  = image_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+    };
+    VmaAllocationCreateInfo staging_alloc_ci = {
+        .usage = VMA_MEMORY_USAGE_CPU_ONLY,
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+    };
+    VkBuffer staging_buf;
+    VmaAllocation staging_alloc;
+    VmaAllocationInfo staging_info;
+    if (vmaCreateBuffer(r->allocator, &staging_buf_ci, &staging_alloc_ci,
+                        &staging_buf, &staging_alloc, &staging_info) != VK_SUCCESS)
+    {
+        fprintf(stderr, "Failed to create staging buffer for player skin\n");
+        return false;
+    }
+    memcpy(staging_info.pMappedData, pixels, image_size);
+
+    /* GPU image (1 mip level, NEAREST sampled) */
+    VkImageCreateInfo image_ci = {
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType     = VK_IMAGE_TYPE_2D,
+        .format        = VK_FORMAT_R8G8B8A8_SRGB,
+        .extent        = { SKIN_WIDTH, SKIN_HEIGHT, 1 },
+        .mipLevels     = 1,
+        .arrayLayers   = 1,
+        .samples       = VK_SAMPLE_COUNT_1_BIT,
+        .tiling        = VK_IMAGE_TILING_OPTIMAL,
+        .usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VmaAllocationCreateInfo img_alloc_ci = { .usage = VMA_MEMORY_USAGE_GPU_ONLY };
+    if (vmaCreateImage(r->allocator, &image_ci, &img_alloc_ci,
+                       &r->player_skin_image, &r->player_skin_alloc, NULL) != VK_SUCCESS)
+    {
+        fprintf(stderr, "Failed to create player skin image\n");
+        vmaDestroyBuffer(r->allocator, staging_buf, staging_alloc);
+        return false;
+    }
+
+    VkCommandBuffer cmd = renderer_begin_single_cmd(r);
+    transition_image_layout(cmd, r->player_skin_image,
+                            VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                              .layerCount = 1 },
+        .imageExtent = { SKIN_WIDTH, SKIN_HEIGHT, 1 },
+    };
+    vkCmdCopyBufferToImage(cmd, staging_buf, r->player_skin_image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    /* Transition directly to SHADER_READ_ONLY (no mipmaps) */
+    transition_image_layout(cmd, r->player_skin_image,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1);
+    renderer_end_single_cmd(r, cmd);
+    vmaDestroyBuffer(r->allocator, staging_buf, staging_alloc);
+
+    /* Image view */
+    VkImageViewCreateInfo view_ci = {
+        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image    = r->player_skin_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format   = VK_FORMAT_R8G8B8A8_SRGB,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                              .levelCount = 1, .layerCount = 1 },
+    };
+    if (vkCreateImageView(r->device, &view_ci, NULL, &r->player_skin_view) != VK_SUCCESS) {
+        fprintf(stderr, "Failed to create player skin image view\n");
+        vmaDestroyImage(r->allocator, r->player_skin_image, r->player_skin_alloc);
+        return false;
+    }
+
+    /* Sampler: NEAREST, no mipmaps */
+    VkSamplerCreateInfo sampler_ci = {
+        .sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter    = VK_FILTER_NEAREST,
+        .minFilter    = VK_FILTER_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .minLod       = 0.0f,
+        .maxLod       = 0.0f,
+    };
+    if (vkCreateSampler(r->device, &sampler_ci, NULL, &r->player_skin_sampler) != VK_SUCCESS) {
+        fprintf(stderr, "Failed to create player skin sampler\n");
+        vkDestroyImageView(r->device, r->player_skin_view, NULL);
+        vmaDestroyImage(r->allocator, r->player_skin_image, r->player_skin_alloc);
+        return false;
+    }
+    return true;
+}
+
+void texture_write_player_skin_descriptors(Renderer* r, VkDescriptorSet sets[2])
+{
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkDescriptorImageInfo image_info = {
+            .sampler     = r->player_skin_sampler,
+            .imageView   = r->player_skin_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet write = {
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet          = sets[i],
+            .dstBinding      = 1,
+            .descriptorCount = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo      = &image_info,
+        };
+        vkUpdateDescriptorSets(r->device, 1, &write, 0, NULL);
+    }
 }
 
 /* ------------------------------------------------------------------ */

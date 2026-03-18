@@ -141,7 +141,7 @@ int main(int argc, char *argv[])
                          / (float)renderer.swapchain.extent.height;
             camera_get_proj(&g_player.camera, aspect, proj);
 
-            renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir);
+            renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir);
 
             uint32_t pct = (uint32_t)(100.0f * (float)mesh_count
                                               / (float)load_threshold);
@@ -194,7 +194,7 @@ int main(int argc, char *argv[])
                      / (float)renderer.swapchain.extent.height;
         camera_get_proj(&g_player.camera, aspect, proj);
 
-        renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir);
+        renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir);
 
         if (agent_mode && dump_frame) {
             if (renderer_dump_frame(&renderer, dump_path))
