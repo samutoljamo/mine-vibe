@@ -27,6 +27,12 @@ typedef struct Player {
     bool        prev_v;         /* edge detection */
     float       last_space_time;
     float       accumulator;    /* fixed-timestep dt accumulator */
+    /* Agent mode input — set by main.c before player_update each frame */
+    bool        agent_mode;
+    float       agent_forward;  /* [-1, 1]; nonzero = key held */
+    float       agent_right;    /* [-1, 1]; nonzero = key held */
+    bool        agent_jump;     /* edge-triggered: set true for one frame */
+    bool        agent_sprint;
 } Player;
 
 void player_init(Player* player, vec3 start_pos);
