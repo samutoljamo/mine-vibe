@@ -156,7 +156,8 @@ bool swapchain_create(VkPhysicalDevice pd, VkDevice device, VmaAllocator allocat
         .imageColorSpace  = fmt.colorSpace,
         .imageExtent      = ext,
         .imageArrayLayers = 1,
-        .imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                          | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .imageSharingMode = same_family ? VK_SHARING_MODE_EXCLUSIVE
                                         : VK_SHARING_MODE_CONCURRENT,
         .queueFamilyIndexCount = same_family ? 0 : 2,

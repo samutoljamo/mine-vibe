@@ -60,17 +60,20 @@ static void tick_free(Player* player, GLFWwindow* window, World* world)
 
     vec3 dir = { 0.0f, 0.0f, 0.0f };
     bool has_input = false;
+    float analog_scale = 1.0f;
 
     if (player->agent_mode) {
-        if (player->agent_forward != 0.0f) {
-            float s = player->agent_forward > 0 ? 1.0f : -1.0f;
+        float fwd = player->agent_forward;
+        float rgt = player->agent_right;
+        if (fwd != 0.0f) {
+            float s = fwd > 0.0f ? 1.0f : -1.0f;
             dir[0] += front[0] * s;
             dir[1] += front[1] * s;
             dir[2] += front[2] * s;
             has_input = true;
         }
-        if (player->agent_right != 0.0f) {
-            float s = player->agent_right > 0 ? 1.0f : -1.0f;
+        if (rgt != 0.0f) {
+            float s = rgt > 0.0f ? 1.0f : -1.0f;
             dir[0] += right[0] * s;
             dir[2] += right[2] * s;
             has_input = true;
@@ -79,6 +82,10 @@ static void tick_free(Player* player, GLFWwindow* window, World* world)
             dir[1] += 1.0f;
             has_input = true;
         }
+        float fwd_abs = fabsf(fwd);
+        float rgt_abs = fabsf(rgt);
+        analog_scale = fwd_abs > rgt_abs ? fwd_abs : rgt_abs;
+        if (player->agent_jump || analog_scale > 1.0f) analog_scale = 1.0f;
     } else {
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
             dir[0] += front[0]; dir[1] += front[1]; dir[2] += front[2];
@@ -109,7 +116,7 @@ static void tick_free(Player* player, GLFWwindow* window, World* world)
     if (has_input) {
         float len = glm_vec3_norm(dir);
         if (len > 0.0001f)
-            glm_vec3_scale(dir, FLY_SPEED / len, player->velocity);
+            glm_vec3_scale(dir, FLY_SPEED * analog_scale / len, player->velocity);
         else
             glm_vec3_zero(player->velocity);
     } else {
@@ -146,21 +153,28 @@ static void tick_walking(Player* player, GLFWwindow* window, World* world)
 
     vec3 dir = { 0.0f, 0.0f, 0.0f };
     bool has_input = false;
+    float analog_scale = 1.0f;
 
     if (player->agent_mode) {
-        if (player->agent_forward != 0.0f) {
-            float s = player->agent_forward > 0 ? 1.0f : -1.0f;
+        float fwd = player->agent_forward;
+        float rgt = player->agent_right;
+        if (fwd != 0.0f) {
+            float s = fwd > 0.0f ? 1.0f : -1.0f;
             dir[0] += forward[0] * s;
             dir[2] += forward[2] * s;
             has_input = true;
         }
-        if (player->agent_right != 0.0f) {
-            float s = player->agent_right > 0 ? 1.0f : -1.0f;
+        if (rgt != 0.0f) {
+            float s = rgt > 0.0f ? 1.0f : -1.0f;
             dir[0] += right[0] * s;
             dir[2] += right[2] * s;
             has_input = true;
         }
         player->sprinting = has_input && player->agent_sprint;
+        float fwd_abs = fabsf(fwd);
+        float rgt_abs = fabsf(rgt);
+        analog_scale = fwd_abs > rgt_abs ? fwd_abs : rgt_abs;
+        if (analog_scale > 1.0f) analog_scale = 1.0f;
     } else {
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
             dir[0] += forward[0]; dir[2] += forward[2];
@@ -198,8 +212,8 @@ static void tick_walking(Player* player, GLFWwindow* window, World* world)
 
     /* Snap-to-speed: set horizontal velocity directly */
     if (has_input) {
-        player->velocity[0] = dir[0] * speed;
-        player->velocity[2] = dir[2] * speed;
+        player->velocity[0] = dir[0] * speed * analog_scale;
+        player->velocity[2] = dir[2] * speed * analog_scale;
     }
 
     /* 3. Gravity / water physics */

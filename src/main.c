@@ -231,10 +231,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (agent_mode) agent_destroy();
-
     vkDeviceWaitIdle(renderer.device);
     world_destroy(world);
+    if (agent_mode) agent_destroy();
     renderer_cleanup(&renderer);
     glfwDestroyWindow(window);
     glfwTerminate();

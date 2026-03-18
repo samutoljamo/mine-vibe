@@ -18,7 +18,7 @@ typedef struct {
     pthread_mutex_t mtx;
 } CmdRing;
 
-static bool            g_active = false;
+static _Atomic bool    g_active = false;
 static CmdRing         g_ring;
 static pthread_t       g_io_thread;
 static pthread_mutex_t g_stdout_mtx;
