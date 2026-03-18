@@ -10,8 +10,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdatomic.h>
-#include <pthread.h>
-#include <unistd.h>
+#include "platform_thread.h"
 #include <stdio.h>
 
 /* ------------------------------------------------------------------ */
@@ -52,19 +51,19 @@ struct World {
     int            render_distance;
 
     /* Worker threads */
-    pthread_t*     workers;
+    PT_Thread*     workers;
     int            worker_count;
     _Atomic bool   shutdown;
 
     /* Work queue (linked list, protected by mutex + condvar) */
     WorkItem*      work_head;
     WorkItem*      work_tail;
-    pthread_mutex_t work_mutex;
-    pthread_cond_t  work_cond;
+    PT_Mutex       work_mutex;
+    PT_Cond        work_cond;
 
     /* Result queue (linked list, protected by mutex) */
     ResultItem*    result_head;
-    pthread_mutex_t result_mutex;
+    PT_Mutex       result_mutex;
 
     /* Render mesh array */
     ChunkMesh*     render_meshes;
@@ -82,13 +81,13 @@ static void* worker_func(void* arg)
 
     for (;;) {
         /* Pop work item */
-        pthread_mutex_lock(&world->work_mutex);
+        pt_mutex_lock(&world->work_mutex);
         while (!world->work_head && !atomic_load(&world->shutdown)) {
-            pthread_cond_wait(&world->work_cond, &world->work_mutex);
+            pt_cond_wait(&world->work_cond, &world->work_mutex);
         }
 
         if (atomic_load(&world->shutdown) && !world->work_head) {
-            pthread_mutex_unlock(&world->work_mutex);
+            pt_mutex_unlock(&world->work_mutex);
             break;
         }
 
@@ -98,7 +97,7 @@ static void* worker_func(void* arg)
             if (world->work_head == NULL)
                 world->work_tail = NULL;
         }
-        pthread_mutex_unlock(&world->work_mutex);
+        pt_mutex_unlock(&world->work_mutex);
 
         if (!item) continue;
 
@@ -111,10 +110,10 @@ static void* worker_func(void* arg)
             result->mesh_data = NULL;
             result->next = NULL;
 
-            pthread_mutex_lock(&world->result_mutex);
+            pt_mutex_lock(&world->result_mutex);
             result->next = world->result_head;
             world->result_head = result;
-            pthread_mutex_unlock(&world->result_mutex);
+            pt_mutex_unlock(&world->result_mutex);
 
         } else if (item->type == WORK_MESH) {
             /* Build ChunkNeighbors from boundary slices */
@@ -141,10 +140,10 @@ static void* worker_func(void* arg)
             result->mesh_data = md;
             result->next = NULL;
 
-            pthread_mutex_lock(&world->result_mutex);
+            pt_mutex_lock(&world->result_mutex);
             result->next = world->result_head;
             world->result_head = result;
-            pthread_mutex_unlock(&world->result_mutex);
+            pt_mutex_unlock(&world->result_mutex);
         }
 
         free(item);
@@ -160,7 +159,7 @@ static void* worker_func(void* arg)
 static void submit_work(World* world, WorkItem* item)
 {
     item->next = NULL;
-    pthread_mutex_lock(&world->work_mutex);
+    pt_mutex_lock(&world->work_mutex);
     if (world->work_head == NULL) {
         world->work_head = item;
         world->work_tail = item;
@@ -168,8 +167,8 @@ static void submit_work(World* world, WorkItem* item)
         world->work_tail->next = item;
         world->work_tail = item;
     }
-    pthread_cond_signal(&world->work_cond);
-    pthread_mutex_unlock(&world->work_mutex);
+    pt_cond_signal(&world->work_cond);
+    pt_mutex_unlock(&world->work_mutex);
 }
 
 /* ------------------------------------------------------------------ */
@@ -185,23 +184,23 @@ World* world_create(Renderer* renderer, int seed, int render_distance)
 
     chunk_map_init(&world->map, 8192);
 
-    pthread_mutex_init(&world->work_mutex, NULL);
-    pthread_cond_init(&world->work_cond, NULL);
-    pthread_mutex_init(&world->result_mutex, NULL);
+    pt_mutex_init(&world->work_mutex);
+    pt_cond_init(&world->work_cond);
+    pt_mutex_init(&world->result_mutex);
 
     atomic_store(&world->shutdown, false);
 
     /* Determine worker count: max(1, num_cores - 2), capped at 8 */
-    long ncores = sysconf(_SC_NPROCESSORS_ONLN);
-    int nworkers = (int)(ncores - 2);
+    int ncores = pt_cpu_count();
+    int nworkers = ncores - 2;
     if (nworkers < 1) nworkers = 1;
     if (nworkers > 8) nworkers = 8;
 
     world->worker_count = nworkers;
-    world->workers = malloc(sizeof(pthread_t) * (size_t)nworkers);
+    world->workers = malloc(sizeof(PT_Thread) * (size_t)nworkers);
 
     for (int i = 0; i < nworkers; i++) {
-        pthread_create(&world->workers[i], NULL, worker_func, world);
+        pt_thread_create(&world->workers[i], worker_func, world);
     }
 
     /* Render mesh array */
@@ -219,11 +218,11 @@ void world_destroy(World* world)
 {
     /* Signal shutdown */
     atomic_store(&world->shutdown, true);
-    pthread_cond_broadcast(&world->work_cond);
+    pt_cond_broadcast(&world->work_cond);
 
     /* Join all workers */
     for (int i = 0; i < world->worker_count; i++) {
-        pthread_join(world->workers[i], NULL);
+        pt_thread_join(world->workers[i]);
     }
     free(world->workers);
 
@@ -265,9 +264,9 @@ void world_destroy(World* world)
     chunk_map_free(&world->map);
 
     /* Destroy sync primitives */
-    pthread_mutex_destroy(&world->work_mutex);
-    pthread_cond_destroy(&world->work_cond);
-    pthread_mutex_destroy(&world->result_mutex);
+    pt_mutex_destroy(&world->work_mutex);
+    pt_cond_destroy(&world->work_cond);
+    pt_mutex_destroy(&world->result_mutex);
 
     /* Free render mesh array */
     free(world->render_meshes);
@@ -287,10 +286,10 @@ void world_update(World* world, vec3 player_pos)
     /* ---- Step 1: Process results ---- */
     {
         /* Swap out the entire result list atomically */
-        pthread_mutex_lock(&world->result_mutex);
+        pt_mutex_lock(&world->result_mutex);
         ResultItem* results = world->result_head;
         world->result_head = NULL;
-        pthread_mutex_unlock(&world->result_mutex);
+        pt_mutex_unlock(&world->result_mutex);
 
         int uploads = 0;
 
