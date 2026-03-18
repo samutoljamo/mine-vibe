@@ -9,10 +9,11 @@
 
 typedef struct Renderer Renderer;
 typedef struct World World;
+typedef struct BlockPhysics BlockPhysics;
 
 World* world_create(Renderer* renderer, int seed, int render_distance);
 void   world_destroy(World* world);
-void   world_update(World* world, vec3 player_pos);
+void   world_update(World* world, BlockPhysics* bp, vec3 player_pos);
 void   world_get_meshes(World* world, ChunkMesh** out_meshes, uint32_t* out_count);
 
 uint32_t world_get_ready_count(const World* world);

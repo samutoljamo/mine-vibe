@@ -48,7 +48,7 @@ bool posset_iter_next(const PosSet* s, int* idx, int* x, int* y, int* z);
 /*  BlockPhysics                                                       */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
+typedef struct BlockPhysics {
     PosSet gravity_active;
     PosSet water_active;
     float  gravity_accum;

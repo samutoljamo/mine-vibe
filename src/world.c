@@ -1,4 +1,5 @@
 #include "world.h"
+#include "block_physics.h"
 #include "chunk.h"
 #include "chunk_map.h"
 #include "chunk_mesh.h"
@@ -31,6 +32,8 @@ typedef struct WorkItem {
     BlockID*         boundary_neg_x;  /* x=15 slice of -X neighbor */
     BlockID*         boundary_pos_z;  /* z=0 slice of +Z neighbor */
     BlockID*         boundary_neg_z;  /* z=15 slice of -Z neighbor */
+    /* Snapshot of chunk->meta at submission time (calloc if meta==NULL) */
+    uint8_t*         meta_snapshot;
     struct WorkItem* next;
 } WorkItem;
 
@@ -126,13 +129,14 @@ static void* worker_func(void* arg)
 
             MeshData* md = malloc(sizeof(MeshData));
             mesh_data_init(md);
-            mesher_build(item->chunk, &neighbors, md);
+            mesher_build(item->chunk, &neighbors, item->meta_snapshot, md);
 
-            /* Free boundary slices */
+            /* Free boundary slices and meta snapshot */
             free(item->boundary_pos_x);
             free(item->boundary_neg_x);
             free(item->boundary_pos_z);
             free(item->boundary_neg_z);
+            free(item->meta_snapshot);
 
             /* Push mesh result */
             ResultItem* result = malloc(sizeof(ResultItem));
@@ -155,6 +159,17 @@ static void* worker_func(void* arg)
 /* ------------------------------------------------------------------ */
 /*  Submit helpers                                                    */
 /* ------------------------------------------------------------------ */
+
+static uint8_t* take_meta_snapshot(const Chunk* chunk)
+{
+    uint8_t* snap = malloc(CHUNK_BLOCKS);
+    if (!snap) { fprintf(stderr, "take_meta_snapshot: out of memory\n"); abort(); }
+    if (chunk->meta)
+        memcpy(snap, chunk->meta, CHUNK_BLOCKS);
+    else
+        memset(snap, 0, CHUNK_BLOCKS);
+    return snap;
+}
 
 static void submit_work(World* world, WorkItem* item)
 {
@@ -235,6 +250,7 @@ void world_destroy(World* world)
             free(wi->boundary_neg_x);
             free(wi->boundary_pos_z);
             free(wi->boundary_neg_z);
+            free(wi->meta_snapshot);
         }
         free(wi);
         wi = next;
@@ -274,7 +290,7 @@ void world_destroy(World* world)
     free(world);
 }
 
-void world_update(World* world, vec3 player_pos)
+void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
 {
     int pcx = (int)floorf(player_pos[0] / 16.0f);
     int pcz = (int)floorf(player_pos[2] / 16.0f);
@@ -344,8 +360,23 @@ void world_update(World* world, vec3 player_pos)
                 free(md);
 
             } else {
-                /* Generate result - state already set by worldgen */
-                /* Nothing else to do here */
+                /* Generate result - state already set by worldgen.
+                 * Seed physics with water and gravity blocks. */
+                if (bp) {
+                    int base_x = chunk->cx * CHUNK_X;
+                    int base_z = chunk->cz * CHUNK_Z;
+                    for (int lx = 0; lx < CHUNK_X; lx++) {
+                        for (int lz = 0; lz < CHUNK_Z; lz++) {
+                            for (int ly = 0; ly < CHUNK_Y; ly++) {
+                                BlockID b = chunk_get_block(chunk, lx, ly, lz);
+                                if (b == BLOCK_WATER || block_is_gravity(b)) {
+                                    block_physics_notify(bp,
+                                        base_x + lx, ly, base_z + lz);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             free(r);
@@ -526,8 +557,69 @@ void world_update(World* world, vec3 player_pos)
             wi->boundary_neg_x = b_neg_x;
             wi->boundary_pos_z = b_pos_z;
             wi->boundary_neg_z = b_neg_z;
+            wi->meta_snapshot  = take_meta_snapshot(chunk);
             submit_work(world, wi);
             if (++mesh_submits >= 32) break;
+        }
+    }
+
+    /* ---- Step 4b: Re-mesh READY chunks dirtied by physics ---- */
+    {
+        uint32_t idx = 0;
+        Chunk* chunk;
+        int remesh_submits = 0;
+
+        while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL
+               && remesh_submits < 16) {
+            if (!chunk->needs_remesh) continue;
+            if (atomic_load(&chunk->state) != CHUNK_READY) continue;
+
+            Chunk* nx_pos = chunk_map_get(&world->map, chunk->cx + 1, chunk->cz);
+            Chunk* nx_neg = chunk_map_get(&world->map, chunk->cx - 1, chunk->cz);
+            Chunk* nz_pos = chunk_map_get(&world->map, chunk->cx, chunk->cz + 1);
+            Chunk* nz_neg = chunk_map_get(&world->map, chunk->cx, chunk->cz - 1);
+
+            if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_GENERATED) continue;
+            if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_GENERATED) continue;
+            if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_GENERATED) continue;
+            if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_GENERATED) continue;
+
+            chunk->needs_remesh = false;
+            atomic_store(&chunk->state, CHUNK_MESHING);
+
+            size_t slice_size = (size_t)CHUNK_Z * CHUNK_Y * sizeof(BlockID);
+            BlockID* b_pos_x = NULL;
+            BlockID* b_neg_x = NULL;
+            BlockID* b_pos_z = NULL;
+            BlockID* b_neg_z = NULL;
+
+            if (nx_pos) {
+                b_pos_x = malloc(slice_size);
+                mesher_extract_boundary(nx_pos, 0, b_pos_x);
+            }
+            if (nx_neg) {
+                b_neg_x = malloc(slice_size);
+                mesher_extract_boundary(nx_neg, 1, b_neg_x);
+            }
+            if (nz_pos) {
+                b_pos_z = malloc(slice_size);
+                mesher_extract_boundary(nz_pos, 2, b_pos_z);
+            }
+            if (nz_neg) {
+                b_neg_z = malloc(slice_size);
+                mesher_extract_boundary(nz_neg, 3, b_neg_z);
+            }
+
+            WorkItem* wi = calloc(1, sizeof(WorkItem));
+            wi->type = WORK_MESH;
+            wi->chunk = chunk;
+            wi->boundary_pos_x = b_pos_x;
+            wi->boundary_neg_x = b_neg_x;
+            wi->boundary_pos_z = b_pos_z;
+            wi->boundary_neg_z = b_neg_z;
+            wi->meta_snapshot  = take_meta_snapshot(chunk);
+            submit_work(world, wi);
+            remesh_submits++;
         }
     }
 

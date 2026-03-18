@@ -25,7 +25,11 @@ typedef struct ChunkNeighbors {
 
 void mesh_data_init(MeshData* md);
 void mesh_data_free(MeshData* md);
-void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors, MeshData* out);
+/* meta_snapshot may be NULL (treated as all-zero).
+ * For BLOCK_WATER, meta[idx] == WATER_SOURCE_LEVEL → full height;
+ * meta[idx] 1-254 → partial-height top face. */
+void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
+                  const uint8_t* meta_snapshot, MeshData* out);
 void mesher_extract_boundary(const Chunk* chunk, int face, BlockID* out);
 
 #endif

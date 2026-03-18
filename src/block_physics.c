@@ -1,5 +1,6 @@
 #include "block_physics.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -38,7 +39,7 @@ static inline void pos_unpack(int64_t key, int* x, int* y, int* z) {
 }
 
 static inline int posset_slot(const PosSet* s, int64_t key) {
-    /* FNV-1a mix for 64-bit key */
+    /* splitmix64 finalizer — avalanches all 64 bits */
     uint64_t h = (uint64_t)key;
     h ^= h >> 33;
     h *= 0xff51afd7ed558ccdULL;
@@ -53,6 +54,7 @@ void posset_init(PosSet* s) {
     s->count      = 0;
     s->tombstones = 0;
     s->keys = malloc((size_t)s->capacity * sizeof(int64_t));
+    if (!s->keys) { fprintf(stderr, "posset_init: out of memory\n"); abort(); }
     for (int i = 0; i < s->capacity; i++) s->keys[i] = POSSET_EMPTY;
 }
 
@@ -70,6 +72,7 @@ static void posset_rehash(PosSet* s, int new_cap) {
     s->count      = 0;
     s->tombstones = 0;
     s->keys = malloc((size_t)new_cap * sizeof(int64_t));
+    if (!s->keys) { fprintf(stderr, "posset_rehash: out of memory\n"); abort(); }
     for (int i = 0; i < new_cap; i++) s->keys[i] = POSSET_EMPTY;
 
     for (int i = 0; i < old_cap; i++) {
@@ -183,10 +186,179 @@ void block_physics_notify(BlockPhysics* bp, int x, int y, int z) {
     }
 }
 
+/* ------------------------------------------------------------------ */
+/*  Gravity tick                                                       */
+/* ------------------------------------------------------------------ */
+
+static void gravity_tick(BlockPhysics* bp, World* world, vec3 player_pos)
+{
+    /* Build the next dirty set from scratch: only positions that still
+     * need checking survive into the next tick.                       */
+    PosSet next;
+    posset_init(&next);
+
+    int idx = 0, x, y, z;
+    while (posset_iter_next(&bp->gravity_active, &idx, &x, &y, &z)) {
+        idx++;
+
+        /* Radius check (XZ plane only) */
+        float fdx = (float)x - player_pos[0];
+        float fdz = (float)z - player_pos[2];
+        if (fdx * fdx + fdz * fdz > (float)(PHYSICS_RADIUS * PHYSICS_RADIUS))
+            continue; /* outside simulation radius — drop */
+
+        BlockID block = world_get_block(world, x, y, z);
+        if (!block_is_gravity(block))
+            continue; /* not a gravity block — settled or replaced */
+
+        if (y <= 0)
+            continue; /* at bedrock floor — nowhere to fall */
+
+        BlockID below = world_get_block(world, x, y - 1, z);
+        if (below != BLOCK_AIR) {
+            continue; /* supported — drop from dirty set */
+        }
+
+        /* Move block down one step */
+        if (!world_set_block(world, x, y - 1, z, block)) {
+            /* Chunk busy (meshing) — retry next tick */
+            posset_insert(&next, x, y, z);
+            continue;
+        }
+        if (!world_set_block(world, x, y, z, BLOCK_AIR)) {
+            /* Roll back destination write — source chunk is busy */
+            world_set_block(world, x, y - 1, z, BLOCK_AIR);
+            posset_insert(&next, x, y, z);
+            continue;
+        }
+
+        /* New position may still be unsupported */
+        posset_insert(&next, x, y - 1, z);
+        /* Slot above is now AIR — block above might start falling */
+        posset_insert(&next, x, y + 1, z);
+    }
+
+    posset_destroy(&bp->gravity_active);
+    bp->gravity_active = next;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Water cellular automata tick                                       */
+/* ------------------------------------------------------------------ */
+
+/* Horizontal neighbor offsets */
+static const int W_HX[4] = { 1, -1,  0,  0 };
+static const int W_HZ[4] = { 0,  0,  1, -1 };
+
+/* Try to place/update water at (x,y,z) with the given level.
+ * Skips solid blocks and source blocks.  If successful, inserts the
+ * position into *next so the new cell is processed on future ticks. */
+static void water_spread_to(PosSet* next, World* world,
+                             int x, int y, int z, uint8_t level)
+{
+    if (level == 0) return;
+
+    BlockID nb = world_get_block(world, x, y, z);
+    if (nb != BLOCK_AIR && nb != BLOCK_WATER) return; /* solid */
+
+    if (nb == BLOCK_WATER) {
+        uint8_t cur = world_get_meta(world, x, y, z);
+        if (cur == WATER_SOURCE_LEVEL) return; /* never overwrite sources */
+        if (cur >= level) return;              /* already at or above */
+    }
+
+    if (!world_set_block(world, x, y, z, BLOCK_WATER)) return;
+    world_set_meta(world, x, y, z, level);
+    posset_insert(next, x, y, z);
+}
+
+static void water_tick(BlockPhysics* bp, World* world, vec3 player_pos)
+{
+    PosSet next;
+    posset_init(&next);
+
+    int idx = 0, x, y, z;
+    while (posset_iter_next(&bp->water_active, &idx, &x, &y, &z)) {
+        idx++;
+
+        /* Radius check (XZ plane) */
+        float fdx = (float)x - player_pos[0];
+        float fdz = (float)z - player_pos[2];
+        if (fdx * fdx + fdz * fdz > (float)(PHYSICS_RADIUS * PHYSICS_RADIUS))
+            continue;
+
+        BlockID block = world_get_block(world, x, y, z);
+        if (block != BLOCK_WATER) continue; /* block was replaced */
+
+        uint8_t level = world_get_meta(world, x, y, z);
+
+        uint8_t spread_down; /* level given to downward flow    */
+        uint8_t spread_side; /* level given to horizontal flow  */
+
+        if (level == WATER_SOURCE_LEVEL) {
+            /* Source block: permanent, spreads at WATER_SOURCE_LEVEL-1 */
+            spread_down = WATER_SOURCE_LEVEL - 1;
+            spread_side = WATER_SOURCE_LEVEL - 2;
+            posset_insert(&next, x, y, z); /* sources stay active forever */
+        } else {
+            /* Flowing block: dissipate each tick */
+            int new_level = (int)level - WATER_DISSIPATION;
+            if (new_level <= 0) {
+                /* Water has dissipated — remove block */
+                world_set_block(world, x, y, z, BLOCK_AIR);
+                world_set_meta(world, x, y, z, 0);
+                /* Notify above (water gone — gravity block may fall) */
+                posset_insert(&next, x, y + 1, z);
+                posset_insert(&bp->gravity_active, x, y + 1, z);
+                continue;
+            }
+            world_set_meta(world, x, y, z, (uint8_t)new_level);
+            spread_down = (uint8_t)new_level;
+            spread_side = (new_level > 1) ? (uint8_t)(new_level - 1) : 0;
+            posset_insert(&next, x, y, z); /* keep alive while level > 0 */
+        }
+
+        /* Flow down (keeps full level — gravity has priority) */
+        if (y > 0) {
+            BlockID below = world_get_block(world, x, y - 1, z);
+            if (below == BLOCK_AIR || (below == BLOCK_WATER &&
+                world_get_meta(world, x, y - 1, z) < spread_down &&
+                world_get_meta(world, x, y - 1, z) != WATER_SOURCE_LEVEL)) {
+                water_spread_to(&next, world, x, y - 1, z, spread_down);
+            }
+        }
+
+        /* Horizontal spread (loses 1 level per step) */
+        for (int d = 0; d < 4; d++) {
+            water_spread_to(&next, world,
+                            x + W_HX[d], y, z + W_HZ[d],
+                            spread_side);
+        }
+    }
+
+    posset_destroy(&bp->water_active);
+    bp->water_active = next;
+}
+
+/* ------------------------------------------------------------------ */
+/*  BlockPhysics update                                                */
+/* ------------------------------------------------------------------ */
+
 void block_physics_update(BlockPhysics* bp, World* world,
-                          vec3 player_pos, float dt) {
-    (void)world; (void)player_pos;
+                          vec3 player_pos, float dt)
+{
     bp->gravity_accum += dt;
     bp->water_accum   += dt;
-    /* Ticks implemented in Tasks 6 and 7 */
+
+    const float gravity_interval = 1.0f / (float)GRAVITY_TICK_HZ;
+    while (bp->gravity_accum >= gravity_interval) {
+        gravity_tick(bp, world, player_pos);
+        bp->gravity_accum -= gravity_interval;
+    }
+
+    const float water_interval = 1.0f / (float)WATER_TICK_HZ;
+    while (bp->water_accum >= water_interval) {
+        water_tick(bp, world, player_pos);
+        bp->water_accum -= water_interval;
+    }
 }

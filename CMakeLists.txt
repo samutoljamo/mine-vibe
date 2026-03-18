@@ -103,6 +103,7 @@ add_executable(minecraft
     src/world.c
     src/player.c
     src/physics.c
+    src/block_physics.c
     src/vma_impl.cpp
 )
 

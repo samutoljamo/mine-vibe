@@ -6,6 +6,7 @@
 #include "renderer.h"
 #include "player.h"
 #include "world.h"
+#include "block_physics.h"
 #include "chunk_mesh.h"
 #include "worldgen.h"
 
@@ -51,6 +52,9 @@ int main(void)
     player_init(&g_player, (vec3){0, (float)spawn_y, 0});
     World* world = world_create(&renderer, WORLD_SEED, 32);
 
+    BlockPhysics physics;
+    block_physics_init(&physics);
+
     /* Loading threshold: 30% of circular render area */
     int rd = world_get_render_distance(world);
     int expected_chunks = 0;
@@ -75,7 +79,7 @@ int main(void)
         {
             glfwPollEvents();
             player_update(&g_player, window, world, 0.0f);
-            world_update(world, g_player.position);
+            world_update(world, &physics, g_player.position);
             world_get_meshes(world, &meshes, &mesh_count);
 
             mat4 view, proj;
@@ -106,7 +110,8 @@ int main(void)
         glfwPollEvents();
         player_update(&g_player, window, world, dt);
 
-        world_update(world, g_player.position);
+        world_update(world, &physics, g_player.position);
+        block_physics_update(&physics, world, g_player.position, dt);
 
         ChunkMesh* meshes;
         uint32_t mesh_count;
@@ -138,6 +143,7 @@ int main(void)
 
     vkDeviceWaitIdle(renderer.device);
     world_destroy(world);
+    block_physics_destroy(&physics);
     renderer_cleanup(&renderer);
     glfwDestroyWindow(window);
     glfwTerminate();

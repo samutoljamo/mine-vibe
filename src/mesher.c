@@ -1,5 +1,6 @@
 #include "mesher.h"
 #include "chunk.h"
+#include "block_physics.h"   /* WATER_SOURCE_LEVEL */
 #include <stdlib.h>
 #include <string.h>
 
@@ -139,7 +140,8 @@ static void get_tile_uv(uint8_t tile, float* u0, float* v0, float* u1, float* v1
     *v1 = (float)(ty + 1) * TILE_UV - HALF_TEXEL;
 }
 
-void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors, MeshData* out)
+void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
+                  const uint8_t* meta_snapshot, MeshData* out)
 {
     out->vertex_count = 0;
     out->index_count = 0;
@@ -197,10 +199,19 @@ void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors, MeshData*
                         pos[3][0] = fx;   pos[3][1] = fy+1; pos[3][2] = fz+1;
                         break;
                     case 2: /* +Y */
-                        pos[0][0] = fx;   pos[0][1] = fy+1; pos[0][2] = fz;
-                        pos[1][0] = fx+1; pos[1][1] = fy+1; pos[1][2] = fz;
-                        pos[2][0] = fx+1; pos[2][1] = fy+1; pos[2][2] = fz+1;
-                        pos[3][0] = fx;   pos[3][1] = fy+1; pos[3][2] = fz+1;
+                    {
+                        float fy_top = fy + 1.0f;
+                        if (block == BLOCK_WATER && meta_snapshot) {
+                            uint8_t wlvl = meta_snapshot[
+                                x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z];
+                            if (wlvl > 0 && wlvl < WATER_SOURCE_LEVEL)
+                                fy_top = fy + (float)wlvl / (float)WATER_SOURCE_LEVEL;
+                        }
+                        pos[0][0] = fx;   pos[0][1] = fy_top; pos[0][2] = fz;
+                        pos[1][0] = fx+1; pos[1][1] = fy_top; pos[1][2] = fz;
+                        pos[2][0] = fx+1; pos[2][1] = fy_top; pos[2][2] = fz+1;
+                        pos[3][0] = fx;   pos[3][1] = fy_top; pos[3][2] = fz+1;
+                    }
                         break;
                     case 3: /* -Y */
                         pos[0][0] = fx;   pos[0][1] = fy;   pos[0][2] = fz+1;
