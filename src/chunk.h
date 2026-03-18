@@ -17,7 +17,6 @@ typedef enum ChunkState {
     CHUNK_GENERATING,
     CHUNK_GENERATED,
     CHUNK_MESHING,
-    CHUNK_MESHED,
     CHUNK_READY,
 } ChunkState;
 

@@ -58,6 +58,7 @@ struct World {
 
     /* Work queue (linked list, protected by mutex + condvar) */
     WorkItem*      work_head;
+    WorkItem*      work_tail;
     pthread_mutex_t work_mutex;
     pthread_cond_t  work_cond;
 
@@ -94,6 +95,8 @@ static void* worker_func(void* arg)
         WorkItem* item = world->work_head;
         if (item) {
             world->work_head = item->next;
+            if (world->work_head == NULL)
+                world->work_tail = NULL;
         }
         pthread_mutex_unlock(&world->work_mutex);
 
@@ -158,8 +161,13 @@ static void submit_work(World* world, WorkItem* item)
 {
     item->next = NULL;
     pthread_mutex_lock(&world->work_mutex);
-    item->next = world->work_head;
-    world->work_head = item;
+    if (world->work_head == NULL) {
+        world->work_head = item;
+        world->work_tail = item;
+    } else {
+        world->work_tail->next = item;
+        world->work_tail = item;
+    }
     pthread_cond_signal(&world->work_cond);
     pthread_mutex_unlock(&world->work_mutex);
 }
@@ -347,36 +355,36 @@ void world_update(World* world, vec3 player_pos)
 
     /* ---- Step 2: Unload distant chunks ---- */
     {
-        bool removed;
-        do {
-            removed = false;
-            uint32_t idx = 0;
-            Chunk* chunk;
-            while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL) {
-                int dx = chunk->cx - pcx;
-                int dz = chunk->cz - pcz;
-                int dist_sq = dx * dx + dz * dz;
+        /* First pass: collect chunks to unload (avoids O(n^2) iterator restarts) */
+        Chunk* to_remove[1024];
+        int    remove_count = 0;
 
-                if (dist_sq > unload_sq) {
-                    int state = atomic_load(&chunk->state);
-                    /* Don't unload chunks being processed by workers */
-                    if (state == CHUNK_GENERATING || state == CHUNK_MESHING) {
-                        continue;
-                    }
+        uint32_t idx = 0;
+        Chunk* chunk;
+        while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL) {
+            int dx = chunk->cx - pcx;
+            int dz = chunk->cz - pcz;
+            int dist_sq = dx * dx + dz * dz;
 
-                    chunk_map_remove(&world->map, chunk->cx, chunk->cz);
+            if (dist_sq > unload_sq) {
+                int state = atomic_load(&chunk->state);
+                /* Don't unload chunks being processed by workers */
+                if (state == CHUNK_GENERATING || state == CHUNK_MESHING)
+                    continue;
 
-                    if (chunk->mesh.uploaded) {
-                        chunk_mesh_destroy(world->renderer->allocator, &chunk->mesh);
-                    }
-                    chunk_destroy(chunk);
-
-                    /* Iterator invalidated by removal; restart */
-                    removed = true;
-                    break;
-                }
+                if (remove_count < 1024)
+                    to_remove[remove_count++] = chunk;
             }
-        } while (removed);
+        }
+
+        /* Second pass: remove and destroy */
+        for (int i = 0; i < remove_count; i++) {
+            chunk = to_remove[i];
+            chunk_map_remove(&world->map, chunk->cx, chunk->cz);
+            if (chunk->mesh.uploaded)
+                chunk_mesh_destroy(world->renderer->allocator, &chunk->mesh);
+            chunk_destroy(chunk);
+        }
     }
 
     /* ---- Step 3: Load missing chunks (spiral from center) ---- */
@@ -430,6 +438,7 @@ void world_update(World* world, vec3 player_pos)
 
     /* ---- Step 4: Submit meshing for GENERATED chunks ---- */
     {
+        int mesh_submits = 0;
         uint32_t idx = 0;
         Chunk* chunk;
         while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL) {
@@ -482,6 +491,7 @@ void world_update(World* world, vec3 player_pos)
             wi->boundary_pos_z = b_pos_z;
             wi->boundary_neg_z = b_neg_z;
             submit_work(world, wi);
+            if (++mesh_submits >= 32) break;
         }
     }
 
@@ -527,8 +537,8 @@ BlockID world_get_block(World* world, int x, int y, int z)
 {
     if (y < 0 || y >= CHUNK_Y) return BLOCK_AIR;
 
-    int cx = (int)floorf((float)x / 16.0f);
-    int cz = (int)floorf((float)z / 16.0f);
+    int cx = (x < 0) ? (x - 15) / 16 : x / 16;
+    int cz = (z < 0) ? (z - 15) / 16 : z / 16;
 
     Chunk* chunk = chunk_map_get(&world->map, cx, cz);
     if (!chunk) return BLOCK_AIR;
