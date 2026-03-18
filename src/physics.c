@@ -59,15 +59,33 @@ static void sweep_axis(vec3 pos, vec3 vel, float half_w, float height,
     }
 }
 
+/* Sub-step sweep to prevent tunneling when |delta| > 1 block.
+ * At terminal velocity (78.4 m/s) a single tick moves 1.3 blocks,
+ * enough to skip through a 1-block-thick floor without sub-stepping. */
+static void sweep_axis_substepped(vec3 pos, vec3 vel, float half_w, float height,
+                                   int axis, float total_delta, World* world,
+                                   bool* on_ground)
+{
+    float remaining = total_delta;
+    while (fabsf(remaining) > 0.0001f) {
+        float step = remaining;
+        if (fabsf(step) > 0.999f)
+            step = (remaining > 0.0f) ? 0.999f : -0.999f;
+        sweep_axis(pos, vel, half_w, height, axis, step, world, on_ground);
+        remaining -= step;
+        if (vel[axis] == 0.0f) break; /* velocity zeroed by collision */
+    }
+}
+
 PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
                            float dt, World* world)
 {
     PhysicsResult result = { false, false };
 
     /* Y first (ground detection), then X, then Z */
-    sweep_axis(pos, vel, half_w, height, 1, vel[1] * dt, world, &result.on_ground);
-    sweep_axis(pos, vel, half_w, height, 0, vel[0] * dt, world, &result.on_ground);
-    sweep_axis(pos, vel, half_w, height, 2, vel[2] * dt, world, &result.on_ground);
+    sweep_axis_substepped(pos, vel, half_w, height, 1, vel[1] * dt, world, &result.on_ground);
+    sweep_axis_substepped(pos, vel, half_w, height, 0, vel[0] * dt, world, &result.on_ground);
+    sweep_axis_substepped(pos, vel, half_w, height, 2, vel[2] * dt, world, &result.on_ground);
 
     result.in_water = physics_check_water(pos, half_w, height, world);
     return result;
