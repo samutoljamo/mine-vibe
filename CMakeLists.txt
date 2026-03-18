@@ -132,3 +132,17 @@ target_link_libraries(minecraft PRIVATE Threads::Threads)
 if(UNIX AND NOT APPLE)
     target_link_libraries(minecraft PRIVATE m)
 endif()
+
+# ---- Unit tests (no Vulkan dependency) ----
+enable_testing()
+add_executable(test_block_physics
+    src/test_block_physics.c
+    src/block_physics.c
+    src/block.c
+)
+target_include_directories(test_block_physics PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${fastnoiselite_SOURCE_DIR}/C
+)
+target_link_libraries(test_block_physics PRIVATE cglm m)
+add_test(NAME block_physics COMMAND test_block_physics)
