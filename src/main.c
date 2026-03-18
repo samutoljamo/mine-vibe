@@ -141,7 +141,8 @@ int main(int argc, char *argv[])
                          / (float)renderer.swapchain.extent.height;
             camera_get_proj(&g_player.camera, aspect, proj);
 
-            renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir);
+            renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir,
+                                NULL, false, NULL);
 
             uint32_t pct = (uint32_t)(100.0f * (float)mesh_count
                                               / (float)load_threshold);
@@ -194,14 +195,8 @@ int main(int argc, char *argv[])
                      / (float)renderer.swapchain.extent.height;
         camera_get_proj(&g_player.camera, aspect, proj);
 
-        renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir);
-
-        if (agent_mode && dump_frame) {
-            if (renderer_dump_frame(&renderer, dump_path))
-                agent_emit_frame_saved(dump_path);
-            else
-                agent_emit_error("frame capture failed");
-        }
+        renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir,
+                            NULL, false, NULL);
 
         if (agent_mode) {
             float yaw_deg   = g_player.camera.yaw   * (180.0f / 3.14159265f);
