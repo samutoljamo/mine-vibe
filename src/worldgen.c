@@ -218,6 +218,11 @@ void worldgen_generate(Chunk* chunk, int seed)
                 }
 
                 chunk_set_block(chunk, x, y, z, block);
+
+                /* Water blocks placed by worldgen are permanent sources */
+                if (block == BLOCK_WATER) {
+                    chunk_set_meta(chunk, x, y, z, 255); /* source level */
+                }
             }
         }
     }
