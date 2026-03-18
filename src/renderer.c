@@ -461,7 +461,7 @@ static void framebuffer_resize_cb(GLFWwindow* window, int width, int height)
 static bool create_hud_framebuffers(Renderer* r)
 {
     uint32_t n = r->swapchain.image_count;
-    r->hud_framebuffers = malloc(n * sizeof(VkFramebuffer));
+    r->hud_framebuffers = calloc(n, sizeof(VkFramebuffer));
     if (!r->hud_framebuffers) return false;
 
     for (uint32_t i = 0; i < n; i++) {
@@ -824,7 +824,8 @@ static void recreate_swapchain(Renderer* r)
         free(r->hud_framebuffers);
         r->hud_framebuffers = NULL;
     }
-    create_hud_framebuffers(r);
+    if (!create_hud_framebuffers(r))
+        fprintf(stderr, "Failed to recreate HUD framebuffers\n");
 }
 
 /* ------------------------------------------------------------------ */
