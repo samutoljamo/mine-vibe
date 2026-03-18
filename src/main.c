@@ -9,6 +9,8 @@
 #include "chunk_mesh.h"
 #include "worldgen.h"
 
+#define WORLD_SEED 42
+
 static Player g_player;
 
 static void mouse_callback(GLFWwindow* window, double xpos, double ypos)
@@ -45,9 +47,9 @@ int main(void)
         return 1;
     }
 
-    int spawn_y = worldgen_get_height(0, 0, 42) + 1;
+    int spawn_y = worldgen_get_height(0, 0, WORLD_SEED) + 4;
     player_init(&g_player, (vec3){0, (float)spawn_y, 0});
-    World* world = world_create(&renderer, 42, 32);
+    World* world = world_create(&renderer, WORLD_SEED, 32);
 
     /* Loading threshold: 30% of circular render area */
     int rd = world_get_render_distance(world);
