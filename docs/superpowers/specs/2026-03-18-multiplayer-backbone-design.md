@@ -68,7 +68,7 @@ typedef struct {
 
 **Unreliable** — player positions, camera orientation. No retransmit. Out-of-order packets are silently dropped via sequence number check; latest packet wins.
 
-**Reliable** — connect/disconnect, player join/leave, block changes (future). Uses a send buffer with retransmit after ~100ms if no ACK received. Sliding window of 32 in-flight packets. The `ack_bits` bitmask (Glenn Fiedler technique) allows one packet to ACK up to 17 prior sequences, so most reliable packets are ACKed within a single round trip even under packet loss.
+**Reliable** — connect/disconnect, player join/leave, block changes (future). Uses a send buffer with retransmit after ~100ms if no ACK received. Sliding window of 32 in-flight packets. The `ack` field ACKs 1 sequence explicitly; the `ack_bits` bitmask (Glenn Fiedler technique) covers 16 prior sequences — together they acknowledge up to 17 sequences per packet, so most reliable packets are ACKed within a single round trip even under packet loss.
 
 ### Packet Types
 
@@ -87,19 +87,33 @@ typedef enum {
 
 ### Key Packet Payloads
 
-**Input** (client → server, unreliable, ~21 bytes):
+**Input** (client → server, unreliable, 21 wire bytes):
 ```c
 typedef struct {
-    PacketHeader header;
-    uint32_t     tick;        // client tick counter
-    uint8_t      keys;        // bitmask: W/A/S/D/space/sprint/shift
-    float        yaw, pitch;  // camera orientation
-} InputPacket;
+    PacketHeader header;   //  8 bytes
+    uint32_t     tick;     //  4 bytes — client tick counter
+    uint8_t      keys;     //  1 byte  — bitmask (see key bit definitions below)
+    float        yaw;      //  4 bytes
+    float        pitch;    //  4 bytes
+} InputPacket;             // = 21 wire bytes total
+```
+
+All packets are serialized/deserialized field-by-field (not via `memcpy` of the struct) to avoid platform-dependent padding. The wire format is exactly the field sizes listed above.
+
+**Keys bitmask bit layout** (same definition used in both `InputState` and `InputPacket`):
+```c
+#define KEY_BIT_W      (1 << 0)
+#define KEY_BIT_S      (1 << 1)
+#define KEY_BIT_A      (1 << 2)
+#define KEY_BIT_D      (1 << 3)
+#define KEY_BIT_SPACE  (1 << 4)
+#define KEY_BIT_SPRINT (1 << 5)   // Ctrl held in existing codebase; mapped here for network transport
+#define KEY_BIT_SHIFT  (1 << 6)
 ```
 
 The client sends inputs at 60Hz. The server derives authoritative movement from `keys` + `yaw`/`pitch` — it never trusts a position from the client.
 
-**World State** (server → clients, unreliable, 8 + 9×N bytes):
+**World State** (server → clients, unreliable, 9 + 21×N bytes):
 ```c
 typedef struct {
     PacketHeader header;
@@ -120,8 +134,8 @@ Sent at 20Hz. Clients interpolate between received snapshots for smooth remote p
 
 Each tick:
 1. Drain inbound queue — process all received packets
-2. For each `PKT_INPUT`: validate then apply to server-side player state
-3. Run `player_physics_tick()` for all connected players
+2. For each `PKT_INPUT`: validate then apply to server-side player state. Multiple inputs may arrive between server ticks (clients send at 60Hz, server ticks at 20Hz). All inputs accumulated since the last tick are processed in arrival order, running `player_physics_tick()` once per input. This ensures inputs are not lost and movement scales correctly.
+3. Run `player_physics_tick()` for any player that received no input this tick (preserves gravity/friction)
 4. Broadcast `PKT_WORLD_STATE` to all clients
 5. Handle connect/disconnect, timeout detection
 
@@ -132,22 +146,22 @@ The server owns a `World*` used only for collision queries. It does not render.
 ```c
 typedef struct {
     struct sockaddr_in addr;
-    uint8_t    player_id;       // 1–255; 0 reserved for server
-    float      last_input_time; // for timeout detection
-    uint32_t   last_input_tick; // for stale-input detection
+    uint8_t    player_id;        // 1–255; 0 reserved for server
+    double     last_input_time;  // for timeout detection (double: float loses precision at Unix timestamps)
+    uint32_t   last_input_tick;  // for stale-input detection
     uint8_t    last_keys;
     float      yaw, pitch;
-    Player     player;          // authoritative player state
+    Player     player;           // authoritative player state
 } ConnectedClient;
 ```
 
-Max clients is a runtime parameter (default 32). Player IDs are assigned from a free-slot pool and reused on disconnect.
+Max clients is a runtime parameter (default 32). Player IDs are assigned from a free-slot pool and reused on disconnect. `PKT_PLAYER_LEAVE` for the departing player is always sent and ACKed (reliable channel) before a `PKT_PLAYER_JOIN` can be sent for a new player reusing the same ID, preventing stale world-state snapshots from rendering the wrong body at the wrong position.
 
 ### Anti-Cheat
 
 The server only accepts `keys`, `yaw`, and `pitch` from clients. It runs physics itself. Three validation checks:
 
-1. **Speed cap** — if simulated position delta exceeds `sprint_speed × 1.5` per tick, discard the packet and do not move the player. The 1.5× margin absorbs jitter without blocking legitimate movement.
+1. **Speed cap** — if simulated position delta exceeds `PLAYER_SPRINT_SPEED × 1.5` per tick, discard the packet and do not move the player. The current codebase defines this value as `SPRINT_SPEED` in `src/player.c` (file-local). This implementation must move it to `src/player.h` as a public `#define PLAYER_SPRINT_SPEED` so that `server.c` can include it — making `player.h` the single source of truth for both client and server. The 1.5× margin absorbs jitter without blocking legitimate movement.
 2. **Stale input** — if packet `tick` ≤ `last_input_tick` for that client, discard (prevents input replay).
 3. **Timeout** — no input received for 10 seconds triggers disconnect; `PKT_PLAYER_LEAVE` broadcast to all clients.
 
@@ -178,19 +192,22 @@ The 0.5-block threshold absorbs normal floating-point and network jitter.
 
 ### Remote Player Interpolation
 
-Remote players are rendered at an interpolated position between the two most recent server snapshots, with a fixed **100ms interpolation delay** (5 server ticks at 20Hz):
+Remote players are rendered at an interpolated position between the two most recent server snapshots, with a fixed **100ms interpolation delay** (2 server ticks at 20Hz, providing one spare snapshot buffer):
 
 ```c
 typedef struct {
     uint8_t  player_id;
-    vec3     positions[2];
+    vec3     positions[2];      // [0] = older snapshot, [1] = newer snapshot
     float    yaws[2], pitches[2];
-    double   snapshot_times[2];
-    double   render_time;        // trails real time by 100ms
+    double   snapshot_times[2]; // client-side receive timestamp via glfwGetTime()
+    uint8_t  snapshot_count;    // 0 = no data, 1 = one snapshot, 2 = two snapshots ready
+    double   render_time;       // trails real time by 100ms; initialized to glfwGetTime() - 0.1 on first snapshot
 } RemotePlayer;
 ```
 
-Each frame: advance `render_time`, compute `t = (render_time - snapshot_times[0]) / (snapshot_times[1] - snapshot_times[0])`, lerp position/yaw/pitch. If no new snapshot has arrived and `t > 1.0`, clamp to 1.0 — the player freezes rather than extrapolating.
+**Snapshot insertion:** when a new snapshot arrives, the network thread records the receive timestamp via `glfwGetTime()` in the inbound queue entry. The game loop writes it into the ring buffer: shift `[1]` → `[0]`, write new data into `[1]`, increment `snapshot_count` up to 2. On the very first snapshot (`snapshot_count` was 0), initialize `render_time = snapshot_times[0] - 0.1` (100ms behind). Interpolation only begins once `snapshot_count == 2`; before that the player is not rendered.
+
+Each frame: advance `render_time` by `frame_dt`. Compute `t = (render_time - snapshot_times[0]) / (snapshot_times[1] - snapshot_times[0])`. Lerp position/yaw/pitch. If no new snapshot has arrived and `t > 1.0`, clamp to 1.0 — the player freezes rather than extrapolating. Both `render_time` and `snapshot_times` use `glfwGetTime()` as the single clock source.
 
 Remote players are rendered as placeholder AABBs (0.6×1.8×0.6) matching the player hitbox dimensions until player models are added.
 
@@ -198,12 +215,17 @@ Remote players are rendered as placeholder AABBs (0.6×1.8×0.6) matching the pl
 
 ### Modified Files
 
-**`src/player.h/.c`** — Split input and physics into separate functions:
+**`src/player.h/.c`** — Split input and physics into separate functions. Define `InputState`:
 ```c
+typedef struct {
+    uint8_t keys;       // KEY_BIT_* bitmask (same layout as InputPacket.keys)
+    float   yaw, pitch;
+} InputState;
+
 void player_process_input(Player* player, GLFWwindow* window, InputState* out);
-void player_physics_tick(Player* player, World* world, InputState* input, float dt);
+void player_physics_tick(Player* player, World* world, const InputState* input, float dt);
 ```
-`player_process_input` reads GLFW keys/mouse. `player_physics_tick` applies an `InputState` to physics — callable by both the client (prediction) and server (authoritative simulation) without GLFW.
+`player_process_input` reads GLFW keys/mouse and writes an `InputState`. `player_physics_tick` applies an `InputState` to physics — callable by both the client (prediction) and server (authoritative simulation) without GLFW. The `keys` bitmask layout in `InputState` is identical to `InputPacket.keys` so the server can pass the deserialized value directly.
 
 **`src/main.c`** — Mode detection from `argv`. In client/listen-server mode: spawn `NetThread`, create `Client`, integrate `RemotePlayer` list into render loop. In `--server` mode: skip GLFW and Vulkan entirely, call `server_run()`.
 
@@ -216,12 +238,12 @@ Chunk system, mesher, world gen, worldgen, camera, texture, pipeline, swapchain,
 ## Data Flow
 
 ```
-Client (main thread)                     Server (background thread)
-─────────────────────────────────────    ─────────────────────────────────────
-poll_input()                             drain inbound queue
-  → InputState                             → for each PKT_INPUT: validate
-player_process_input() [local prediction]    → player_physics_tick() (authoritative)
-push PKT_INPUT → outbound queue          broadcast PKT_WORLD_STATE → outbound queue
+Client (main thread)                         Server (background thread)
+─────────────────────────────────────        ─────────────────────────────────────
+player_process_input() → InputState          drain inbound queue
+player_physics_tick() [local prediction]       → for each PKT_INPUT: validate
+push PKT_INPUT → outbound queue                → player_physics_tick() (authoritative)
+                                             broadcast PKT_WORLD_STATE → outbound queue
 
 NetThread
 ─────────────────────────────────────
@@ -248,7 +270,8 @@ remote players: push snapshot into ring buffer
 
 1. `--server` starts a headless server, `--host` starts a listen server with a playable client
 2. Two clients can connect and see each other's positions update in real time
-3. Disconnecting one client does not crash the other or the server
-4. Client-side prediction keeps local movement feeling instant at 100ms simulated RTT
-5. Server rejects inputs that would move a player faster than `sprint_speed × 1.5`
-6. Server detects and disconnects timed-out clients
+3. Server handles N simultaneous clients up to the configured maximum without crash or degradation
+4. Disconnecting one client does not crash the other or the server
+5. Client-side prediction keeps local movement feeling instant at 100ms simulated RTT
+6. Server rejects inputs that would move a player faster than `PLAYER_SPRINT_SPEED × 1.5`
+7. Server detects and disconnects timed-out clients after 10 seconds of silence
