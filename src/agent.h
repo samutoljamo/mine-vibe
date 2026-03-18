@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "hud.h"
 
 /* ------------------------------------------------------------------ */
 /*  Command types                                                      */
@@ -17,6 +18,7 @@ typedef enum AgentCommandType {
     CMD_MODE,
     CMD_GET_STATE,
     CMD_DUMP_FRAME,
+    CMD_SELECT_SLOT,
     CMD_QUIT,
 } AgentCommandType;
 
@@ -28,6 +30,7 @@ typedef struct AgentCommand {
         struct { int   active;                } sprint;
         struct { int   mode;                  } mode;   /* 0=free, 1=walk */
         struct { char  path[256];             } dump_frame;
+        struct { int   slot;                  } select_slot;
     };
 } AgentCommand;
 
@@ -43,6 +46,8 @@ typedef struct AgentSnapshot {
     int      on_ground;
     int      mode;       /* 0=free, 1=walk */
     uint64_t tick;
+    int      selected_slot;
+    int      hotbar[HUD_SLOT_COUNT];
 } AgentSnapshot;
 
 /* ------------------------------------------------------------------ */
