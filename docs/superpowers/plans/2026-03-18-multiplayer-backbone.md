@@ -1163,7 +1163,7 @@ Background thread that owns the socket. Inbound: recv → push to queue. Outboun
       c->player.camera.yaw   = p.yaw;
       c->player.camera.pitch = p.pitch;
 
-      /* Map keys bitmask to agent fields */
+      /* Map keys bitmask to agent fields — physics runs once in server_tick */
       uint8_t keys = p.keys;
       c->player.agent_forward = (keys & KEY_BIT_W) ? 1.0f
                                : (keys & KEY_BIT_S) ? -1.0f : 0.0f;
@@ -1171,18 +1171,8 @@ Background thread that owns the socket. Inbound: recv → push to queue. Outboun
                                : (keys & KEY_BIT_A) ? -1.0f : 0.0f;
       c->player.agent_jump    = (keys & KEY_BIT_SPACE) != 0;
       c->player.agent_sprint  = (keys & KEY_BIT_SPRINT) != 0;
-
-      /* Anti-cheat: run physics once and check speed */
-      vec3 pos_before;
-      glm_vec3_copy(c->player.position, pos_before);
-      player_update(&c->player, NULL, s->world, PHYSICS_DT);
-      vec3 delta;
-      glm_vec3_sub(c->player.position, pos_before, delta);
-      float dist = glm_vec3_norm(delta);
-      if (dist > PLAYER_SPRINT_SPEED * PHYSICS_DT * 1.5f) {
-          /* Reject: revert to pre-move position */
-          glm_vec3_copy(pos_before, c->player.position);
-      }
+      /* Do NOT call player_update here — anti-cheat check happens after
+       * the single physics step in server_tick to avoid double-ticking. */
   }
 
   static void handle_disconnect(Server* s, ServerClient* c)
@@ -1214,19 +1204,30 @@ Background thread that owns the socket. Inbound: recv → push to queue. Outboun
           free(msg);
       }
 
-      /* 2. Physics for clients that got no input this tick
-         (keeps gravity/friction running) — already done per-input above;
-         this step runs once for any client whose agent_forward/right == 0
-         to advance their accumulator. Handled by handle_input calling
-         player_update; clients with no input just don't get called.
-         For gravity continuity, call player_update with zero agent input: */
+      /* 2. Physics + anti-cheat for all clients.
+         Call player_update once per server tick (dt = 1/20s). The accumulator
+         inside player_update runs exactly 3 fixed physics steps (3 × 1/60 = 1/20),
+         consuming all agent fields set by handle_input this tick.
+         Anti-cheat checks net movement over the full tick. */
       for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
           ServerClient* c = &s->clients[i];
           if (!c->active) continue;
-          /* Reset jump edge (already consumed in handle_input this tick) */
+
+          vec3 pos_before;
+          glm_vec3_copy(c->player.position, pos_before);
+
+          player_update(&c->player, NULL, s->world, dt); /* dt = 1/20s → 3 physics ticks */
+
+          /* Anti-cheat speed cap over the full server tick */
+          vec3 delta;
+          glm_vec3_sub(c->player.position, pos_before, delta);
+          float dist = glm_vec3_norm(delta);
+          float max_dist = PLAYER_SPRINT_SPEED * (float)dt * 1.5f;
+          if (dist > max_dist)
+              glm_vec3_copy(pos_before, c->player.position);
+
+          /* Reset edge-triggered jump for next tick */
           c->player.agent_jump = false;
-          /* Advance physics with current velocity (gravity, water sink) */
-          player_update(&c->player, NULL, s->world, dt);
       }
 
       /* 3. Timeout detection */
@@ -1982,15 +1983,25 @@ Wire all the new modules into the existing game loop.
   ```c
   /* Networking tick */
   if (networking) {
-      /* Build keys bitmask from current GLFW state */
+      /* Build keys bitmask. In agent mode, derive from player agent fields
+       * (GLFW keys are not pressed by the agent). In normal mode, read GLFW. */
       uint8_t keys = 0;
-      if (glfwGetKey(window, GLFW_KEY_W)             == GLFW_PRESS) keys |= KEY_BIT_W;
-      if (glfwGetKey(window, GLFW_KEY_S)             == GLFW_PRESS) keys |= KEY_BIT_S;
-      if (glfwGetKey(window, GLFW_KEY_A)             == GLFW_PRESS) keys |= KEY_BIT_A;
-      if (glfwGetKey(window, GLFW_KEY_D)             == GLFW_PRESS) keys |= KEY_BIT_D;
-      if (glfwGetKey(window, GLFW_KEY_SPACE)         == GLFW_PRESS) keys |= KEY_BIT_SPACE;
-      if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL)  == GLFW_PRESS) keys |= KEY_BIT_SPRINT;
-      if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT)    == GLFW_PRESS) keys |= KEY_BIT_SHIFT;
+      if (g_player.agent_mode) {
+          if (g_player.agent_forward > 0)  keys |= KEY_BIT_W;
+          if (g_player.agent_forward < 0)  keys |= KEY_BIT_S;
+          if (g_player.agent_right   > 0)  keys |= KEY_BIT_D;
+          if (g_player.agent_right   < 0)  keys |= KEY_BIT_A;
+          if (g_player.agent_jump)         keys |= KEY_BIT_SPACE;
+          if (g_player.agent_sprint)       keys |= KEY_BIT_SPRINT;
+      } else {
+          if (glfwGetKey(window, GLFW_KEY_W)            == GLFW_PRESS) keys |= KEY_BIT_W;
+          if (glfwGetKey(window, GLFW_KEY_S)            == GLFW_PRESS) keys |= KEY_BIT_S;
+          if (glfwGetKey(window, GLFW_KEY_A)            == GLFW_PRESS) keys |= KEY_BIT_A;
+          if (glfwGetKey(window, GLFW_KEY_D)            == GLFW_PRESS) keys |= KEY_BIT_D;
+          if (glfwGetKey(window, GLFW_KEY_SPACE)        == GLFW_PRESS) keys |= KEY_BIT_SPACE;
+          if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) keys |= KEY_BIT_SPRINT;
+          if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT)   == GLFW_PRESS) keys |= KEY_BIT_SHIFT;
+      }
 
       client_send_input(&client, keys,
                          g_player.camera.yaw, g_player.camera.pitch,
