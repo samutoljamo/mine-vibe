@@ -83,6 +83,8 @@ endfunction()
 
 compile_shader(${SHADER_DIR}/block.vert)
 compile_shader(${SHADER_DIR}/block.frag)
+compile_shader(${SHADER_DIR}/hud.vert)
+compile_shader(${SHADER_DIR}/hud.frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 
 # ---- Executable ----
@@ -104,6 +106,7 @@ add_executable(minecraft
     src/player.c
     src/physics.c
     src/block_physics.c
+    src/hud.c
     src/agent.c
     src/vma_impl.cpp
 )
