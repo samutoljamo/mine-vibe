@@ -1029,10 +1029,13 @@ bool renderer_dump_frame(Renderer* r, const char *path)
 
     renderer_end_single_cmd(r, cmd);
 
-    /* 4. Write PNG */
-    /* TODO: swapchain format may be BGRA on some drivers — PNG may have swapped channels */
+    /* 4. Swapchain is B8G8R8A8; swap R↔B so stbi_write_png gets RGBA */
+    uint8_t *pixels = (uint8_t *)staging_info.pMappedData;
+    for (uint32_t i = 0; i < width * height * 4; i += 4) {
+        uint8_t tmp = pixels[i]; pixels[i] = pixels[i+2]; pixels[i+2] = tmp;
+    }
     bool ok = stbi_write_png(path, (int)width, (int)height, 4,
-                              staging_info.pMappedData, (int)(width * 4)) != 0;
+                              pixels, (int)(width * 4)) != 0;
     if (!ok)
         fprintf(stderr, "renderer_dump_frame: stbi_write_png failed\n");
 
