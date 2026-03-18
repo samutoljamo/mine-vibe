@@ -11,5 +11,6 @@ Chunk* chunk_create(int32_t cx, int32_t cz) {
 }
 
 void chunk_destroy(Chunk* chunk) {
+    free(chunk->meta);
     free(chunk);
 }
