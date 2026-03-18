@@ -60,6 +60,36 @@ int main(void)
     vec3 sun_dir = { -0.5f, -0.8f, -0.3f };
     glm_vec3_normalize(sun_dir);
 
+    /* Loading loop: run until 30% of chunks are meshed */
+    {
+        ChunkMesh* meshes;
+        uint32_t   mesh_count = 0;
+        char       title[128];
+
+        while (!glfwWindowShouldClose(window)
+               && mesh_count < (uint32_t)load_threshold)
+        {
+            glfwPollEvents();
+            player_update(&g_player, window, world, 0.0f);
+            world_update(world, g_player.position);
+            world_get_meshes(world, &meshes, &mesh_count);
+
+            mat4 view, proj;
+            camera_get_view(&g_player.camera, g_player.eye_pos, view);
+            float aspect = (float)renderer.swapchain.extent.width
+                         / (float)renderer.swapchain.extent.height;
+            camera_get_proj(&g_player.camera, aspect, proj);
+
+            renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir);
+
+            uint32_t pct = (uint32_t)(100.0f * (float)mesh_count
+                                              / (float)load_threshold);
+            if (pct > 100) pct = 100;
+            snprintf(title, sizeof(title), "Minecraft | Loading... %u%%", pct);
+            glfwSetWindowTitle(window, title);
+        }
+    }
+
     double last_time = glfwGetTime();
     int frame_count = 0;
     double fps_timer = last_time;
