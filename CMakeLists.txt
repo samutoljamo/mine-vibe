@@ -107,6 +107,7 @@ add_executable(minecraft
     src/physics.c
     src/block_physics.c
     src/agent.c
+    src/player_model.c
     src/vma_impl.cpp
     src/assets_generated.c
     src/shaders_generated.c
