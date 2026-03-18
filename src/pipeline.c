@@ -8,6 +8,34 @@
 /*  Helpers                                                           */
 /* ------------------------------------------------------------------ */
 
+static uint8_t* read_file(const char* path, size_t* out_size)
+{
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Failed to open file: %s\n", path);
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0) {
+        fprintf(stderr, "File is empty or error: %s\n", path);
+        fclose(f);
+        return NULL;
+    }
+    uint8_t* buf = malloc((size_t)len);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    if (n != (size_t)len) {
+        fprintf(stderr, "Failed to read file: %s\n", path);
+        free(buf);
+        return NULL;
+    }
+    *out_size = (size_t)len;
+    return buf;
+}
+
 static VkShaderModule create_shader_module(VkDevice device,
                                            const uint8_t* code, size_t size)
 {
@@ -24,6 +52,16 @@ static VkShaderModule create_shader_module(VkDevice device,
     }
 
     return module;
+}
+
+VkShaderModule pipeline_load_shader_module(VkDevice device, const char* path)
+{
+    size_t size;
+    uint8_t* code = read_file(path, &size);
+    if (!code) return VK_NULL_HANDLE;
+    VkShaderModule mod = create_shader_module(device, code, size);
+    free(code);
+    return mod;
 }
 
 /* ------------------------------------------------------------------ */

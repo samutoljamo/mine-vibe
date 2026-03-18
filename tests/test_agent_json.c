@@ -110,6 +110,23 @@ static void test_parse_with_spaces(void) {
     assert(cmd.mode.mode == 1);
 }
 
+static void test_cmd_select_slot(void) {
+    AgentCommand cmd;
+    assert(agent_parse_command("{\"cmd\":\"select_slot\",\"slot\":3}", &cmd));
+    assert(cmd.type == CMD_SELECT_SLOT);
+    assert(cmd.select_slot.slot == 3);
+
+    /* Clamping: slot=99 → 5 (HUD_SLOT_COUNT - 1) */
+    assert(agent_parse_command("{\"cmd\":\"select_slot\",\"slot\":99}", &cmd));
+    assert(cmd.select_slot.slot == 5);
+
+    /* Clamping: slot=-1 → 0 */
+    assert(agent_parse_command("{\"cmd\":\"select_slot\",\"slot\":-1}", &cmd));
+    assert(cmd.select_slot.slot == 0);
+
+    printf("PASS: test_cmd_select_slot\n");
+}
+
 int main(void) {
     test_parse_move();
     test_parse_look();
@@ -123,6 +140,7 @@ int main(void) {
     test_parse_unknown_returns_false();
     test_format_snapshot();
     test_parse_with_spaces();
+    test_cmd_select_slot();
     printf("All agent JSON tests passed.\n");
     return 0;
 }

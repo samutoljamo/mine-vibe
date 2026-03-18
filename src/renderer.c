@@ -5,6 +5,8 @@
 #include "frustum.h"
 #include "chunk_mesh.h"
 #include "assets.h"
+#include "hud.h"
+#include "agent.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -295,7 +297,7 @@ static bool create_render_pass(Renderer* r)
         .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
     VkAttachmentDescription depth_att = {
@@ -460,6 +462,31 @@ static void framebuffer_resize_cb(GLFWwindow* window, int width, int height)
 /*  Public API: init                                                  */
 /* ------------------------------------------------------------------ */
 
+static bool create_hud_framebuffers(Renderer* r)
+{
+    uint32_t n = r->swapchain.image_count;
+    r->hud_framebuffers = calloc(n, sizeof(VkFramebuffer));
+    if (!r->hud_framebuffers) return false;
+
+    for (uint32_t i = 0; i < n; i++) {
+        VkFramebufferCreateInfo fb_ci = {
+            .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass      = r->hud_render_pass,
+            .attachmentCount = 1,
+            .pAttachments    = &r->swapchain.image_views[i],
+            .width           = r->swapchain.extent.width,
+            .height          = r->swapchain.extent.height,
+            .layers          = 1,
+        };
+        if (vkCreateFramebuffer(r->device, &fb_ci, NULL,
+                                &r->hud_framebuffers[i]) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create HUD framebuffer %u\n", i);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool renderer_init(Renderer* r, GLFWwindow* window)
 {
     memset(r, 0, sizeof(*r));
@@ -596,6 +623,207 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
             (void)old_sc;
             return false;
         }
+    }
+
+    /* --- HUD render pass --- */
+    /* HUD render pass: color-only, loads existing image, outputs PRESENT_SRC */
+    {
+        VkAttachmentDescription hud_color = {
+            .format         = r->swapchain.image_format,
+            .samples        = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        };
+        VkAttachmentReference hud_color_ref = { .attachment = 0,
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkSubpassDescription hud_subpass = {
+            .pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments    = &hud_color_ref,
+        };
+        VkSubpassDependency hud_dep = {
+            .srcSubpass    = VK_SUBPASS_EXTERNAL,
+            .dstSubpass    = 0,
+            .srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        };
+        VkRenderPassCreateInfo hud_rp_ci = {
+            .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments    = &hud_color,
+            .subpassCount    = 1,
+            .pSubpasses      = &hud_subpass,
+            .dependencyCount = 1,
+            .pDependencies   = &hud_dep,
+        };
+        if (vkCreateRenderPass(r->device, &hud_rp_ci, NULL,
+                               &r->hud_render_pass) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create HUD render pass\n");
+            return false;
+        }
+    }
+    if (!create_hud_framebuffers(r)) {
+        fprintf(stderr, "Failed to create HUD framebuffers\n");
+        return false;
+    }
+
+    /* HUD pipeline */
+    {
+        VkShaderModule vert_mod = pipeline_load_shader_module(r->device,
+            "build/shaders/hud.vert.spv");
+        VkShaderModule frag_mod = pipeline_load_shader_module(r->device,
+            "build/shaders/hud.frag.spv");
+        if (!vert_mod || !frag_mod) {
+            fprintf(stderr, "Failed to load HUD shaders\n");
+            if (vert_mod) vkDestroyShaderModule(r->device, vert_mod, NULL);
+            if (frag_mod) vkDestroyShaderModule(r->device, frag_mod, NULL);
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2] = {
+            { .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+              .stage  = VK_SHADER_STAGE_VERTEX_BIT,
+              .module = vert_mod, .pName = "main" },
+            { .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+              .stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
+              .module = frag_mod, .pName = "main" },
+        };
+
+        VkVertexInputBindingDescription bind = {
+            .binding = 0, .stride = sizeof(HudVertex),
+            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+        };
+        VkVertexInputAttributeDescription attrs[2] = {
+            { .location=0, .binding=0,
+              .format=VK_FORMAT_R32G32_SFLOAT, .offset=0 },           /* x,y */
+            { .location=1, .binding=0,
+              .format=VK_FORMAT_R32G32B32A32_SFLOAT, .offset=8 },     /* r,g,b,a */
+        };
+        VkPipelineVertexInputStateCreateInfo vi = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .vertexBindingDescriptionCount   = 1, .pVertexBindingDescriptions   = &bind,
+            .vertexAttributeDescriptionCount = 2, .pVertexAttributeDescriptions = attrs,
+        };
+        VkPipelineInputAssemblyStateCreateInfo ia = {
+            .sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        };
+        VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dyn = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = 2, .pDynamicStates = dyn_states,
+        };
+        VkPipelineViewportStateCreateInfo vp = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1, .scissorCount = 1,
+        };
+        VkPipelineRasterizationStateCreateInfo rs = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode    = VK_CULL_MODE_NONE,
+            .frontFace   = VK_FRONT_FACE_CLOCKWISE,
+            .lineWidth   = 1.0f,
+        };
+        VkPipelineMultisampleStateCreateInfo ms = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        };
+        VkPipelineColorBlendAttachmentState blend_att = {
+            .blendEnable         = VK_TRUE,
+            .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+            .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .colorBlendOp        = VK_BLEND_OP_ADD,
+            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+            .alphaBlendOp        = VK_BLEND_OP_ADD,
+            .colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        };
+        VkPipelineColorBlendStateCreateInfo blend = {
+            .sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1, .pAttachments = &blend_att,
+        };
+
+        /* No depth/stencil state needed */
+        VkPipelineLayoutCreateInfo layout_ci = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        };
+        if (vkCreatePipelineLayout(r->device, &layout_ci, NULL,
+                                   &r->hud_pipeline_layout) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create HUD pipeline layout\n");
+            vkDestroyShaderModule(r->device, vert_mod, NULL);
+            vkDestroyShaderModule(r->device, frag_mod, NULL);
+            return false;
+        }
+
+        VkGraphicsPipelineCreateInfo pipe_ci = {
+            .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount          = 2,
+            .pStages             = stages,
+            .pVertexInputState   = &vi,
+            .pInputAssemblyState = &ia,
+            .pViewportState      = &vp,
+            .pRasterizationState = &rs,
+            .pMultisampleState   = &ms,
+            .pColorBlendState    = &blend,
+            .pDynamicState       = &dyn,
+            .layout              = r->hud_pipeline_layout,
+            .renderPass          = r->hud_render_pass,
+            .subpass             = 0,
+        };
+        if (vkCreateGraphicsPipelines(r->device, VK_NULL_HANDLE, 1, &pipe_ci, NULL,
+                                      &r->hud_pipeline) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create HUD pipeline\n");
+            vkDestroyPipelineLayout(r->device, r->hud_pipeline_layout, NULL);
+            vkDestroyShaderModule(r->device, vert_mod, NULL);
+            vkDestroyShaderModule(r->device, frag_mod, NULL);
+            return false;
+        }
+
+        vkDestroyShaderModule(r->device, vert_mod, NULL);
+        vkDestroyShaderModule(r->device, frag_mod, NULL);
+    }
+
+    /* HUD vertex/index buffers — host-visible, persistently mapped, one per frame-in-flight */
+    for (int fi = 0; fi < MAX_FRAMES_IN_FLIGHT; fi++) {
+        VkBufferCreateInfo vb_ci = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size  = HUD_MAX_VERTS * sizeof(HudVertex),
+            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        VmaAllocationCreateInfo vb_alloc_ci = {
+            .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                     VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO,
+        };
+        VmaAllocationInfo vb_info;
+        if (vmaCreateBuffer(r->allocator, &vb_ci, &vb_alloc_ci,
+                            &r->hud_vertex_buffer[fi], &r->hud_vertex_alloc[fi], &vb_info) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create HUD vertex buffer\n");
+            return false;
+        }
+        r->hud_vb_mapped[fi] = vb_info.pMappedData;
+
+        VkBufferCreateInfo ib_ci = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size  = HUD_MAX_INDICES * sizeof(uint32_t),
+            .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        VmaAllocationInfo ib_info;
+        if (vmaCreateBuffer(r->allocator, &ib_ci, &vb_alloc_ci,
+                            &r->hud_index_buffer[fi], &r->hud_index_alloc[fi], &ib_info) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create HUD index buffer\n");
+            return false;
+        }
+        r->hud_ib_mapped[fi] = ib_info.pMappedData;
     }
 
     /* --- Sync objects (cmd pool, cmd buffers, semaphores, fences) --- */
@@ -799,6 +1027,16 @@ static void recreate_swapchain(Renderer* r)
     vkDestroySwapchainKHR(r->device, old.swapchain, NULL);
 
     r->swapchain = new_sc;
+
+    /* Rebuild HUD framebuffers against new image views */
+    if (r->hud_framebuffers) {
+        for (uint32_t i = 0; i < old.image_count; i++)
+            vkDestroyFramebuffer(r->device, r->hud_framebuffers[i], NULL);
+        free(r->hud_framebuffers);
+        r->hud_framebuffers = NULL;
+    }
+    if (!create_hud_framebuffers(r))
+        fprintf(stderr, "Failed to recreate HUD framebuffers\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -808,7 +1046,8 @@ static void recreate_swapchain(Renderer* r)
 void renderer_draw_frame(Renderer* r,
                          ChunkMesh* meshes, uint32_t mesh_count,
                          const PlayerRenderState* players, uint32_t player_count,
-                         mat4 view, mat4 proj, vec3 sun_dir)
+                         mat4 view, mat4 proj, vec3 sun_dir,
+                         const HUD* hud, bool dump_frame, const char* dump_path)
 {
     uint32_t fi = r->current_frame;
 
@@ -859,6 +1098,21 @@ void renderer_draw_frame(Renderer* r,
     };
     vkBeginCommandBuffer(cmd, &begin_info);
 
+    /* Dynamic viewport and scissor — hoisted so HUD pass can reuse them */
+    VkViewport viewport = {
+        .x        = 0.0f,
+        .y        = 0.0f,
+        .width    = (float)r->swapchain.extent.width,
+        .height   = (float)r->swapchain.extent.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+
+    VkRect2D scissor = {
+        .offset = { 0, 0 },
+        .extent = r->swapchain.extent,
+    };
+
     VkClearValue clear_values[2] = {
         { .color = { .float32 = { 0.53f, 0.81f, 0.92f, 1.0f } } },
         { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
@@ -878,22 +1132,7 @@ void renderer_draw_frame(Renderer* r,
 
     vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r->pipeline);
-
-    /* Dynamic viewport and scissor */
-    VkViewport viewport = {
-        .x        = 0.0f,
-        .y        = 0.0f,
-        .width    = (float)r->swapchain.extent.width,
-        .height   = (float)r->swapchain.extent.height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f,
-    };
     vkCmdSetViewport(cmd, 0, 1, &viewport);
-
-    VkRect2D scissor = {
-        .offset = { 0, 0 },
-        .extent = r->swapchain.extent,
-    };
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     /* Bind descriptor set */
@@ -948,8 +1187,42 @@ void renderer_draw_frame(Renderer* r,
         player_model_draw(r, cmd, &r->player_model, players, player_count);
     }
 
-    /* 7. End render pass and command buffer */
+    /* 7. End render pass */
     vkCmdEndRenderPass(cmd);
+
+    /* HUD renderpass */
+    if (hud) {
+        HudVertex hud_verts[HUD_MAX_VERTS];
+        uint32_t  hud_idx[HUD_MAX_INDICES];
+        float sw = (float)r->swapchain.extent.width;
+        float sh = (float)r->swapchain.extent.height;
+        uint32_t vc = hud_build(hud, sw, sh, hud_verts, hud_idx);
+        uint32_t ic = vc / 4 * 6;   /* 4 verts → 6 indices per quad */
+
+        memcpy(r->hud_vb_mapped[fi], hud_verts, vc * sizeof(HudVertex));
+        memcpy(r->hud_ib_mapped[fi], hud_idx,   ic * sizeof(uint32_t));
+
+        VkRenderPassBeginInfo hud_rp = {
+            .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass  = r->hud_render_pass,
+            .framebuffer = r->hud_framebuffers[image_index],
+            .renderArea  = { .offset = {0,0}, .extent = r->swapchain.extent },
+            .clearValueCount = 0,
+        };
+        vkCmdBeginRenderPass(cmd, &hud_rp, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r->hud_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        if (vc > 0) {
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &r->hud_vertex_buffer[fi], &offset);
+            vkCmdBindIndexBuffer(cmd, r->hud_index_buffer[fi], 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, ic, 1, 0, 0, 0);
+        }
+        vkCmdEndRenderPass(cmd);
+    }
+
     vkEndCommandBuffer(cmd);
 
     /* 8. Submit */
@@ -975,6 +1248,14 @@ void renderer_draw_frame(Renderer* r,
     {
         fprintf(stderr, "Failed to submit draw command buffer\n");
         return;
+    }
+
+    /* Handle frame dump (after submit: image is in PRESENT_SRC_KHR; before present) */
+    if (dump_frame && dump_path && dump_path[0] != '\0') {
+        if (renderer_dump_frame(r, dump_path))
+            agent_emit_frame_saved(dump_path);
+        else
+            agent_emit_error("frame capture failed");
     }
 
     /* 9. Present */
@@ -1175,6 +1456,28 @@ void renderer_cleanup(Renderer* r)
     /* Command pool */
     if (r->command_pool)
         vkDestroyCommandPool(r->device, r->command_pool, NULL);
+
+    /* HUD pipeline and buffers */
+    if (r->hud_pipeline)
+        vkDestroyPipeline(r->device, r->hud_pipeline, NULL);
+    if (r->hud_pipeline_layout)
+        vkDestroyPipelineLayout(r->device, r->hud_pipeline_layout, NULL);
+    for (int fi = 0; fi < MAX_FRAMES_IN_FLIGHT; fi++) {
+        if (r->hud_vertex_buffer[fi])
+            vmaDestroyBuffer(r->allocator, r->hud_vertex_buffer[fi], r->hud_vertex_alloc[fi]);
+        if (r->hud_index_buffer[fi])
+            vmaDestroyBuffer(r->allocator, r->hud_index_buffer[fi], r->hud_index_alloc[fi]);
+    }
+
+    /* HUD renderpass and framebuffers */
+    if (r->hud_framebuffers) {
+        for (uint32_t i = 0; i < r->swapchain.image_count; i++)
+            vkDestroyFramebuffer(r->device, r->hud_framebuffers[i], NULL);
+        free(r->hud_framebuffers);
+        r->hud_framebuffers = NULL;
+    }
+    if (r->hud_render_pass)
+        vkDestroyRenderPass(r->device, r->hud_render_pass, NULL);
 
     /* Render pass */
     if (r->render_pass)

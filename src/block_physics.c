@@ -197,9 +197,17 @@ static void gravity_tick(BlockPhysics* bp, World* world, vec3 player_pos)
     PosSet next;
     posset_init(&next);
 
+    /* Track positions that received a block this tick — skip if revisited */
+    PosSet moved;
+    posset_init(&moved);
+
     int idx = 0, x, y, z;
     while (posset_iter_next(&bp->gravity_active, &idx, &x, &y, &z)) {
         idx++;
+
+        /* Skip positions that received a block earlier in this same tick */
+        if (posset_contains(&moved, x, y, z))
+            continue;
 
         /* Radius check (XZ plane only) */
         float fdx = (float)x - player_pos[0];
@@ -232,12 +240,16 @@ static void gravity_tick(BlockPhysics* bp, World* world, vec3 player_pos)
             continue;
         }
 
+        /* Record destination as moved-into this tick */
+        posset_insert(&moved, x, y - 1, z);
+
         /* New position may still be unsupported */
         posset_insert(&next, x, y - 1, z);
         /* Slot above is now AIR — block above might start falling */
         posset_insert(&next, x, y + 1, z);
     }
 
+    posset_destroy(&moved);
     posset_destroy(&bp->gravity_active);
     bp->gravity_active = next;
 }
@@ -277,9 +289,17 @@ static void water_tick(BlockPhysics* bp, World* world, vec3 player_pos)
     PosSet next;
     posset_init(&next);
 
+    /* Track positions that received water this tick — skip if revisited */
+    PosSet moved;
+    posset_init(&moved);
+
     int idx = 0, x, y, z;
     while (posset_iter_next(&bp->water_active, &idx, &x, &y, &z)) {
         idx++;
+
+        /* Skip positions that received water earlier in this same tick */
+        if (posset_contains(&moved, x, y, z))
+            continue;
 
         /* Radius check (XZ plane) */
         float fdx = (float)x - player_pos[0];
@@ -325,17 +345,22 @@ static void water_tick(BlockPhysics* bp, World* world, vec3 player_pos)
                 world_get_meta(world, x, y - 1, z) < spread_down &&
                 world_get_meta(world, x, y - 1, z) != WATER_SOURCE_LEVEL)) {
                 water_spread_to(&next, world, x, y - 1, z, spread_down);
+                /* Mark destination to prevent re-processing in same tick */
+                posset_insert(&moved, x, y - 1, z);
             }
         }
 
         /* Horizontal spread (loses 1 level per step) */
         for (int d = 0; d < 4; d++) {
-            water_spread_to(&next, world,
-                            x + W_HX[d], y, z + W_HZ[d],
-                            spread_side);
+            int sx = x + W_HX[d], sz = z + W_HZ[d];
+            water_spread_to(&next, world, sx, y, sz, spread_side);
+            /* Mark destination to prevent re-processing in same tick */
+            if (spread_side > 0)
+                posset_insert(&moved, sx, y, sz);
         }
     }
 
+    posset_destroy(&moved);
     posset_destroy(&bp->water_active);
     bp->water_active = next;
 }

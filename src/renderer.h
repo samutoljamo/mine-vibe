@@ -11,6 +11,7 @@
 #include "swapchain.h"
 #include "vertex.h"
 #include "player_model.h"
+#include "hud.h"
 
 #define MAX_FRAMES_IN_FLIGHT 2
 
@@ -42,6 +43,18 @@ typedef struct Renderer {
     /* Pipeline */
     VkPipelineLayout            pipeline_layout;
     VkPipeline                  pipeline;
+
+    /* HUD rendering */
+    VkRenderPass      hud_render_pass;
+    VkPipeline        hud_pipeline;
+    VkPipelineLayout  hud_pipeline_layout;
+    VkFramebuffer*    hud_framebuffers;   /* one per swapchain image, color-only */
+    VkBuffer          hud_vertex_buffer[MAX_FRAMES_IN_FLIGHT];
+    VmaAllocation     hud_vertex_alloc[MAX_FRAMES_IN_FLIGHT];
+    VkBuffer          hud_index_buffer[MAX_FRAMES_IN_FLIGHT];
+    VmaAllocation     hud_index_alloc[MAX_FRAMES_IN_FLIGHT];
+    void*             hud_vb_mapped[MAX_FRAMES_IN_FLIGHT];
+    void*             hud_ib_mapped[MAX_FRAMES_IN_FLIGHT];
 
     /* Descriptors */
     VkDescriptorSetLayout       descriptor_set_layout;
@@ -95,7 +108,8 @@ bool renderer_init(Renderer* r, GLFWwindow* window);
 void renderer_draw_frame(Renderer* r,
                          ChunkMesh* meshes, uint32_t mesh_count,
                          const PlayerRenderState* players, uint32_t player_count,
-                         mat4 view, mat4 proj, vec3 sun_dir);
+                         mat4 view, mat4 proj, vec3 sun_dir,
+                         const HUD* hud, bool dump_frame, const char* dump_path);
 void renderer_cleanup(Renderer* r);
 bool renderer_dump_frame(Renderer* r, const char *path);
 

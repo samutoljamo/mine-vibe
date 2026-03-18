@@ -85,6 +85,8 @@ compile_shader(${SHADER_DIR}/block.vert)
 compile_shader(${SHADER_DIR}/block.frag)
 compile_shader(${SHADER_DIR}/player.vert)
 compile_shader(${SHADER_DIR}/player.frag)
+compile_shader(${SHADER_DIR}/hud.vert)
+compile_shader(${SHADER_DIR}/hud.frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 
 # ---- Executable ----
@@ -106,6 +108,7 @@ add_executable(minecraft
     src/player.c
     src/physics.c
     src/block_physics.c
+    src/hud.c
     src/agent.c
     src/player_model.c
     src/vma_impl.cpp
@@ -153,6 +156,11 @@ target_include_directories(test_block_physics PRIVATE
 )
 target_link_libraries(test_block_physics PRIVATE cglm m)
 add_test(NAME block_physics COMMAND test_block_physics)
+
+add_executable(test_hud tests/test_hud.c src/hud.c src/block.c)
+target_include_directories(test_hud PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_hud PRIVATE m)
+add_test(NAME hud COMMAND test_hud)
 
 # Agent JSON unit tests (no Vulkan/GLFW required)
 add_executable(test_agent tests/test_agent_json.c src/agent.c)

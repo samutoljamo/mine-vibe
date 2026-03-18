@@ -231,6 +231,17 @@ bool agent_parse_command(const char *line, AgentCommand *out)
         out->type = CMD_QUIT;
         return true;
     }
+    if (strcmp(cmd_str, "select_slot") == 0) {
+        out->type = CMD_SELECT_SLOT;
+        out->select_slot.slot = 0;
+        const char *sp = strstr(line, "\"slot\"");
+        if (sp) sscanf(sp, "\"slot\":%d", &out->select_slot.slot);
+        /* Clamp to valid range */
+        if (out->select_slot.slot < 0) out->select_slot.slot = 0;
+        if (out->select_slot.slot >= HUD_SLOT_COUNT)
+            out->select_slot.slot = HUD_SLOT_COUNT - 1;
+        return true;
+    }
     return false;
 }
 
@@ -243,11 +254,16 @@ void agent_format_snapshot(const AgentSnapshot *snap, char *buf, size_t buf_size
         "\"yaw\":%.3f,\"pitch\":%.3f,"
         "\"mode\":\"%s\","
         "\"on_ground\":%d,"
-        "\"tick\":%" PRIu64 "}\n",
+        "\"tick\":%" PRIu64 ","
+        "\"selected_slot\":%d,"
+        "\"hotbar\":[%d,%d,%d,%d,%d,%d]}\n",
         snap->pos[0], snap->pos[1], snap->pos[2],
         snap->vel[0], snap->vel[1], snap->vel[2],
         snap->yaw, snap->pitch,
         snap->mode == 0 ? "free" : "walk",
         snap->on_ground,
-        snap->tick);
+        snap->tick,
+        snap->selected_slot,
+        snap->hotbar[0], snap->hotbar[1], snap->hotbar[2],
+        snap->hotbar[3], snap->hotbar[4], snap->hotbar[5]);
 }
