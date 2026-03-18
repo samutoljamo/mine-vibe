@@ -103,6 +103,7 @@ add_executable(minecraft
     src/world.c
     src/player.c
     src/physics.c
+    src/agent.c
     src/vma_impl.cpp
 )
 
@@ -146,3 +147,11 @@ target_include_directories(test_block_physics PRIVATE
 )
 target_link_libraries(test_block_physics PRIVATE cglm m)
 add_test(NAME block_physics COMMAND test_block_physics)
+
+# Agent JSON unit tests (no Vulkan/GLFW required)
+add_executable(test_agent tests/test_agent_json.c src/agent.c)
+target_include_directories(test_agent PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_agent PRIVATE Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_agent PRIVATE m)
+endif()
