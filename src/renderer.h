@@ -10,6 +10,7 @@
 
 #include "swapchain.h"
 #include "vertex.h"
+#include "player_model.h"
 
 #define MAX_FRAMES_IN_FLIGHT 2
 
@@ -69,13 +70,31 @@ typedef struct Renderer {
     VkImageView                 atlas_view;
     VkSampler                   atlas_sampler;
 
+    /* Player skin texture */
+    VkImage                     player_skin_image;
+    VmaAllocation               player_skin_alloc;
+    VkImageView                 player_skin_view;
+    VkSampler                   player_skin_sampler;
+
+    /* Player pipeline */
+    VkPipelineLayout            player_pipeline_layout;
+    VkPipeline                  player_pipeline;
+
+    /* Player descriptor sets (per frame) */
+    VkDescriptorSet             player_descriptor_sets[MAX_FRAMES_IN_FLIGHT];
+
+    /* Player model (static mesh) */
+    PlayerModel                 player_model;
+
     /* Window */
     GLFWwindow*                 window;
     bool                        framebuffer_resized;
 } Renderer;
 
 bool renderer_init(Renderer* r, GLFWwindow* window);
-void renderer_draw_frame(Renderer* r, ChunkMesh* meshes, uint32_t mesh_count,
+void renderer_draw_frame(Renderer* r,
+                         ChunkMesh* meshes, uint32_t mesh_count,
+                         const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir);
 void renderer_cleanup(Renderer* r);
 bool renderer_dump_frame(Renderer* r, const char *path);

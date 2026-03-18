@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "pipeline.h"
+#include "player_model.h"
 #include "texture.h"
 #include "frustum.h"
 #include "chunk_mesh.h"
@@ -621,17 +622,17 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
         VkDescriptorPoolSize pool_sizes[] = {
             {
                 .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+                .descriptorCount = MAX_FRAMES_IN_FLIGHT * 2,
             },
             {
                 .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+                .descriptorCount = MAX_FRAMES_IN_FLIGHT * 2,
             },
         };
 
         VkDescriptorPoolCreateInfo pool_ci = {
             .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets       = MAX_FRAMES_IN_FLIGHT,
+            .maxSets       = MAX_FRAMES_IN_FLIGHT * 2,
             .poolSizeCount = 2,
             .pPoolSizes    = pool_sizes,
         };
@@ -688,6 +689,60 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
 
     /* --- Write texture descriptors (binding 1) --- */
     texture_write_descriptors(r);
+
+    /* --- Player skin texture --- */
+    if (!texture_create_player_skin(r))
+        return false;
+
+    /* --- Player descriptor sets --- */
+    {
+        VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            layouts[i] = r->descriptor_set_layout;
+
+        VkDescriptorSetAllocateInfo alloc_info = {
+            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool     = r->descriptor_pool,
+            .descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
+            .pSetLayouts        = layouts,
+        };
+        if (vkAllocateDescriptorSets(r->device, &alloc_info,
+                                     r->player_descriptor_sets) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to allocate player descriptor sets\n");
+            return false;
+        }
+    }
+
+    /* Write UBO binding 0 into player sets */
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkDescriptorBufferInfo buf_info = {
+            .buffer = r->ubo_buffers[i], .offset = 0, .range = sizeof(GlobalUBO),
+        };
+        VkWriteDescriptorSet write = {
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet          = r->player_descriptor_sets[i],
+            .dstBinding      = 0,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo     = &buf_info,
+        };
+        vkUpdateDescriptorSets(r->device, 1, &write, 0, NULL);
+    }
+
+    /* Write skin sampler binding 1 into player sets */
+    texture_write_player_skin_descriptors(r, r->player_descriptor_sets);
+
+    /* --- Player pipeline --- */
+    if (!player_pipeline_create(r->device, r->render_pass, r->descriptor_set_layout,
+                                g_player_vert_spv, g_player_vert_spv_size,
+                                g_player_frag_spv, g_player_frag_spv_size,
+                                &r->player_pipeline_layout, &r->player_pipeline))
+        return false;
+
+    /* --- Player model (static mesh) --- */
+    if (!player_model_init(r, &r->player_model))
+        return false;
 
     /* --- Framebuffer resize callback --- */
     glfwSetWindowUserPointer(window, r);
@@ -750,7 +805,9 @@ static void recreate_swapchain(Renderer* r)
 /*  Public API: draw frame                                            */
 /* ------------------------------------------------------------------ */
 
-void renderer_draw_frame(Renderer* r, ChunkMesh* meshes, uint32_t mesh_count,
+void renderer_draw_frame(Renderer* r,
+                         ChunkMesh* meshes, uint32_t mesh_count,
+                         const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir)
 {
     uint32_t fi = r->current_frame;
@@ -880,6 +937,15 @@ void renderer_draw_frame(Renderer* r, ChunkMesh* meshes, uint32_t mesh_count,
             /* Draw */
             vkCmdDrawIndexed(cmd, m->index_count, 1, 0, 0, 0);
         }
+    }
+
+    /* Draw remote players */
+    if (player_count > 0) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r->player_pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                r->player_pipeline_layout, 0, 1,
+                                &r->player_descriptor_sets[fi], 0, NULL);
+        player_model_draw(r, cmd, &r->player_model, players, player_count);
     }
 
     /* 7. End render pass and command buffer */
@@ -1066,6 +1132,23 @@ void renderer_cleanup(Renderer* r)
         vkDestroyImageView(r->device, r->atlas_view, NULL);
     if (r->atlas_image)
         vmaDestroyImage(r->allocator, r->atlas_image, r->atlas_alloc);
+
+    /* Player model */
+    player_model_destroy(r, &r->player_model);
+
+    /* Player pipeline */
+    if (r->player_pipeline)
+        vkDestroyPipeline(r->device, r->player_pipeline, NULL);
+    if (r->player_pipeline_layout)
+        vkDestroyPipelineLayout(r->device, r->player_pipeline_layout, NULL);
+
+    /* Player skin */
+    if (r->player_skin_sampler)
+        vkDestroySampler(r->device, r->player_skin_sampler, NULL);
+    if (r->player_skin_view)
+        vkDestroyImageView(r->device, r->player_skin_view, NULL);
+    if (r->player_skin_image)
+        vmaDestroyImage(r->allocator, r->player_skin_image, r->player_skin_alloc);
 
     /* Descriptors */
     if (r->descriptor_pool)
