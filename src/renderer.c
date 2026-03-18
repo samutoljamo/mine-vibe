@@ -788,8 +788,8 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
         vkDestroyShaderModule(r->device, frag_mod, NULL);
     }
 
-    /* HUD vertex buffer — host-visible, persistently mapped */
-    {
+    /* HUD vertex/index buffers — host-visible, persistently mapped, one per frame-in-flight */
+    for (int fi = 0; fi < MAX_FRAMES_IN_FLIGHT; fi++) {
         VkBufferCreateInfo vb_ci = {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size  = HUD_MAX_VERTS * sizeof(HudVertex),
@@ -803,11 +803,11 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
         };
         VmaAllocationInfo vb_info;
         if (vmaCreateBuffer(r->allocator, &vb_ci, &vb_alloc_ci,
-                            &r->hud_vertex_buffer, &r->hud_vertex_alloc, &vb_info) != VK_SUCCESS) {
+                            &r->hud_vertex_buffer[fi], &r->hud_vertex_alloc[fi], &vb_info) != VK_SUCCESS) {
             fprintf(stderr, "Failed to create HUD vertex buffer\n");
             return false;
         }
-        r->hud_vb_mapped = vb_info.pMappedData;
+        r->hud_vb_mapped[fi] = vb_info.pMappedData;
 
         VkBufferCreateInfo ib_ci = {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -817,11 +817,11 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
         };
         VmaAllocationInfo ib_info;
         if (vmaCreateBuffer(r->allocator, &ib_ci, &vb_alloc_ci,
-                            &r->hud_index_buffer, &r->hud_index_alloc, &ib_info) != VK_SUCCESS) {
+                            &r->hud_index_buffer[fi], &r->hud_index_alloc[fi], &ib_info) != VK_SUCCESS) {
             fprintf(stderr, "Failed to create HUD index buffer\n");
             return false;
         }
-        r->hud_ib_mapped = ib_info.pMappedData;
+        r->hud_ib_mapped[fi] = ib_info.pMappedData;
     }
 
     /* --- Sync objects (cmd pool, cmd buffers, semaphores, fences) --- */
@@ -1132,8 +1132,8 @@ void renderer_draw_frame(Renderer* r, ChunkMesh* meshes, uint32_t mesh_count,
         uint32_t vc = hud_build(hud, sw, sh, hud_verts, hud_idx);
         uint32_t ic = vc / 4 * 6;   /* 4 verts → 6 indices per quad */
 
-        memcpy(r->hud_vb_mapped, hud_verts, vc * sizeof(HudVertex));
-        memcpy(r->hud_ib_mapped, hud_idx,   ic * sizeof(uint32_t));
+        memcpy(r->hud_vb_mapped[fi], hud_verts, vc * sizeof(HudVertex));
+        memcpy(r->hud_ib_mapped[fi], hud_idx,   ic * sizeof(uint32_t));
 
         VkRenderPassBeginInfo hud_rp = {
             .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -1149,8 +1149,8 @@ void renderer_draw_frame(Renderer* r, ChunkMesh* meshes, uint32_t mesh_count,
 
         if (vc > 0) {
             VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &r->hud_vertex_buffer, &offset);
-            vkCmdBindIndexBuffer(cmd, r->hud_index_buffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &r->hud_vertex_buffer[fi], &offset);
+            vkCmdBindIndexBuffer(cmd, r->hud_index_buffer[fi], 0, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(cmd, ic, 1, 0, 0, 0);
         }
         vkCmdEndRenderPass(cmd);
@@ -1378,10 +1378,12 @@ void renderer_cleanup(Renderer* r)
         vkDestroyPipeline(r->device, r->hud_pipeline, NULL);
     if (r->hud_pipeline_layout)
         vkDestroyPipelineLayout(r->device, r->hud_pipeline_layout, NULL);
-    if (r->hud_vertex_buffer)
-        vmaDestroyBuffer(r->allocator, r->hud_vertex_buffer, r->hud_vertex_alloc);
-    if (r->hud_index_buffer)
-        vmaDestroyBuffer(r->allocator, r->hud_index_buffer, r->hud_index_alloc);
+    for (int fi = 0; fi < MAX_FRAMES_IN_FLIGHT; fi++) {
+        if (r->hud_vertex_buffer[fi])
+            vmaDestroyBuffer(r->allocator, r->hud_vertex_buffer[fi], r->hud_vertex_alloc[fi]);
+        if (r->hud_index_buffer[fi])
+            vmaDestroyBuffer(r->allocator, r->hud_index_buffer[fi], r->hud_index_alloc[fi]);
+    }
 
     /* HUD renderpass and framebuffers */
     if (r->hud_framebuffers) {
