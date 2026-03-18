@@ -6,17 +6,147 @@
 #include <pthread.h>
 #include <inttypes.h>
 
-static bool g_active = false;
+/* ------------------------------------------------------------------ */
+/*  Ring buffer (capacity must be power of two)                       */
+/* ------------------------------------------------------------------ */
+#define CMD_RING_CAP 64
 
-void  agent_init(void)    { g_active = true; }
-void  agent_destroy(void) { g_active = false; }
-bool  agent_is_active(void) { return g_active; }
-bool  agent_pop_command(AgentCommand *out) { (void)out; return false; }
-void  agent_emit_snapshot(const AgentSnapshot *s) { (void)s; }
-void  agent_notify_chunk_loaded(int cx, int cz) { (void)cx; (void)cz; }
-void  agent_emit_ready(void) {}
-void  agent_emit_frame_saved(const char *p) { (void)p; }
-void  agent_emit_error(const char *m) { (void)m; }
+typedef struct {
+    AgentCommand    cmds[CMD_RING_CAP];
+    int             head;   /* main thread reads here */
+    int             tail;   /* I/O thread writes here */
+    pthread_mutex_t mtx;
+} CmdRing;
+
+static bool            g_active = false;
+static CmdRing         g_ring;
+static pthread_t       g_io_thread;
+static pthread_mutex_t g_stdout_mtx;
+
+/* ------------------------------------------------------------------ */
+/*  Internal: stdout helper                                           */
+/* ------------------------------------------------------------------ */
+static void emit_raw(const char *s)
+{
+    pthread_mutex_lock(&g_stdout_mtx);
+    fputs(s, stdout);
+    fflush(stdout);
+    pthread_mutex_unlock(&g_stdout_mtx);
+}
+
+/* ------------------------------------------------------------------ */
+/*  I/O thread: reads stdin, pushes commands                          */
+/* ------------------------------------------------------------------ */
+static void *io_thread_func(void *arg)
+{
+    (void)arg;
+    char line[1024];
+    while (fgets(line, sizeof(line), stdin)) {
+        /* Strip trailing newline */
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') line[--len] = '\0';
+        if (len == 0) continue;
+
+        AgentCommand cmd;
+        if (!agent_parse_command(line, &cmd)) {
+            char err[128];
+            snprintf(err, sizeof(err),
+                "{\"event\":\"error\",\"msg\":\"unknown command\"}\n");
+            emit_raw(err);
+            continue;
+        }
+
+        pthread_mutex_lock(&g_ring.mtx);
+        int next_tail = (g_ring.tail + 1) % CMD_RING_CAP;
+        if (next_tail == g_ring.head) {
+            /* Queue full: tail drop */
+            pthread_mutex_unlock(&g_ring.mtx);
+            emit_raw("{\"event\":\"error\",\"msg\":\"command queue full, command dropped\"}\n");
+            continue;
+        }
+        g_ring.cmds[g_ring.tail] = cmd;
+        g_ring.tail = next_tail;
+        pthread_mutex_unlock(&g_ring.mtx);
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public API                                                         */
+/* ------------------------------------------------------------------ */
+void agent_init(void)
+{
+    g_active      = true;
+    g_ring.head   = 0;
+    g_ring.tail   = 0;
+    pthread_mutex_init(&g_ring.mtx, NULL);
+    pthread_mutex_init(&g_stdout_mtx, NULL);
+    pthread_create(&g_io_thread, NULL, io_thread_func, NULL);
+}
+
+void agent_destroy(void)
+{
+    if (!g_active) return;
+    g_active = false;
+    /* I/O thread exits on its own when stdin closes */
+    pthread_join(g_io_thread, NULL);
+    pthread_mutex_destroy(&g_ring.mtx);
+    pthread_mutex_destroy(&g_stdout_mtx);
+}
+
+bool agent_is_active(void) { return g_active; }
+
+bool agent_pop_command(AgentCommand *out)
+{
+    pthread_mutex_lock(&g_ring.mtx);
+    if (g_ring.head == g_ring.tail) {
+        pthread_mutex_unlock(&g_ring.mtx);
+        return false;
+    }
+    *out = g_ring.cmds[g_ring.head];
+    g_ring.head = (g_ring.head + 1) % CMD_RING_CAP;
+    pthread_mutex_unlock(&g_ring.mtx);
+    return true;
+}
+
+void agent_emit_snapshot(const AgentSnapshot *snap)
+{
+    char buf[512];
+    agent_format_snapshot(snap, buf, sizeof(buf));
+    emit_raw(buf);
+}
+
+void agent_notify_chunk_loaded(int cx, int cz)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+        "{\"event\":\"chunk_loaded\",\"cx\":%d,\"cz\":%d}\n", cx, cz);
+    emit_raw(buf);
+}
+
+void agent_emit_ready(void)
+{
+    emit_raw("{\"event\":\"ready\"}\n");
+}
+
+void agent_emit_frame_saved(const char *path)
+{
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+        "{\"event\":\"frame_saved\",\"path\":\"%s\"}\n", path);
+    emit_raw(buf);
+}
+
+void agent_emit_error(const char *msg)
+{
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"event\":\"error\",\"msg\":\"%s\"}\n", msg);
+    emit_raw(buf);
+}
+
+/* ---- Pure functions from Task 2 — kept exactly as implemented ---- */
+
 bool agent_parse_command(const char *line, AgentCommand *out)
 {
     if (!line || !out) return false;
