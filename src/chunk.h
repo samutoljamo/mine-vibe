@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "block.h"
 #include "chunk_mesh.h"
@@ -48,6 +49,10 @@ static inline void chunk_set_block(Chunk* c, int x, int y, int z, BlockID id) {
 static inline void chunk_ensure_meta(Chunk* c) {
     if (!c->meta) {
         c->meta = calloc(CHUNK_BLOCKS, 1);
+        if (!c->meta) {
+            fprintf(stderr, "chunk_ensure_meta: out of memory\n");
+            abort();
+        }
     }
 }
 
