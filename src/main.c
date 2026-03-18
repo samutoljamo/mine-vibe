@@ -11,10 +11,19 @@
 #include "chunk_mesh.h"
 #include "worldgen.h"
 #include "agent.h"
+#include "hud.h"
 
 #define WORLD_SEED 420
 
 static Player g_player;
+static HUD    g_hud;
+
+static void scroll_callback(GLFWwindow* w, double xoff, double yoff) {
+    (void)w; (void)xoff;
+    int dir = (yoff > 0) ? -1 : 1;
+    g_hud.selected_slot =
+        (g_hud.selected_slot + dir + HUD_SLOT_COUNT) % HUD_SLOT_COUNT;
+}
 
 static void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
@@ -54,6 +63,9 @@ static bool apply_agent_command(const AgentCommand *cmd, Player *player,
     case CMD_SPRINT:
         player->agent_sprint = (cmd->sprint.active != 0);
         break;
+    case CMD_SELECT_SLOT:
+        g_hud.selected_slot = cmd->select_slot.slot;
+        break;
     case CMD_MODE:
         player->mode = (cmd->mode.mode == 0) ? MODE_FREE : MODE_WALKING;
         glm_vec3_zero(player->velocity);
@@ -89,6 +101,7 @@ int main(int argc, char *argv[])
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         glfwSetCursorPosCallback(window, mouse_callback);
         glfwSetKeyCallback(window, key_callback);
+        glfwSetScrollCallback(window, scroll_callback);
     }
 
     Renderer renderer;
@@ -106,6 +119,7 @@ int main(int argc, char *argv[])
 
     BlockPhysics physics;
     block_physics_init(&physics);
+    hud_init(&g_hud);
     if (agent_mode) agent_init();
 
     /* Loading threshold: 30% of circular render area */
@@ -142,7 +156,7 @@ int main(int argc, char *argv[])
             camera_get_proj(&g_player.camera, aspect, proj);
 
             renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir,
-                                NULL, false, NULL);
+                                &g_hud, false, NULL);
 
             uint32_t pct = (uint32_t)(100.0f * (float)mesh_count
                                               / (float)load_threshold);
@@ -196,7 +210,7 @@ int main(int argc, char *argv[])
         camera_get_proj(&g_player.camera, aspect, proj);
 
         renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir,
-                            NULL, false, NULL);
+                            &g_hud, dump_frame, dump_path);
 
         if (agent_mode) {
             float yaw_deg   = g_player.camera.yaw   * (180.0f / 3.14159265f);
@@ -210,6 +224,9 @@ int main(int argc, char *argv[])
                 .mode      = (g_player.mode == MODE_FREE) ? 0 : 1,
                 .tick      = tick,
             };
+            snap.selected_slot = g_hud.selected_slot;
+            for (int i = 0; i < HUD_SLOT_COUNT; i++)
+                snap.hotbar[i] = (int)g_hud.slot_blocks[i];
             agent_emit_snapshot(&snap);
             tick++;
         }
