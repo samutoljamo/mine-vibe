@@ -9,7 +9,7 @@
 #include "chunk_mesh.h"
 #include "worldgen.h"
 
-#define WORLD_SEED 42
+#define WORLD_SEED 420
 
 static Player g_player;
 
