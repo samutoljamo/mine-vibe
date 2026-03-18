@@ -24,8 +24,12 @@ bool agent_parse_command(const char *line, AgentCommand *out)
     /* Extract "cmd" value */
     const char *cmd_pos = strstr(line, "\"cmd\"");
     if (!cmd_pos) return false;
+    const char *colon = strchr(cmd_pos + 5, ':');
+    if (!colon) return false;
+    colon++;
+    while (*colon == ' ' || *colon == '\t') colon++;
     char cmd_str[32] = {0};
-    if (sscanf(cmd_pos, "\"cmd\":\"%31[^\"]\"", cmd_str) != 1) return false;
+    if (*colon != '"' || sscanf(colon, "\"%31[^\"]\"", cmd_str) != 1) return false;
 
     if (strcmp(cmd_str, "move") == 0) {
         out->type = CMD_MOVE;
@@ -57,16 +61,21 @@ bool agent_parse_command(const char *line, AgentCommand *out)
     if (strcmp(cmd_str, "sprint") == 0) {
         out->type = CMD_SPRINT;
         out->sprint.active = 0;
+        /* missing "active" field defaults to 0 (stop sprinting) */
         const char *ap = strstr(line, "\"active\"");
         if (ap) sscanf(ap, "\"active\":%d", &out->sprint.active);
         return true;
     }
     if (strcmp(cmd_str, "mode") == 0) {
         out->type = CMD_MODE;
-        char val[8] = {0};
+        char val[16] = {0};
         const char *vp = strstr(line, "\"value\"");
         if (!vp) return false;
-        sscanf(vp, "\"value\":\"%7[^\"]\"", val);
+        const char *colon_val = strchr(vp + 7, ':');
+        if (!colon_val) return false;
+        colon_val++;
+        while (*colon_val == ' ' || *colon_val == '\t') colon_val++;
+        if (*colon_val != '"' || sscanf(colon_val, "\"%15[^\"]\"", val) != 1) return false;
         if      (strcmp(val, "walk") == 0) out->mode.mode = 1;
         else if (strcmp(val, "free") == 0) out->mode.mode = 0;
         else return false;
@@ -81,7 +90,11 @@ bool agent_parse_command(const char *line, AgentCommand *out)
         out->dump_frame.path[0] = '\0';
         const char *pp = strstr(line, "\"path\"");
         if (!pp) return false;
-        sscanf(pp, "\"path\":\"%255[^\"]\"", out->dump_frame.path);
+        const char *colon_path = strchr(pp + 6, ':');
+        if (!colon_path) return false;
+        colon_path++;
+        while (*colon_path == ' ' || *colon_path == '\t') colon_path++;
+        if (*colon_path != '"' || sscanf(colon_path, "\"%255[^\"]\"", out->dump_frame.path) != 1) return false;
         return true;
     }
     if (strcmp(cmd_str, "quit") == 0) {

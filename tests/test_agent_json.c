@@ -95,6 +95,21 @@ static void test_format_snapshot(void) {
     assert(strstr(buf, "\"on_ground\":1")    != NULL);
 }
 
+static void test_parse_with_spaces(void) {
+    AgentCommand cmd;
+    /* Python json.dumps() produces spaces after colons */
+    assert(agent_parse_command("{\"cmd\": \"jump\"}", &cmd));
+    assert(cmd.type == CMD_JUMP);
+
+    assert(agent_parse_command("{\"cmd\": \"move\", \"forward\": 1.0, \"right\": 0.0}", &cmd));
+    assert(cmd.type == CMD_MOVE);
+    assert(fabsf(cmd.move.forward - 1.0f) < 0.001f);
+
+    assert(agent_parse_command("{\"cmd\": \"mode\", \"value\": \"walk\"}", &cmd));
+    assert(cmd.type == CMD_MODE);
+    assert(cmd.mode.mode == 1);
+}
+
 int main(void) {
     test_parse_move();
     test_parse_look();
@@ -107,6 +122,7 @@ int main(void) {
     test_parse_quit();
     test_parse_unknown_returns_false();
     test_format_snapshot();
+    test_parse_with_spaces();
     printf("All agent JSON tests passed.\n");
     return 0;
 }
