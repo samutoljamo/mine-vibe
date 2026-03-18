@@ -168,14 +168,16 @@ static void carve_caves(Chunk* chunk, CaveNoise* cn,
 
 void worldgen_generate(Chunk* chunk, int seed)
 {
-    TerrainNoise terrain;
-    terrain_noise_init(&terrain, seed);
+    /* Cache noise states per worker thread — seed is constant after startup */
+    static _Thread_local TerrainNoise terrain;
+    static _Thread_local CaveNoise cn;
+    static _Thread_local int cached_seed = -1;
 
-    /* Tree placement noise (unchanged) */
-    fnl_state tree_noise = fnlCreateState();
-    tree_noise.noise_type = FNL_NOISE_OPENSIMPLEX2;
-    tree_noise.frequency = 0.5f;
-    tree_noise.seed = seed + 12345;
+    if (cached_seed != seed) {
+        terrain_noise_init(&terrain, seed);
+        cave_noise_init(&cn, seed);
+        cached_seed = seed;
+    }
 
     int base_x = chunk->cx * CHUNK_X;
     int base_z = chunk->cz * CHUNK_Z;
@@ -221,8 +223,6 @@ void worldgen_generate(Chunk* chunk, int seed)
     }
 
     /* Carve caves */
-    CaveNoise cn;
-    cave_noise_init(&cn, seed);
     carve_caves(chunk, &cn, height_map);
 
     /* Place trees: ~2% chance on grass blocks, constrained to [2..13] local X/Z */
@@ -232,13 +232,8 @@ void worldgen_generate(Chunk* chunk, int seed)
             if (h < SEA_LEVEL) continue;
             if (chunk_get_block(chunk, x, h, z) != BLOCK_GRASS) continue;
 
-            float tn = fnlGetNoise2D(&tree_noise,
-                                     (float)(base_x + x),
-                                     (float)(base_z + z));
             int r = hash_pos(base_x + x, base_z + z, seed + 9999);
-            float threshold = (tn + 1.0f) * 0.5f; /* 0..1 */
-            if ((r % 100) >= 2) continue;          /* ~2% base chance */
-            (void)threshold; /* noise used for variety but base chance dominates */
+            if ((r % 100) >= 2) continue; /* ~2% chance */
 
             /* Tree trunk height 4-6 */
             int trunk_h = 4 + (hash_pos(base_x + x, base_z + z, seed + 77) % 3);
@@ -274,7 +269,12 @@ void worldgen_generate(Chunk* chunk, int seed)
 
 int worldgen_get_height(int x, int z, int seed)
 {
-    TerrainNoise terrain;
-    terrain_noise_init(&terrain, seed);
+    static _Thread_local TerrainNoise terrain;
+    static _Thread_local int cached_seed = -1;
+
+    if (cached_seed != seed) {
+        terrain_noise_init(&terrain, seed);
+        cached_seed = seed;
+    }
     return compute_height(&terrain, (float)x, (float)z);
 }
