@@ -56,6 +56,7 @@ typedef struct Renderer {
     VkSemaphore                 render_finished_sems[MAX_FRAMES_IN_FLIGHT];
     VkFence                     in_flight_fences[MAX_FRAMES_IN_FLIGHT];
     uint32_t                    current_frame;
+    uint32_t                    last_image_index;   /* set each frame for dump_frame */
 
     /* UBOs (per frame in flight) */
     VkBuffer                    ubo_buffers[MAX_FRAMES_IN_FLIGHT];
@@ -77,6 +78,7 @@ bool renderer_init(Renderer* r, GLFWwindow* window);
 void renderer_draw_frame(Renderer* r, ChunkMesh* meshes, uint32_t mesh_count,
                          mat4 view, mat4 proj, vec3 sun_dir);
 void renderer_cleanup(Renderer* r);
+bool renderer_dump_frame(Renderer* r, const char *path);
 
 VkCommandBuffer renderer_begin_single_cmd(Renderer* r);
 void            renderer_end_single_cmd(Renderer* r, VkCommandBuffer cmd);
