@@ -585,3 +585,60 @@ BlockID world_get_block(World* world, int x, int y, int z)
 
     return chunk_get_block(chunk, lx, y, lz);
 }
+
+/* Resolves world (x,z) to chunk coords using floor division (matching world_get_block). */
+static void world_to_chunk(int x, int z, int* cx, int* cz, int* lx, int* lz) {
+    *cx = (x < 0) ? (x - 15) / 16 : x / 16;
+    *cz = (z < 0) ? (z - 15) / 16 : z / 16;
+    *lx = ((x % 16) + 16) % 16;
+    *lz = ((z % 16) + 16) % 16;
+}
+
+bool world_set_block(World* world, int x, int y, int z, BlockID id) {
+    if (y < 0 || y >= CHUNK_Y) return false;
+
+    int cx, cz, lx, lz;
+    world_to_chunk(x, z, &cx, &cz, &lx, &lz);
+
+    Chunk* chunk = chunk_map_get(&world->map, cx, cz);
+    if (!chunk) return false;
+
+    int state = atomic_load(&chunk->state);
+    if (state == CHUNK_MESHING) return false; /* deferred — safe write rule */
+    if (state < CHUNK_GENERATED) return false;
+
+    chunk_set_block(chunk, lx, y, lz, id);
+    chunk->needs_remesh = true;
+    return true;
+}
+
+bool world_set_meta(World* world, int x, int y, int z, uint8_t level) {
+    if (y < 0 || y >= CHUNK_Y) return false;
+
+    int cx, cz, lx, lz;
+    world_to_chunk(x, z, &cx, &cz, &lx, &lz);
+
+    Chunk* chunk = chunk_map_get(&world->map, cx, cz);
+    if (!chunk) return false;
+
+    int state = atomic_load(&chunk->state);
+    if (state == CHUNK_MESHING) return false;
+    if (state < CHUNK_GENERATED) return false;
+
+    chunk_set_meta(chunk, lx, y, lz, level);
+    chunk->needs_remesh = true;
+    return true;
+}
+
+uint8_t world_get_meta(World* world, int x, int y, int z) {
+    if (y < 0 || y >= CHUNK_Y) return 0;
+
+    int cx, cz, lx, lz;
+    world_to_chunk(x, z, &cx, &cz, &lx, &lz);
+
+    Chunk* chunk = chunk_map_get(&world->map, cx, cz);
+    if (!chunk) return 0;
+    if (atomic_load(&chunk->state) < CHUNK_GENERATED) return 0;
+
+    return chunk_get_meta(chunk, lx, y, lz);
+}
