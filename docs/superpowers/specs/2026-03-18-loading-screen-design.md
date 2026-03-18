@@ -6,10 +6,10 @@
 
 ## Overview
 
-Before the game loop begins, show a loading state in the window title
-(`"Minecraft | Loading... 45%"`) while the world generates and meshes
-enough nearby chunks. Transition to normal gameplay once 30% of the
-circular render area is ready.
+Before the main game loop begins, show a loading state in the window
+title (`"Minecraft | Loading... 45%"`) while the world generates and
+meshes enough nearby chunks. Transition to normal gameplay once 30% of
+the circular render area has uploaded meshes.
 
 ## Changes
 
@@ -17,7 +17,8 @@ circular render area is ready.
 
 ### Startup
 
-Compute the expected chunk count for the circular render area:
+Compute the expected chunk count for the circular render area and the
+30% threshold:
 
 ```c
 int rd = world_get_render_distance(world);
@@ -27,33 +28,59 @@ for (int dx = -rd; dx <= rd; dx++)
         if (dx*dx + dz*dz <= rd*rd)
             expected_chunks++;
 
-int threshold = (int)(0.30f * expected_chunks);
+int threshold = (int)(0.30f * (float)expected_chunks);
+if (threshold < 1) threshold = 1; /* guard: skip infinite loop on rd=0 */
 ```
 
 ### Loading loop
 
-Run before the main game loop. Each iteration:
+Runs before the main game loop and before `last_time` is initialized.
+Each iteration:
 
-1. `glfwPollEvents()` — keep the window responsive
-2. `player_update(...)` — camera and input still work during load
-3. `world_update(world, player.position)` — generation/meshing progresses
-4. `renderer_draw_frame(..., meshes=NULL, mesh_count=0, ...)` — swapchain
-   stays alive, renders sky-blue clear color
-5. Update window title: `"Minecraft | Loading... <pct>%"`
-6. Exit loop when `world_get_ready_count(world) >= threshold`
+1. `glfwPollEvents()`
+2. `player_update(&g_player, window, world, 0.0f)`
+3. `world_update(world, g_player.position)`
+4. `world_get_meshes(world, &meshes, &mesh_count)` — get current partial mesh list
+5. Compute `view` and `proj` from the player's current camera state (same as the
+   main loop: `camera_get_view`, `camera_get_proj` with swapchain aspect ratio)
+6. `renderer_draw_frame(&renderer, meshes, mesh_count, view, proj, sun_dir)` — renders
+   whatever is loaded so far (sky-blue + any ready chunks)
+7. Update window title: `"Minecraft | Loading... <pct>%"` where
+   `pct = MIN(100, (int)(100.0f * mesh_count / threshold))`
+8. Exit conditions: `mesh_count >= (uint32_t)threshold` OR `glfwWindowShouldClose(window)`
+
+### Timing
+
+`last_time` is initialized **after** the loading loop exits, immediately
+before the main `while` loop. This prevents the first real frame from
+seeing a huge `dt` equal to the full load duration.
+
+```c
+/* loading loop here ... */
+
+double last_time = glfwGetTime(); /* initialized after loading, not before */
+int frame_count = 0;
+double fps_timer = last_time;
+
+while (!glfwWindowShouldClose(window)) { ... }
+```
 
 ### Main game loop
 
-Unchanged. On first frame after the loading loop exits, the FPS counter
-title update takes over.
+Unchanged. On the first frame after loading, `dt` is correct and the
+FPS counter title update takes over within 2 seconds.
 
 ## Progress formula
 
 ```c
-float progress = (float)world_get_ready_count(world) / (float)threshold;
-int pct = (int)(progress * 100.0f);
+uint32_t pct = (uint32_t)(100.0f * (float)mesh_count / (float)threshold);
 if (pct > 100) pct = 100;
+snprintf(title, sizeof(title), "Minecraft | Loading... %u%%", pct);
 ```
+
+`mesh_count` comes from `world_get_meshes` and counts only chunks with
+uploaded GPU buffers — the same set the renderer will draw. This matches
+player perception (progress = visible terrain loaded).
 
 ## Non-goals
 
