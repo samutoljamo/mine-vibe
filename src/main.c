@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdlib.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
@@ -12,6 +13,15 @@
 #include "worldgen.h"
 #include "agent.h"
 #include "hud.h"
+#include "net.h"
+#include "net_thread.h"
+#include "server.h"
+#include "client.h"
+#include "remote_player.h"
+#include "player_model.h"
+#include "platform_thread.h"
+#include <arpa/inet.h>
+#include <time.h>
 
 #define WORLD_SEED 420
 
@@ -88,11 +98,56 @@ static bool apply_agent_command(const AgentCommand *cmd, Player *player,
     return true;
 }
 
+static RemotePlayerSet* g_remote_players = NULL;
+
+static void on_snapshot(const ClientPlayerSnapshot* s, void* user)
+{
+    (void)user;
+    if (g_remote_players)
+        remote_player_push_snapshot(g_remote_players,
+            s->player_id, s->x, s->y, s->z,
+            s->yaw, s->pitch, s->recv_time);
+}
+
+static void on_player_leave(uint8_t pid, void* user)
+{
+    (void)user;
+    if (g_remote_players)
+        remote_player_remove(g_remote_players, pid);
+}
+
+typedef struct { uint16_t port; int max; } ServerArgs;
+static void* server_thread_func(void* arg)
+{
+    ServerArgs* a = (ServerArgs*)arg;
+    server_run(a->port, a->max);
+    free(a);
+    return NULL;
+}
+
 int main(int argc, char *argv[])
 {
-    bool agent_mode = false;
+    bool agent_mode   = false;
+    bool server_mode  = false;
+    bool host_mode    = false;
+    bool client_mode  = false;
+    const char* connect_ip = "127.0.0.1";
+    uint16_t    port       = NET_DEFAULT_PORT;
+
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--agent") == 0) agent_mode = true;
+        if      (strcmp(argv[i], "--agent")  == 0) agent_mode  = true;
+        else if (strcmp(argv[i], "--server") == 0) server_mode = true;
+        else if (strcmp(argv[i], "--host")   == 0) host_mode   = true;
+        else if (strcmp(argv[i], "--client") == 0) {
+            client_mode = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                connect_ip = argv[++i];
+        }
+    }
+
+    if (server_mode) {
+        server_run(port, SERVER_MAX_CLIENTS);
+        return 0;
     }
 
     if (!glfwInit()) return 1;
@@ -113,6 +168,43 @@ int main(int argc, char *argv[])
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    renderer_init_player_mesh(&renderer);
+
+    PT_Thread server_thread = {0};
+    if (host_mode) {
+        ServerArgs* sargs = malloc(sizeof(ServerArgs));
+        sargs->port = port;
+        sargs->max  = SERVER_MAX_CLIENTS;
+        pt_thread_create(&server_thread, server_thread_func, sargs);
+        /* Give server 200ms to bind before client tries to connect */
+        struct timespec ts = { 0, 200000000 };
+        nanosleep(&ts, NULL);
+    }
+
+    int net_fd = -1;
+    NetThread net_thread;
+    Client client;
+    RemotePlayerSet remote_players;
+    bool networking = host_mode || client_mode;
+
+    if (networking) {
+        net_fd = net_socket_client();
+        net_thread_start(&net_thread, net_fd);
+
+        struct sockaddr_in srv_addr = {0};
+        srv_addr.sin_family      = AF_INET;
+        srv_addr.sin_port        = htons(port);
+        inet_pton(AF_INET, connect_ip, &srv_addr.sin_addr);
+
+        client_init(&client, &net_thread, &srv_addr);
+        remote_player_set_init(&remote_players);
+
+        g_remote_players = &remote_players;
+        client_set_snapshot_cb(&client, on_snapshot, NULL);
+        client_set_leave_cb(&client, on_player_leave, NULL);
+        client_connect(&client);
     }
 
     int spawn_y = worldgen_get_height(0, 0, WORLD_SEED) + 4;
@@ -199,6 +291,17 @@ int main(int argc, char *argv[])
 
         player_update(&g_player, window, world, dt);
 
+        /* Networking tick */
+        if (networking) {
+            client_send_position(&client,
+                                  g_player.position[0],
+                                  g_player.position[1],
+                                  g_player.position[2],
+                                  g_player.camera.yaw,
+                                  g_player.camera.pitch);
+            client_poll(&client);
+        }
+
         world_update(world, &physics, g_player.position);
         block_physics_update(&physics, world, g_player.position, dt);
 
@@ -212,7 +315,26 @@ int main(int argc, char *argv[])
                      / (float)renderer.swapchain.extent.height;
         camera_get_proj(&g_player.camera, aspect, proj);
 
-        renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir,
+        /* Collect remote player states for rendering */
+        PlayerRenderState rp_states[REMOTE_PLAYER_MAX];
+        uint32_t rcount = 0;
+        if (networking) {
+            for (int i = 0; i < REMOTE_PLAYER_MAX; i++) {
+                RemotePlayer* rp = &remote_players.players[i];
+                if (!rp->active || rp->snapshot_count < 2) continue;
+                vec3 pos; float yaw, pitch;
+                remote_player_interpolate(rp, dt, pos, &yaw, &pitch);
+                rp_states[rcount].pos[0] = pos[0];
+                rp_states[rcount].pos[1] = pos[1];
+                rp_states[rcount].pos[2] = pos[2];
+                rp_states[rcount].yaw    = yaw;
+                rcount++;
+            }
+        }
+
+        renderer_draw_frame(&renderer, meshes, mesh_count,
+                            rcount > 0 ? rp_states : NULL, rcount,
+                            view, proj, sun_dir,
                             &g_hud, dump_frame, dump_path);
 
         if (agent_mode) {
@@ -251,6 +373,15 @@ int main(int argc, char *argv[])
     }
 
     vkDeviceWaitIdle(renderer.device);
+
+    if (networking) {
+        client_disconnect(&client);
+        net_thread_stop(&net_thread);
+        net_socket_close(net_fd);
+    }
+    if (host_mode)
+        pt_thread_join(server_thread); /* takes PT_Thread by value */
+
     world_destroy(world);
     block_physics_destroy(&physics);
     if (agent_mode) agent_destroy();
