@@ -42,6 +42,18 @@ typedef struct Renderer {
     VkPipelineLayout            pipeline_layout;
     VkPipeline                  pipeline;
 
+    /* HUD rendering */
+    VkRenderPass      hud_render_pass;
+    VkPipeline        hud_pipeline;
+    VkPipelineLayout  hud_pipeline_layout;
+    VkFramebuffer*    hud_framebuffers;   /* one per swapchain image, color-only */
+    VkBuffer          hud_vertex_buffer;
+    VmaAllocation     hud_vertex_alloc;
+    VkBuffer          hud_index_buffer;
+    VmaAllocation     hud_index_alloc;
+    void*             hud_vb_mapped;
+    void*             hud_ib_mapped;
+
     /* Descriptors */
     VkDescriptorSetLayout       descriptor_set_layout;
     VkDescriptorPool            descriptor_pool;

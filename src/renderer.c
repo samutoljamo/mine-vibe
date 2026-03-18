@@ -293,7 +293,7 @@ static bool create_render_pass(Renderer* r)
         .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
     VkAttachmentDescription depth_att = {
@@ -458,6 +458,31 @@ static void framebuffer_resize_cb(GLFWwindow* window, int width, int height)
 /*  Public API: init                                                  */
 /* ------------------------------------------------------------------ */
 
+static bool create_hud_framebuffers(Renderer* r)
+{
+    uint32_t n = r->swapchain.image_count;
+    r->hud_framebuffers = malloc(n * sizeof(VkFramebuffer));
+    if (!r->hud_framebuffers) return false;
+
+    for (uint32_t i = 0; i < n; i++) {
+        VkFramebufferCreateInfo fb_ci = {
+            .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass      = r->hud_render_pass,
+            .attachmentCount = 1,
+            .pAttachments    = &r->swapchain.image_views[i],
+            .width           = r->swapchain.extent.width,
+            .height          = r->swapchain.extent.height,
+            .layers          = 1,
+        };
+        if (vkCreateFramebuffer(r->device, &fb_ci, NULL,
+                                &r->hud_framebuffers[i]) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create HUD framebuffer %u\n", i);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool renderer_init(Renderer* r, GLFWwindow* window)
 {
     memset(r, 0, sizeof(*r));
@@ -594,6 +619,54 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
             (void)old_sc;
             return false;
         }
+    }
+
+    /* --- HUD render pass --- */
+    /* HUD render pass: color-only, loads existing image, outputs PRESENT_SRC */
+    {
+        VkAttachmentDescription hud_color = {
+            .format         = r->swapchain.image_format,
+            .samples        = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        };
+        VkAttachmentReference hud_color_ref = { .attachment = 0,
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkSubpassDescription hud_subpass = {
+            .pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments    = &hud_color_ref,
+        };
+        VkSubpassDependency hud_dep = {
+            .srcSubpass    = VK_SUBPASS_EXTERNAL,
+            .dstSubpass    = 0,
+            .srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        };
+        VkRenderPassCreateInfo hud_rp_ci = {
+            .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments    = &hud_color,
+            .subpassCount    = 1,
+            .pSubpasses      = &hud_subpass,
+            .dependencyCount = 1,
+            .pDependencies   = &hud_dep,
+        };
+        if (vkCreateRenderPass(r->device, &hud_rp_ci, NULL,
+                               &r->hud_render_pass) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create HUD render pass\n");
+            return false;
+        }
+    }
+    if (!create_hud_framebuffers(r)) {
+        fprintf(stderr, "Failed to create HUD framebuffers\n");
+        return false;
     }
 
     /* --- Sync objects (cmd pool, cmd buffers, semaphores, fences) --- */
@@ -743,6 +816,15 @@ static void recreate_swapchain(Renderer* r)
     vkDestroySwapchainKHR(r->device, old.swapchain, NULL);
 
     r->swapchain = new_sc;
+
+    /* Rebuild HUD framebuffers against new image views */
+    if (r->hud_framebuffers) {
+        for (uint32_t i = 0; i < old.image_count; i++)
+            vkDestroyFramebuffer(r->device, r->hud_framebuffers[i], NULL);
+        free(r->hud_framebuffers);
+        r->hud_framebuffers = NULL;
+    }
+    create_hud_framebuffers(r);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1091,6 +1173,16 @@ void renderer_cleanup(Renderer* r)
     /* Command pool */
     if (r->command_pool)
         vkDestroyCommandPool(r->device, r->command_pool, NULL);
+
+    /* HUD renderpass and framebuffers */
+    if (r->hud_framebuffers) {
+        for (uint32_t i = 0; i < r->swapchain.image_count; i++)
+            vkDestroyFramebuffer(r->device, r->hud_framebuffers[i], NULL);
+        free(r->hud_framebuffers);
+        r->hud_framebuffers = NULL;
+    }
+    if (r->hud_render_pass)
+        vkDestroyRenderPass(r->device, r->hud_render_pass, NULL);
 
     /* Render pass */
     if (r->render_pass)
