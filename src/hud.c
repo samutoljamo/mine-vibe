@@ -1,5 +1,4 @@
 #include "hud.h"
-#include <string.h>
 
 /* Emit a colored quad (pixel coords -> NDC) into verts/indices.
  * Returns new vertex count. px,py = top-left pixel; pw,ph = size. */

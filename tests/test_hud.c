@@ -30,6 +30,7 @@ static void test_hud_build_vertex_count(void) {
     uint32_t vc = hud_build(&hud, 1280.0f, 720.0f, verts, idx);
     assert(vc > 0);
     assert(vc <= HUD_MAX_VERTS);
+    assert(vc == 128);  /* 2 crosshair quads + 6 slots × 5 quads = 32 quads × 4 verts */
     printf("PASS: test_hud_build_vertex_count\n");
 }
 
