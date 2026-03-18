@@ -7,6 +7,7 @@
 #include "player.h"
 #include "world.h"
 #include "chunk_mesh.h"
+#include "worldgen.h"
 
 static Player g_player;
 
@@ -44,15 +45,16 @@ int main(void)
         return 1;
     }
 
-    player_init(&g_player, (vec3){0, 80, 0});
+    int spawn_y = worldgen_get_height(0, 0, 42) + 1;
+    player_init(&g_player, (vec3){0, (float)spawn_y, 0});
     World* world = world_create(&renderer, 42, 32);
 
     /* Loading threshold: 30% of circular render area */
-    int _rd = world_get_render_distance(world);
+    int rd = world_get_render_distance(world);
     int expected_chunks = 0;
-    for (int _dx = -_rd; _dx <= _rd; _dx++)
-        for (int _dz = -_rd; _dz <= _rd; _dz++)
-            if (_dx*_dx + _dz*_dz <= _rd*_rd)
+    for (int dx = -rd; dx <= rd; dx++)
+        for (int dz = -rd; dz <= rd; dz++)
+            if (dx*dx + dz*dz <= rd*rd)
                 expected_chunks++;
     int load_threshold = (int)(0.30f * (float)expected_chunks);
     if (load_threshold < 1) load_threshold = 1;
@@ -62,7 +64,7 @@ int main(void)
 
     /* Loading loop: run until 30% of chunks are meshed */
     {
-        ChunkMesh* meshes;
+        ChunkMesh* meshes = NULL;
         uint32_t   mesh_count = 0;
         char       title[128];
 
