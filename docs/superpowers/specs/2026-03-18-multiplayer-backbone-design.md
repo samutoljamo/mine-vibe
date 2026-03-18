@@ -215,34 +215,56 @@ Remote players are rendered as placeholder AABBs (0.6×1.8×0.6) matching the pl
 
 ### Modified Files
 
-**`src/player.h/.c`** — Split input and physics into separate functions. Define `InputState`:
+**`src/player.h`** — The `Player` struct already has a complete agent mode (added for the agent control API): `agent_mode`, `agent_forward`, `agent_right`, `agent_jump`, `agent_sprint`. When `agent_mode == true`, `player_update()` bypasses all GLFW calls and uses these fields instead. **No new functions are needed.** The server drives player physics by:
+
+1. Setting `player.agent_mode = true`
+2. Setting `player.camera.yaw` / `player.camera.pitch` from the deserialized packet
+3. Mapping the `keys` bitmask to agent fields:
+```c
+// In server.c, when applying a PKT_INPUT:
+p->player.agent_forward = (keys & KEY_BIT_W) ? 1.0f : (keys & KEY_BIT_S) ? -1.0f : 0.0f;
+p->player.agent_right   = (keys & KEY_BIT_D) ? 1.0f : (keys & KEY_BIT_A) ? -1.0f : 0.0f;
+p->player.agent_jump    = (keys & KEY_BIT_SPACE) != 0;
+p->player.agent_sprint  = (keys & KEY_BIT_SPRINT) != 0;
+player_update(&p->player, NULL, world, PHYSICS_DT);  // NULL window is safe in agent mode
+```
+
+`PHYSICS_DT` (`1.0f / 60.0f`) must be moved from the local `#define` in `player.c` to a public `#define` in `player.h` so `server.c` can use it. `PLAYER_SPRINT_SPEED` (currently `SPRINT_SPEED` in `player.c`) must also be moved to `player.h` for the anti-cheat speed cap.
+
+**`src/player.h/.c`** — Add `InputState` to `player.h` for use in the client's input history buffer (the server uses agent fields directly, but the client needs to record inputs for prediction/reconciliation):
 ```c
 typedef struct {
-    uint8_t keys;       // KEY_BIT_* bitmask (same layout as InputPacket.keys)
+    uint8_t keys;       // KEY_BIT_* bitmask
     float   yaw, pitch;
 } InputState;
-
-void player_process_input(Player* player, GLFWwindow* window, InputState* out);
-void player_physics_tick(Player* player, World* world, const InputState* input, float dt);
 ```
-`player_process_input` reads GLFW keys/mouse and writes an `InputState`. `player_physics_tick` applies an `InputState` to physics — callable by both the client (prediction) and server (authoritative simulation) without GLFW. The `keys` bitmask layout in `InputState` is identical to `InputPacket.keys` so the server can pass the deserialized value directly.
 
 **`src/main.c`** — Mode detection from `argv`. In client/listen-server mode: spawn `NetThread`, create `Client`, integrate `RemotePlayer` list into render loop. In `--server` mode: skip GLFW and Vulkan entirely, call `server_run()`.
 
 **`src/renderer.h/.c`** — Add `renderer_draw_remote_players(Renderer*, RemotePlayer*, uint32_t count)` for placeholder AABB rendering. One new draw call after the existing chunk draw.
 
+### Server World Management
+
+The server calls `world_update(world, &bp, player_pos)` which now requires a `BlockPhysics*` parameter (added alongside block physics simulation). The server must:
+- Create and own a `BlockPhysics bp` instance (`block_physics_init(&bp)` on startup, `block_physics_destroy(&bp)` on shutdown)
+- Call `block_physics_update(&bp, world, player_pos, dt)` each server tick
+- Pass `&bp` to `world_update()`
+
+When `PKT_BLOCK_CHANGE` is implemented (future), the server will call `world_set_block()` / `world_set_meta()` — these APIs already exist in `world.h`.
+
 ### Unchanged
 
-Chunk system, mesher, world gen, worldgen, camera, texture, pipeline, swapchain, frustum, physics collision logic. The networking layer sits entirely above these.
+Chunk system, mesher, world gen, camera, texture, pipeline, swapchain, frustum, physics collision logic. The networking layer sits entirely above these.
 
 ## Data Flow
 
 ```
 Client (main thread)                         Server (background thread)
 ─────────────────────────────────────        ─────────────────────────────────────
-player_process_input() → InputState          drain inbound queue
-player_physics_tick() [local prediction]       → for each PKT_INPUT: validate
-push PKT_INPUT → outbound queue                → player_physics_tick() (authoritative)
+read GLFW → InputState (for history)         drain inbound queue
+player_update() [local prediction]             → for each PKT_INPUT: validate
+push PKT_INPUT → outbound queue                → set agent fields → player_update()
+                                             block_physics_update()
                                              broadcast PKT_WORLD_STATE → outbound queue
 
 NetThread
