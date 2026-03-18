@@ -5,6 +5,7 @@
 #include "mesher.h"
 #include "worldgen.h"
 #include "renderer.h"
+#include "agent.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -328,11 +329,15 @@ void world_update(World* world, vec3 player_pos)
                                       md->indices, md->index_count);
 
                     atomic_store(&chunk->state, CHUNK_READY);
+                    if (agent_is_active())
+                        agent_notify_chunk_loaded(chunk->cx, chunk->cz);
                     uploads++;
 
                 } else if (md->vertex_count == 0) {
                     /* Empty mesh - mark as ready but nothing to draw */
                     atomic_store(&chunk->state, CHUNK_READY);
+                    if (agent_is_active())
+                        agent_notify_chunk_loaded(chunk->cx, chunk->cz);
                 } else {
                     /* Upload limit hit - set back to GENERATED so it
                      * re-enters the mesh pipeline next frame (mesh data
