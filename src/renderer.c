@@ -3,6 +3,7 @@
 #include "texture.h"
 #include "frustum.h"
 #include "chunk_mesh.h"
+#include "assets.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -610,8 +611,8 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
 
     /* --- Graphics pipeline --- */
     if (!pipeline_create(r->device, r->render_pass, r->descriptor_set_layout,
-                         "build/shaders/block.vert.spv",
-                         "build/shaders/block.frag.spv",
+                         g_block_vert_spv, g_block_vert_spv_size,
+                         g_block_frag_spv, g_block_frag_spv_size,
                          &r->pipeline_layout, &r->pipeline))
         return false;
 
