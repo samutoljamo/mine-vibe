@@ -63,9 +63,12 @@ static bool apply_agent_command(const AgentCommand *cmd, Player *player,
     case CMD_SPRINT:
         player->agent_sprint = (cmd->sprint.active != 0);
         break;
-    case CMD_SELECT_SLOT:
-        g_hud.selected_slot = cmd->select_slot.slot;
+    case CMD_SELECT_SLOT: {
+        int s = cmd->select_slot.slot;
+        if (s >= 0 && s < HUD_SLOT_COUNT)
+            g_hud.selected_slot = s;
         break;
+    }
     case CMD_MODE:
         player->mode = (cmd->mode.mode == 0) ? MODE_FREE : MODE_WALKING;
         glm_vec3_zero(player->velocity);
