@@ -679,6 +679,8 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
             "build/shaders/hud.frag.spv");
         if (!vert_mod || !frag_mod) {
             fprintf(stderr, "Failed to load HUD shaders\n");
+            if (vert_mod) vkDestroyShaderModule(r->device, vert_mod, NULL);
+            if (frag_mod) vkDestroyShaderModule(r->device, frag_mod, NULL);
             return false;
         }
 
@@ -776,6 +778,7 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
         if (vkCreateGraphicsPipelines(r->device, VK_NULL_HANDLE, 1, &pipe_ci, NULL,
                                       &r->hud_pipeline) != VK_SUCCESS) {
             fprintf(stderr, "Failed to create HUD pipeline\n");
+            vkDestroyPipelineLayout(r->device, r->hud_pipeline_layout, NULL);
             vkDestroyShaderModule(r->device, vert_mod, NULL);
             vkDestroyShaderModule(r->device, frag_mod, NULL);
             return false;
