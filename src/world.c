@@ -436,15 +436,52 @@ void world_update(World* world, vec3 player_pos)
         }
     }
 
-    /* ---- Step 4: Submit meshing for GENERATED chunks ---- */
+    /* ---- Step 4: Submit meshing for GENERATED chunks (nearest first) ---- */
     {
+        /* Collect all mesh-ready chunks and sort by distance so closer chunks
+         * get mesh tasks submitted first, giving a center-outward load order. */
+        typedef struct { Chunk* chunk; int dist_sq; } MeshCandidate;
+        MeshCandidate candidates[4096];
+        int cand_count = 0;
+
+        {
+            uint32_t idx = 0;
+            Chunk* chunk;
+            while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL) {
+                if (atomic_load(&chunk->state) != CHUNK_GENERATED) continue;
+                Chunk* nx_pos = chunk_map_get(&world->map, chunk->cx + 1, chunk->cz);
+                Chunk* nx_neg = chunk_map_get(&world->map, chunk->cx - 1, chunk->cz);
+                Chunk* nz_pos = chunk_map_get(&world->map, chunk->cx, chunk->cz + 1);
+                Chunk* nz_neg = chunk_map_get(&world->map, chunk->cx, chunk->cz - 1);
+                if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_GENERATED) continue;
+                if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_GENERATED) continue;
+                if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_GENERATED) continue;
+                if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_GENERATED) continue;
+                if (cand_count < 4096) {
+                    int dx = chunk->cx - pcx, dz = chunk->cz - pcz;
+                    candidates[cand_count++] = (MeshCandidate){ chunk, dx*dx + dz*dz };
+                }
+            }
+        }
+
+        /* Insertion sort — candidate count is small (bounded by chunks ready per frame) */
+        for (int i = 1; i < cand_count; i++) {
+            MeshCandidate key = candidates[i];
+            int j = i - 1;
+            while (j >= 0 && candidates[j].dist_sq > key.dist_sq) {
+                candidates[j + 1] = candidates[j];
+                j--;
+            }
+            candidates[j + 1] = key;
+        }
+
         int mesh_submits = 0;
-        uint32_t idx = 0;
-        Chunk* chunk;
-        while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL) {
+        for (int i = 0; i < cand_count && mesh_submits < 32; i++) {
+            Chunk* chunk = candidates[i].chunk;
+
+            /* Re-check state in case another path changed it */
             if (atomic_load(&chunk->state) != CHUNK_GENERATED) continue;
 
-            /* Check neighbors: if a neighbor exists, it must be >= GENERATED */
             Chunk* nx_pos = chunk_map_get(&world->map, chunk->cx + 1, chunk->cz);
             Chunk* nx_neg = chunk_map_get(&world->map, chunk->cx - 1, chunk->cz);
             Chunk* nz_pos = chunk_map_get(&world->map, chunk->cx, chunk->cz + 1);
