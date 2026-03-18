@@ -229,7 +229,7 @@ void player_update(Player* player, GLFWwindow* window, World* world, float dt)
             glm_vec3_zero(player->velocity);
             player->on_ground = false;
             player->in_water  = false;
-            player->last_space_time = 0.0f;
+            player->last_space_time = -1.0f;
         } else {
             player->last_space_time = now;
         }
