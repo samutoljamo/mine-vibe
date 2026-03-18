@@ -47,6 +47,16 @@ int main(void)
     player_init(&g_player, (vec3){0, 80, 0});
     World* world = world_create(&renderer, 42, 32);
 
+    /* Loading threshold: 30% of circular render area */
+    int _rd = world_get_render_distance(world);
+    int expected_chunks = 0;
+    for (int _dx = -_rd; _dx <= _rd; _dx++)
+        for (int _dz = -_rd; _dz <= _rd; _dz++)
+            if (_dx*_dx + _dz*_dz <= _rd*_rd)
+                expected_chunks++;
+    int load_threshold = (int)(0.30f * (float)expected_chunks);
+    if (load_threshold < 1) load_threshold = 1;
+
     vec3 sun_dir = { -0.5f, -0.8f, -0.3f };
     glm_vec3_normalize(sun_dir);
 
