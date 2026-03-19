@@ -215,7 +215,7 @@ void player_model_draw(Renderer* r, VkCommandBuffer cmd,
         glm_mat4_identity(model);
         vec3 pos = { states[i].pos[0], states[i].pos[1], states[i].pos[2] };
         glm_translate(model, pos);
-        glm_rotate(model, states[i].yaw, (vec3){0.0f, 1.0f, 0.0f});
+        glm_rotate(model, (float)GLM_PI_2 - states[i].yaw, (vec3){0.0f, 1.0f, 0.0f});
 
         vkCmdPushConstants(cmd, r->player_pipeline_layout,
                            VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4), model);
