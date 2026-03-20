@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix critical and high-priority technical debt: silent memory corruption from unchecked realloc/malloc, crash-on-OOM instead of graceful degradation, missing connection timeout, and missing network packet bounds checking.
+**Goal:** Fix critical and high-priority technical debt: silent memory corruption from unchecked realloc/malloc, crash-on-OOM instead of graceful degradation, missing connection timeout, missing network packet bounds checking, and split the 1711-line `renderer.c` into focused units.
 
 **Architecture:** Each fix is isolated to a specific file or function. No API changes except `take_meta_snapshot` (return value already NULL-safe at callers). Tests are written first and exercise the fixed code paths.
 
@@ -18,9 +18,14 @@
 | `src/world.c` | `render_meshes` realloc: save ptr, check; worker mallocs: null-guard; `take_meta_snapshot`: remove abort, return NULL |
 | `src/block_physics.c` | `posset_rehash`: restore `s->capacity/count/tombstones` from saved state before aborting |
 | `src/client.c` | Add absolute connection-attempt timeout; add `PKT_WORLD_STATE` packet bounds check |
+| `src/renderer.c` | Remove extracted sections; rename `recreate_swapchain` → `renderer_recreate_swapchain` (non-static) |
+| `src/renderer_frame.c` | New: `renderer_draw_frame` only (~242 lines) |
+| `src/renderer_frame_dump.c` | New: `renderer_dump_frame` only (~109 lines) |
+| `src/renderer_player_mesh.c` | New: `renderer_init_player_mesh` + `renderer_draw_remote_players` (~155 lines) |
+| `src/renderer_internal.h` | New: declares `renderer_recreate_swapchain` for cross-file use |
 | `tests/test_mesher.c` | New: verify mesher produces consistent output on solid chunk |
 | `tests/test_client.c` | New: verify connection timeout fires; verify bounds check rejects short packets |
-| `CMakeLists.txt` | Register `test_mesher` and `test_client` targets |
+| `CMakeLists.txt` | Register `test_mesher` and `test_client` targets; add new renderer .c files to `minecraft` target |
 
 ---
 
@@ -609,6 +614,183 @@ git commit -m "fix: bounds check PKT_WORLD_STATE before reading player entries"
 
 ---
 
+## Task 8: Split renderer.c into focused files
+
+**Files:**
+- Create: `src/renderer_internal.h`
+- Create: `src/renderer_frame.c`
+- Create: `src/renderer_frame_dump.c`
+- Create: `src/renderer_player_mesh.c`
+- Modify: `src/renderer.c`
+- Modify: `CMakeLists.txt`
+
+`renderer.c` is 1711 lines covering Vulkan init, frame rendering, screenshot capture, and remote player geometry. The split extracts the three runtime-only sections into focused files. The only cross-file dependency is `recreate_swapchain` (in renderer.c) called from `renderer_draw_frame` (moving to renderer_frame.c) — resolved by making it non-static and declaring it in `renderer_internal.h`.
+
+**Sections and their destinations:**
+
+| Lines | Section | Destination |
+|-------|---------|-------------|
+| 1–461 | Static init helpers (debug cb, device selection, VMA, render pass, sync, UBOs) | `renderer.c` (stay) |
+| 462–980 | `create_hud_framebuffers` + `renderer_init` | `renderer.c` (stay) |
+| 982–1042 | `recreate_swapchain` | `renderer.c` (stay, rename non-static) |
+| 1043–1284 | `renderer_draw_frame` | `renderer_frame.c` |
+| 1286–1437 | `renderer_init_player_mesh` + `renderer_draw_remote_players` | `renderer_player_mesh.c` |
+| 1438–1546 | `renderer_dump_frame` | `renderer_frame_dump.c` |
+| 1547–1711 | `renderer_cleanup` + single-shot cmd helpers | `renderer.c` (stay) |
+
+- [ ] **Step 1: Baseline — confirm tests pass before touching anything**
+
+```bash
+distrobox enter cyberismo -- bash -c "cd /var/home/samu/minecraft/build && cmake --build . 2>&1 | tail -5 && ctest --output-on-failure"
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 2: Create `src/renderer_internal.h`**
+
+```c
+#ifndef RENDERER_INTERNAL_H
+#define RENDERER_INTERNAL_H
+
+/* Internal cross-file declarations for renderer_*.c translation units.
+ * Do NOT include from headers or non-renderer source files. */
+
+#include "renderer.h"
+
+/* Defined in renderer.c; called from renderer_frame.c on swapchain invalidation. */
+void renderer_recreate_swapchain(Renderer* r);
+
+#endif
+```
+
+- [ ] **Step 3: Rename `recreate_swapchain` in renderer.c**
+
+In `src/renderer.c`, change line 986:
+
+```c
+static void recreate_swapchain(Renderer* r)
+```
+
+to:
+
+```c
+void renderer_recreate_swapchain(Renderer* r)
+```
+
+- [ ] **Step 4: Create `src/renderer_frame.c`**
+
+Cut lines 1043–1284 from `renderer.c` (the entire `renderer_draw_frame` function) and place them in a new file:
+
+```c
+#include "renderer.h"
+#include "renderer_internal.h"
+#include "chunk_mesh.h"
+#include "player_model.h"
+#include "hud.h"
+#include "agent.h"
+#include <stdio.h>
+#include <string.h>
+
+/* ------------------------------------------------------------------ */
+/*  Public API: draw frame                                            */
+/* ------------------------------------------------------------------ */
+
+/* [paste the full renderer_draw_frame function here, replacing
+ *  the two internal calls from `recreate_swapchain(r)` to
+ *  `renderer_recreate_swapchain(r)`] */
+```
+
+The two call sites to update inside the function body:
+- Line 1065: `recreate_swapchain(r);` → `renderer_recreate_swapchain(r);`
+- Line 1277: `recreate_swapchain(r);` → `renderer_recreate_swapchain(r);`
+
+- [ ] **Step 5: Create `src/renderer_frame_dump.c`**
+
+Cut lines 1438–1546 from `renderer.c` and place them in a new file. Also move the `stb_image_write` include from renderer.c to here:
+
+```c
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+#include "renderer.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+/* ------------------------------------------------------------------ */
+/*  Public API: dump frame                                            */
+/* ------------------------------------------------------------------ */
+
+/* [paste the full renderer_dump_frame function here — no changes needed] */
+```
+
+Remove from `renderer.c`:
+```c
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+```
+
+- [ ] **Step 6: Create `src/renderer_player_mesh.c`**
+
+Cut lines 1286–1437 from `renderer.c` and place them in a new file:
+
+```c
+#include "renderer.h"
+#include "vertex.h"
+#include <string.h>
+#include <stdio.h>
+
+/* ------------------------------------------------------------------ */
+/*  Remote player placeholder mesh                                   */
+/* ------------------------------------------------------------------ */
+
+/* [paste create_mapped_player_buffer (static), renderer_init_player_mesh,
+ *  and renderer_draw_remote_players here — no changes needed] */
+```
+
+- [ ] **Step 7: Update `CMakeLists.txt`**
+
+In the `add_executable(minecraft ...)` source list, after `src/renderer.c` add:
+
+```cmake
+    src/renderer_frame.c
+    src/renderer_frame_dump.c
+    src/renderer_player_mesh.c
+```
+
+- [ ] **Step 8: Build the full game to verify**
+
+```bash
+distrobox enter cyberismo -- bash -c "cd /var/home/samu/minecraft/build && cmake --build . 2>&1 | tail -20"
+```
+
+Expected: builds cleanly with zero errors. If there are missing include errors, add the required headers to the affected new file.
+
+- [ ] **Step 9: Run all tests**
+
+```bash
+distrobox enter cyberismo -- bash -c "cd /var/home/samu/minecraft/build && ctest --output-on-failure"
+```
+
+Expected: all tests pass (same as baseline).
+
+- [ ] **Step 10: Verify renderer.c line count dropped significantly**
+
+```bash
+wc -l /var/home/samu/minecraft/src/renderer.c
+```
+
+Expected: ~1205 lines (down from 1711). The three new files together account for ~504 lines.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add src/renderer.c src/renderer_frame.c src/renderer_frame_dump.c \
+        src/renderer_player_mesh.c src/renderer_internal.h CMakeLists.txt
+git commit -m "refactor: split renderer.c into focused translation units"
+```
+
+---
+
 ## Final: Run full test suite
 
 - [ ] **Run all tests and confirm clean**
@@ -630,6 +812,5 @@ Test #6: client         ... Passed
 - [ ] **Summarize what was NOT fixed** (saved for future plans):
   - `chunk.h:chunk_ensure_meta` — same abort() pattern; fix is trivial but affects chunk API
   - `posset_rehash` — abort() is consistent with existing pattern; fix needs API change
-  - `renderer.c` split — large refactor, separate plan
   - Naming convention inconsistencies — separate cleanup plan
   - Full integration/multiplayer tests — require network harness, separate plan
