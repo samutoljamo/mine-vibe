@@ -93,6 +93,9 @@ add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 add_executable(minecraft
     src/main.c
     src/renderer.c
+    src/renderer_frame.c
+    src/renderer_frame_dump.c
+    src/renderer_player_mesh.c
     src/swapchain.c
     src/pipeline.c
     src/texture.c
@@ -188,3 +191,26 @@ add_executable(test_remote_player
 target_include_directories(test_remote_player PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_remote_player PRIVATE cglm m)
 add_test(NAME remote_player COMMAND test_remote_player)
+
+add_executable(test_mesher
+    tests/test_mesher.c
+    src/mesher.c
+    src/chunk.c
+    src/block.c
+)
+target_include_directories(test_mesher PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_mesher PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_mesher PRIVATE cglm Vulkan::Headers m)
+add_test(NAME mesher COMMAND test_mesher)
+
+add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c)
+target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME client COMMAND test_client)
+target_link_libraries(test_client PRIVATE Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_client PRIVATE m)
+endif()

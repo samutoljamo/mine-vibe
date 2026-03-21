@@ -110,6 +110,11 @@ static void* worker_func(void* arg)
 
             /* Push generate result */
             ResultItem* result = malloc(sizeof(ResultItem));
+            if (!result) {
+                fprintf(stderr, "worker_func: out of memory for ResultItem\n");
+                free(item);
+                continue;
+            }
             result->chunk = item->chunk;
             result->mesh_data = NULL;
             result->next = NULL;
@@ -129,6 +134,16 @@ static void* worker_func(void* arg)
             };
 
             MeshData* md = malloc(sizeof(MeshData));
+            if (!md) {
+                fprintf(stderr, "worker_func: out of memory for MeshData\n");
+                free(item->boundary_pos_x);
+                free(item->boundary_neg_x);
+                free(item->boundary_pos_z);
+                free(item->boundary_neg_z);
+                free(item->meta_snapshot);
+                free(item);
+                continue;
+            }
             mesh_data_init(md);
             mesher_build(item->chunk, &neighbors, item->meta_snapshot, md);
 
@@ -141,6 +156,13 @@ static void* worker_func(void* arg)
 
             /* Push mesh result */
             ResultItem* result = malloc(sizeof(ResultItem));
+            if (!result) {
+                fprintf(stderr, "worker_func: out of memory for mesh ResultItem\n");
+                mesh_data_free(md);
+                free(md);
+                free(item);
+                continue;
+            }
             result->chunk = item->chunk;
             result->mesh_data = md;
             result->next = NULL;
@@ -164,7 +186,10 @@ static void* worker_func(void* arg)
 static uint8_t* take_meta_snapshot(const Chunk* chunk)
 {
     uint8_t* snap = malloc(CHUNK_BLOCKS);
-    if (!snap) { fprintf(stderr, "take_meta_snapshot: out of memory\n"); abort(); }
+    if (!snap) {
+        fprintf(stderr, "take_meta_snapshot: out of memory, skipping meta\n");
+        return NULL;   /* mesher_build accepts NULL — treats all as zero */
+    }
     if (chunk->meta)
         memcpy(snap, chunk->meta, CHUNK_BLOCKS);
     else
@@ -647,9 +672,15 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
 
             /* Grow array if needed */
             if (world->render_count >= world->render_cap) {
-                world->render_cap *= 2;
-                world->render_meshes = realloc(world->render_meshes,
-                                                sizeof(ChunkMesh) * world->render_cap);
+                uint32_t new_cap = world->render_cap * 2;
+                void* tmp = realloc(world->render_meshes,
+                                    sizeof(ChunkMesh) * new_cap);
+                if (!tmp) {
+                    fprintf(stderr, "world_collect_meshes: out of memory\n");
+                    abort();
+                }
+                world->render_meshes = tmp;
+                world->render_cap    = new_cap;
             }
 
             world->render_meshes[world->render_count++] = chunk->mesh;

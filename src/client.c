@@ -95,6 +95,16 @@ int client_poll(Client* c)
             PacketHeader hdr;
             net_read_header(msg->data, &off, &hdr);
             uint8_t count = net_read_u8(msg->data, &off);
+
+            /* Validate: packet must contain at least count * (1+5*4) bytes after header+count */
+            int required = (int)off + count * (1 + 5 * 4);
+            if (required > msg->len) {
+                fprintf(stderr, "[client] PKT_WORLD_STATE truncated "
+                        "(need %d bytes, have %d)\n", required, msg->len);
+                free(msg);
+                continue;
+            }
+
             for (int i = 0; i < count; i++) {
                 uint8_t pid = net_read_u8(msg->data, &off);
                 float x     = net_read_float(msg->data, &off);
@@ -137,11 +147,19 @@ int client_poll(Client* c)
         free(msg);
     }
 
-    /* Connect timeout: resend after 2s */
+    /* Connect timeout: resend every 2s, give up after CLIENT_MAX_CONNECT_ATTEMPTS */
     if (c->state == CLIENT_CONNECTING
         && net_time() - c->connect_sent_time > 2.0) {
-        printf("[client] retrying connect...\n");
-        client_connect(c);
+        if (c->connect_attempts >= CLIENT_MAX_CONNECT_ATTEMPTS) {
+            fprintf(stderr, "[client] connect timed out after %d retries\n",
+                    c->connect_attempts);
+            c->state = CLIENT_DISCONNECTED;
+        } else {
+            printf("[client] retrying connect (attempt %d/%d)...\n",
+                   c->connect_attempts + 1, CLIENT_MAX_CONNECT_ATTEMPTS);
+            c->connect_attempts++;
+            client_connect(c);
+        }
     }
 
     return state_packets;
