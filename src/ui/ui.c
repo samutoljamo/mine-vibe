@@ -43,19 +43,19 @@ static VkPipeline        g_pipeline;
 static VkPipelineLayout  g_pipeline_layout;
 static VkFramebuffer*    g_framebuffers;      /* one per swapchain image */
 static uint32_t          g_framebuffer_count;
-static VkBuffer          g_vb[2];
-static VmaAllocation     g_vb_alloc[2];
-static VkBuffer          g_ib[2];
-static VmaAllocation     g_ib_alloc[2];
-static void*             g_vb_mapped[2];
-static void*             g_ib_mapped[2];
+static VkBuffer          g_vb[MAX_FRAMES_IN_FLIGHT];
+static VmaAllocation     g_vb_alloc[MAX_FRAMES_IN_FLIGHT];
+static VkBuffer          g_ib[MAX_FRAMES_IN_FLIGHT];
+static VmaAllocation     g_ib_alloc[MAX_FRAMES_IN_FLIGHT];
+static void*             g_vb_mapped[MAX_FRAMES_IN_FLIGHT];
+static void*             g_ib_mapped[MAX_FRAMES_IN_FLIGHT];
 static VkImage           g_atlas_image;
 static VmaAllocation     g_atlas_alloc;
 static VkImageView       g_atlas_view;
 static VkSampler         g_sampler;
 static VkDescriptorSetLayout g_dsl;
 static VkDescriptorPool  g_desc_pool;
-static VkDescriptorSet   g_desc_sets[2];
+static VkDescriptorSet   g_desc_sets[MAX_FRAMES_IN_FLIGHT];
 
 /* Per-frame draw state */
 static UiVertex  g_verts[UI_MAX_VERTS];
@@ -76,11 +76,6 @@ bool ui_font_bake(void)
 {
     if (g_font_baked) return true;
 
-    /* Set white pixel region (top-left 2×2) before packing glyphs */
-    for (int y = 0; y < 2; y++)
-        for (int x = 0; x < 2; x++)
-            g_atlas_cpu[y * ATLAS_W + x] = 0xFF;
-
     stbtt_pack_context pc;
     if (!stbtt_PackBegin(&pc, g_atlas_cpu, ATLAS_W, ATLAS_H, ATLAS_W, 1, NULL)) {
         fprintf(stderr, "ui_font_bake: stbtt_PackBegin failed\n");
@@ -91,6 +86,11 @@ bool ui_font_bake(void)
     stbtt_PackFontRange(&pc, ui_font_data, 0, ATLAS_BAKE_PX,
                         GLYPH_FIRST, GLYPH_COUNT, packed);
     stbtt_PackEnd(&pc);
+
+    /* Set white pixel region (top-left 2×2) AFTER packing — PackBegin zeroes the buffer */
+    for (int y = 0; y < 2; y++)
+        for (int x = 0; x < 2; x++)
+            g_atlas_cpu[y * ATLAS_W + x] = 0xFF;
 
     /* Build glyph metric table */
     for (int i = 0; i < GLYPH_COUNT; i++) {
@@ -483,8 +483,8 @@ void ui_cleanup(struct Renderer* r)
     vkDestroyDescriptorPool(r->device, g_desc_pool, NULL);
     vkDestroyDescriptorSetLayout(r->device, g_dsl, NULL);
     vkDestroyImageView(r->device, g_atlas_view, NULL);
-    vmaDestroyImage(r->allocator, g_atlas_image, g_atlas_alloc);
     vkDestroySampler(r->device, g_sampler, NULL);
+    vmaDestroyImage(r->allocator, g_atlas_image, g_atlas_alloc);
 }
 
 void ui_on_swapchain_recreate(struct Renderer* r)
@@ -526,6 +526,7 @@ void ui_frame_begin(VkCommandBuffer cmd, uint32_t image_index,
 
 void ui_frame_end(void)
 {
+    if (!g_vb_mapped[0]) return;  /* ui_init not completed */
     int fi = g_frame_index;
 
     /* Upload geometry */
