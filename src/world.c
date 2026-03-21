@@ -110,6 +110,11 @@ static void* worker_func(void* arg)
 
             /* Push generate result */
             ResultItem* result = malloc(sizeof(ResultItem));
+            if (!result) {
+                fprintf(stderr, "worker_func: out of memory for ResultItem\n");
+                free(item);
+                continue;
+            }
             result->chunk = item->chunk;
             result->mesh_data = NULL;
             result->next = NULL;
@@ -129,6 +134,16 @@ static void* worker_func(void* arg)
             };
 
             MeshData* md = malloc(sizeof(MeshData));
+            if (!md) {
+                fprintf(stderr, "worker_func: out of memory for MeshData\n");
+                free(item->boundary_pos_x);
+                free(item->boundary_neg_x);
+                free(item->boundary_pos_z);
+                free(item->boundary_neg_z);
+                free(item->meta_snapshot);
+                free(item);
+                continue;
+            }
             mesh_data_init(md);
             mesher_build(item->chunk, &neighbors, item->meta_snapshot, md);
 
@@ -141,6 +156,13 @@ static void* worker_func(void* arg)
 
             /* Push mesh result */
             ResultItem* result = malloc(sizeof(ResultItem));
+            if (!result) {
+                fprintf(stderr, "worker_func: out of memory for mesh ResultItem\n");
+                mesh_data_free(md);
+                free(md);
+                free(item);
+                continue;
+            }
             result->chunk = item->chunk;
             result->mesh_data = md;
             result->next = NULL;
