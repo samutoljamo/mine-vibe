@@ -194,7 +194,11 @@ static inline size_t net_write_world_state(uint8_t* buf,
 /* ------------------------------------------------------------------ */
 /*  UDP socket helpers                                                 */
 /* ------------------------------------------------------------------ */
-#include <netinet/in.h>
+#ifdef _WIN32
+#  include <winsock2.h>
+#else
+#  include <netinet/in.h>
+#endif
 
 /* Returns socket fd (non-blocking), or -1 on error.
  * Server: binds to 0.0.0.0:port. Client: unbound, use sendto. */

@@ -152,6 +152,11 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(minecraft PRIVATE m)
 endif()
 
+# WinSock on Windows
+if(WIN32)
+    target_link_libraries(minecraft PRIVATE ws2_32)
+endif()
+
 # ---- Unit tests (no Vulkan dependency) ----
 enable_testing()
 add_executable(test_block_physics
@@ -182,6 +187,9 @@ add_test(NAME agent_json COMMAND test_agent)
 
 add_executable(test_net tests/test_net.c src/net.c src/reliable.c)
 target_include_directories(test_net PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(WIN32)
+    target_link_libraries(test_net PRIVATE ws2_32)
+endif()
 add_test(NAME net COMMAND test_net)
 
 add_executable(test_remote_player
@@ -211,6 +219,9 @@ add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliab
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads)
+if(WIN32)
+    target_link_libraries(test_client PRIVATE ws2_32)
+endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_client PRIVATE m)
 endif()
