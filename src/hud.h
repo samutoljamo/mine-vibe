@@ -19,8 +19,7 @@ typedef struct HudVertex {
 } HudVertex;  /* 24 bytes */
 
 void     hud_init(HUD* hud);
-uint32_t hud_build(const HUD* hud, float screen_w, float screen_h,
-                   HudVertex* verts, uint32_t* indices);
+void     hud_build(const HUD* hud, float screen_w, float screen_h);
 BlockID  hud_selected_block(const HUD* hud);
 
 #endif

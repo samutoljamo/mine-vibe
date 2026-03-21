@@ -44,18 +44,6 @@ typedef struct Renderer {
     VkPipelineLayout            pipeline_layout;
     VkPipeline                  pipeline;
 
-    /* HUD rendering */
-    VkRenderPass      hud_render_pass;
-    VkPipeline        hud_pipeline;
-    VkPipelineLayout  hud_pipeline_layout;
-    VkFramebuffer*    hud_framebuffers;   /* one per swapchain image, color-only */
-    VkBuffer          hud_vertex_buffer[MAX_FRAMES_IN_FLIGHT];
-    VmaAllocation     hud_vertex_alloc[MAX_FRAMES_IN_FLIGHT];
-    VkBuffer          hud_index_buffer[MAX_FRAMES_IN_FLIGHT];
-    VmaAllocation     hud_index_alloc[MAX_FRAMES_IN_FLIGHT];
-    void*             hud_vb_mapped[MAX_FRAMES_IN_FLIGHT];
-    void*             hud_ib_mapped[MAX_FRAMES_IN_FLIGHT];
-
     /* Descriptors */
     VkDescriptorSetLayout       descriptor_set_layout;
     VkDescriptorPool            descriptor_pool;

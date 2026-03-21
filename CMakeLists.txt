@@ -198,6 +198,9 @@ add_test(NAME net COMMAND test_net)
 add_executable(test_ui
     tests/test_ui.c
     src/ui/ui.c
+    src/pipeline.c
+    src/vma_impl.cpp
+    tests/renderer_stubs.c
 )
 target_include_directories(test_ui PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -207,7 +210,7 @@ target_include_directories(test_ui PRIVATE
     ${vulkanmemoryallocator_SOURCE_DIR}/include
 )
 target_compile_definitions(test_ui PRIVATE VK_NO_PROTOTYPES UNDEBUG)
-target_link_libraries(test_ui PRIVATE cglm Vulkan::Headers m)
+target_link_libraries(test_ui PRIVATE volk GPUOpen::VulkanMemoryAllocator cglm Vulkan::Headers m ${CMAKE_DL_LIBS})
 add_test(NAME ui COMMAND test_ui)
 
 add_executable(test_remote_player
