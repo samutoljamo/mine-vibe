@@ -62,7 +62,7 @@ FetchContent_Declare(FastNoiseLite
 FetchContent_MakeAvailable(FastNoiseLite)
 
 # ---- Find Vulkan SDK (headers + glslc) ----
-find_package(Vulkan REQUIRED COMPONENTS glslc)
+find_package(Vulkan REQUIRED COMPONENTS glslangValidator)
 
 # ---- Shader compilation ----
 set(SHADER_DIR ${CMAKE_SOURCE_DIR}/shaders)
@@ -74,7 +74,7 @@ function(compile_shader SHADER_SRC)
     set(SHADER_SPV ${SHADER_BIN_DIR}/${SHADER_NAME}.spv)
     add_custom_command(
         OUTPUT ${SHADER_SPV}
-        COMMAND Vulkan::glslc ${SHADER_SRC} -o ${SHADER_SPV}
+        COMMAND Vulkan::glslangValidator -V ${SHADER_SRC} -o ${SHADER_SPV}
         DEPENDS ${SHADER_SRC}
         COMMENT "Compiling shader ${SHADER_NAME}"
     )
