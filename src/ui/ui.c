@@ -612,8 +612,25 @@ void ui_rect(float x, float y, float w, float h, vec4 color)
 
 void ui_text(float x, float y, float size, const char* text, vec4 color)
 {
-    /* TODO: implement in Task 7 */
-    (void)x; (void)y; (void)size; (void)text; (void)color;
+    if (!g_font_baked) return;
+    float scale = size / ATLAS_BAKE_PX;
+    float cx = x;
+    for (const char* p = text; *p; p++) {
+        int ci = (unsigned char)*p - GLYPH_FIRST;
+        if (ci < 0 || ci >= GLYPH_COUNT) {
+            cx += 8.0f * scale;  /* advance for unknown chars */
+            continue;
+        }
+        UiGlyph* g = &g_glyphs[ci];
+        float gx = cx + g->bearing_x * scale;
+        float gy = y  + g->bearing_y * scale;
+        float gw = g->width  * scale;
+        float gh = g->height * scale;
+        emit_quad(gx, gy, gw, gh,
+                  g->u0, g->v0, g->u1, g->v1,
+                  color[0], color[1], color[2], color[3]);
+        cx += g->advance * scale;
+    }
 }
 
 float ui_text_width(const char* text, float size)
@@ -623,7 +640,7 @@ float ui_text_width(const char* text, float size)
     float w = 0.0f;
     for (const char* p = text; *p; p++) {
         int ci = (unsigned char)*p - GLYPH_FIRST;
-        if (ci < 0 || ci >= GLYPH_COUNT) continue;
+        if (ci < 0 || ci >= GLYPH_COUNT) { w += 8.0f * scale; continue; } /* match ui_text fallback */
         w += g_glyphs[ci].advance * scale;
     }
     return w;

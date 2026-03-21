@@ -52,6 +52,7 @@ void hud_build(const HUD* hud, float sw, float sh)
         ui_rect(sx + SLOT_BORDER, hy + SLOT_BORDER,
                 SLOT_SIZE - 2 * SLOT_BORDER, SLOT_SIZE - 2 * SLOT_BORDER, fill);
     }
+
 }
 
 BlockID hud_selected_block(const HUD* hud)
