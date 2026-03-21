@@ -35,9 +35,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $exe = Get-ChildItem $env:VULKAN_SDK_BUILD_DIR -Recurse -Filter glslangValidator.exe -EA SilentlyContinue |
+          $buildDir = "${{ github.workspace }}\_vulkan_build"
+          $exe = Get-ChildItem $buildDir -Recurse -Filter glslangValidator.exe -EA SilentlyContinue |
                  Select-Object -First 1
-          if (-not $exe) { Write-Error "glslangValidator.exe not found in $env:VULKAN_SDK_BUILD_DIR"; exit 1 }
+          if (-not $exe) { Write-Error "glslangValidator.exe not found in $buildDir"; exit 1 }
           Write-Host "Found: $($exe.FullName)"
           $exe.DirectoryName | Out-File $env:GITHUB_PATH utf8 -Append
 
