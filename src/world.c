@@ -186,7 +186,10 @@ static void* worker_func(void* arg)
 static uint8_t* take_meta_snapshot(const Chunk* chunk)
 {
     uint8_t* snap = malloc(CHUNK_BLOCKS);
-    if (!snap) { fprintf(stderr, "take_meta_snapshot: out of memory\n"); abort(); }
+    if (!snap) {
+        fprintf(stderr, "take_meta_snapshot: out of memory, skipping meta\n");
+        return NULL;   /* mesher_build accepts NULL — treats all as zero */
+    }
     if (chunk->meta)
         memcpy(snap, chunk->meta, CHUNK_BLOCKS);
     else
