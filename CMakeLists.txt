@@ -195,3 +195,11 @@ target_include_directories(test_mesher PRIVATE
 target_compile_definitions(test_mesher PRIVATE VK_NO_PROTOTYPES)
 target_link_libraries(test_mesher PRIVATE cglm Vulkan::Headers m)
 add_test(NAME mesher COMMAND test_mesher)
+
+add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c)
+target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME client COMMAND test_client)
+target_link_libraries(test_client PRIVATE Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_client PRIVATE m)
+endif()

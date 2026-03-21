@@ -1,6 +1,8 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
+#define CLIENT_MAX_CONNECT_ATTEMPTS 10
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <netinet/in.h>
@@ -25,6 +27,7 @@ typedef struct {
     ReliableChannel reliable;
 
     double connect_sent_time;
+    int   connect_attempts;  /* incremented on each retry; 0 = first send */
 } Client;
 
 void client_init(Client* c, NetThread* net,
