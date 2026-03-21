@@ -207,7 +207,12 @@ void        scene_render(void);
 const Scene* scene_current(void);
 ```
 
-Two scenes wired up in `main.c`:
+Two scenes are defined in separate translation units. `scene.c` contains only the dispatch implementation (`scene_set`, `scene_update`, `scene_render`). Each scene is its own file:
+
+| File | Contents |
+|------|----------|
+| `src/ui/scene_launcher.c` | `on_enter/exit/update/render` for the launcher; exposes `extern const Scene scene_launcher` |
+| `src/ui/scene_game.c` | `on_enter/exit/update/render` for in-game; `pause_open` is a file-scoped `static bool`; exposes `extern const Scene scene_game` |
 
 ### 2.1 `scene_launcher`
 
@@ -260,13 +265,16 @@ Called from `scene_game`'s render function before `ui_frame_end()`. Draws crossh
 |------|--------|
 | `src/ui/ui.h` | New — toolkit public API |
 | `src/ui/ui.c` | New — font atlas, Vulkan pipeline/buffers, flexbox, widgets |
-| `src/ui/scene.h` | New — Scene struct + dispatch API |
-| `src/ui/scene.c` | New — scene_set, scene_launcher, scene_game |
+| `src/ui/scene.h` | New — Scene struct + dispatch API; declares `scene_launcher`, `scene_game` |
+| `src/ui/scene.c` | New — `scene_set`, `scene_update`, `scene_render` only |
+| `src/ui/scene_launcher.c` | New — launcher scene implementation |
+| `src/ui/scene_game.c` | New — game scene implementation, pause overlay |
 | `src/ui/hud.h` | Moved + trimmed — gameplay struct + build API only |
 | `src/ui/hud.c` | Moved + refactored — calls ui_rect/ui_text, no Vulkan |
 | `src/renderer.c` | HUD pipeline → UI pipeline; UiVertex format; add atlas texture |
-| `src/renderer_frame.c` | `hud_build()` → `ui_frame_begin/end()`; include path updated |
-| `src/main.c` | Add mouse button callback; scene dispatch loop; ESC handler |
+| `src/renderer.h` | `renderer_draw_frame` drops `const HUD* hud` parameter — HUD is now owned by `scene_game` via `ui_*` calls |
+| `src/renderer_frame.c` | `hud_build()` + HUD parameter removed → `ui_frame_begin/end()` wraps entire UI pass |
+| `src/main.c` | Add mouse button callback; scene dispatch loop; ESC handler; existing loading loop replaced by `scene_launcher` |
 | `shaders/hud.vert` | Add UV input; rename to `ui.vert` |
 | `shaders/hud.frag` | Add atlas sampler; rename to `ui.frag` |
 | `CMakeLists.txt` | Updated source paths; add ui/ files; rename shader targets |
