@@ -93,6 +93,9 @@ add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 add_executable(minecraft
     src/main.c
     src/renderer.c
+    src/renderer_frame.c
+    src/renderer_frame_dump.c
+    src/renderer_player_mesh.c
     src/swapchain.c
     src/pipeline.c
     src/texture.c
