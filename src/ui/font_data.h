@@ -1,5 +1,5 @@
 #pragma once
-/* Auto-generated from /var/home/samu/minecraft/.worktrees/ui-foundation/assets/fonts/ui.ttf — do not edit */
+/* Auto-generated from ui.ttf — do not edit */
 static const unsigned int  ui_font_data_len = 308360;
 static const unsigned char ui_font_data[] = {
     0x00,0x01,0x00,0x00,0x00,0x12,0x01,0x00,0x00,0x04,0x00,0x20,0x47,0x44,0x45,0x46,
