@@ -180,3 +180,18 @@ add_test(NAME agent_json COMMAND test_agent)
 add_executable(test_net tests/test_net.c src/net.c src/reliable.c)
 target_include_directories(test_net PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME net COMMAND test_net)
+
+add_executable(test_mesher
+    tests/test_mesher.c
+    src/mesher.c
+    src/chunk.c
+    src/block.c
+)
+target_include_directories(test_mesher PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_mesher PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_mesher PRIVATE cglm Vulkan::Headers m)
+add_test(NAME mesher COMMAND test_mesher)
