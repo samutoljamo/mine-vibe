@@ -71,10 +71,12 @@ out_color = vec4(frag_color.rgb, frag_color.a * texture(atlas, frag_uv).r);
 
 Same blend mode as current HUD (src-alpha / one-minus-src-alpha). Depth test off. Renders after the 3D pass by loading the existing swapchain image.
 
+**Descriptor set for atlas:** The UI pipeline uses a new `VkDescriptorSetLayout` with a single binding (binding 0, combined image sampler, fragment stage). `MAX_FRAMES_IN_FLIGHT` descriptor sets are allocated from a dedicated pool and updated once at `ui_init` to point at the atlas `VkImageView` + sampler. `renderer_frame.c` binds the per-frame descriptor set before the UI draw call — mirroring the pattern already used for the block and player pipelines.
+
 ### 1.3 Font Atlas
 
 - **Library**: stb_truetype (already a project dependency via FetchContent stb)
-- **Font**: a public-domain monospace TTF embedded as a C byte array in `src/ui/ui.c` (same pattern as `shaders_generated.c` / `assets_generated.c`)
+- **Font**: [Inconsolata](https://fonts.google.com/specimen/Inconsolata) (OFL license) or any public-domain monospace TTF. The TTF is committed to `assets/fonts/ui.ttf` and embedded as a C byte array via a CMake custom command (`xxd -i assets/fonts/ui.ttf > src/ui/font_data.h`) — same generation pattern as `shaders_generated.c`
 - **Atlas size**: 512×512, single channel R8
 - **Bake size**: 20px — one size baked at startup; smaller text is scaled in the vertex layout
 - **Glyph range**: ASCII 32–126 (printable characters)
@@ -180,10 +182,12 @@ Called each frame from `main.c` before `scene_update()`. GLFW callbacks (`glfwSe
 Called from `renderer_frame.c`:
 
 ```c
-ui_frame_begin(float screen_w, float screen_h);
+ui_frame_begin(VkCommandBuffer cmd, float screen_w, float screen_h);
 /* ... scene_render() calls ui_* to build geometry ... */
-ui_frame_end();   /* uploads vertex/index data, issues draw call */
+ui_frame_end(void);   /* uploads vertex/index data, issues draw call into cmd */
 ```
+
+`renderer_frame.c` owns the command buffer and passes it to `ui_frame_begin`. `ui.c` stores it module-globally for the duration of the frame. `ui_frame_end` calls `vkCmdBindPipeline`, `vkCmdBindDescriptorSets`, `vkCmdBindVertexBuffers`, `vkCmdBindIndexBuffer`, and `vkCmdDrawIndexed` directly into that command buffer. This mirrors how the existing HUD draw is issued inside `renderer_draw_frame`.
 
 Replaces the current `hud_build()` + manual memcpy + draw sequence.
 
@@ -216,7 +220,7 @@ Two scenes are defined in separate translation units. `scene.c` contains only th
 
 ### 2.1 `scene_launcher`
 
-- `on_enter`: unlock cursor (`GLFW_CURSOR_NORMAL`), stop any running server/client
+- `on_enter`: unlock cursor (`GLFW_CURSOR_NORMAL`). On first entry no networking is running, so no teardown is needed. When transitioning from `scene_game` back to `scene_launcher`, `scene_game.on_exit` calls a `game_teardown()` helper (defined in `scene_game.c`) that handles `client_disconnect`, `net_thread_stop`, and `net_socket_close`.
 - `update`: calls `ui_set_input`, then nothing else (no world ticking)
 - `render`: draws a centered panel with a "Start Game" button; clicking it starts a local server + client and transitions to `scene_game`
 
