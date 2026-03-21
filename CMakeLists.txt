@@ -114,6 +114,7 @@ add_executable(minecraft
     src/physics.c
     src/block_physics.c
     src/hud.c
+    src/ui/ui.c
     src/agent.c
     src/player_model.c
     src/net.c
