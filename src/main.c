@@ -12,7 +12,7 @@
 #include "chunk_mesh.h"
 #include "worldgen.h"
 #include "agent.h"
-#include "hud.h"
+#include "ui/hud.h"
 #include "net.h"
 #include "net_thread.h"
 #include "server.h"

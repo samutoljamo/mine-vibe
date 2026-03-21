@@ -3,8 +3,9 @@
 #include "chunk_mesh.h"
 #include "frustum.h"
 #include "player_model.h"
-#include "hud.h"
+#include "ui/hud.h"
 #include "agent.h"
+#include "ui/ui.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -159,38 +160,12 @@ void renderer_draw_frame(Renderer* r,
     /* 7. End render pass */
     vkCmdEndRenderPass(cmd);
 
-    /* HUD renderpass */
-    if (hud) {
-        HudVertex hud_verts[HUD_MAX_VERTS];
-        uint32_t  hud_idx[HUD_MAX_INDICES];
-        float sw = (float)r->swapchain.extent.width;
-        float sh = (float)r->swapchain.extent.height;
-        uint32_t vc = hud_build(hud, sw, sh, hud_verts, hud_idx);
-        uint32_t ic = vc / 4 * 6;   /* 4 verts → 6 indices per quad */
-
-        memcpy(r->hud_vb_mapped[fi], hud_verts, vc * sizeof(HudVertex));
-        memcpy(r->hud_ib_mapped[fi], hud_idx,   ic * sizeof(uint32_t));
-
-        VkRenderPassBeginInfo hud_rp = {
-            .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .renderPass  = r->hud_render_pass,
-            .framebuffer = r->hud_framebuffers[image_index],
-            .renderArea  = { .offset = {0,0}, .extent = r->swapchain.extent },
-            .clearValueCount = 0,
-        };
-        vkCmdBeginRenderPass(cmd, &hud_rp, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r->hud_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        if (vc > 0) {
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &r->hud_vertex_buffer[fi], &offset);
-            vkCmdBindIndexBuffer(cmd, r->hud_index_buffer[fi], 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, ic, 1, 0, 0, 0);
-        }
-        vkCmdEndRenderPass(cmd);
-    }
+    /* UI pass — HUD and any screen overlays */
+    float sw = (float)r->swapchain.extent.width;
+    float sh = (float)r->swapchain.extent.height;
+    ui_frame_begin(cmd, image_index, r->current_frame, sw, sh);
+    if (hud) hud_build(hud, sw, sh);
+    ui_frame_end();
 
     vkEndCommandBuffer(cmd);
 

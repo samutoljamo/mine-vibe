@@ -87,6 +87,8 @@ compile_shader(${SHADER_DIR}/player.vert)
 compile_shader(${SHADER_DIR}/player.frag)
 compile_shader(${SHADER_DIR}/hud.vert)
 compile_shader(${SHADER_DIR}/hud.frag)
+compile_shader(${SHADER_DIR}/ui.vert)
+compile_shader(${SHADER_DIR}/ui.frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 
 # ---- Executable ----
@@ -111,7 +113,8 @@ add_executable(minecraft
     src/player.c
     src/physics.c
     src/block_physics.c
-    src/hud.c
+    src/ui/hud.c
+    src/ui/ui.c
     src/agent.c
     src/player_model.c
     src/net.c
@@ -171,11 +174,6 @@ target_include_directories(test_block_physics PRIVATE
 target_link_libraries(test_block_physics PRIVATE cglm m)
 add_test(NAME block_physics COMMAND test_block_physics)
 
-add_executable(test_hud tests/test_hud.c src/hud.c src/block.c)
-target_include_directories(test_hud PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_hud PRIVATE m)
-add_test(NAME hud COMMAND test_hud)
-
 # Agent JSON unit tests (no Vulkan/GLFW required)
 add_executable(test_agent tests/test_agent_json.c src/agent.c)
 target_include_directories(test_agent PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -191,6 +189,24 @@ if(WIN32)
     target_link_libraries(test_net PRIVATE ws2_32)
 endif()
 add_test(NAME net COMMAND test_net)
+
+add_executable(test_ui
+    tests/test_ui.c
+    src/ui/ui.c
+    src/pipeline.c
+    src/vma_impl.cpp
+    tests/renderer_stubs.c
+)
+target_include_directories(test_ui PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${stb_SOURCE_DIR}
+    ${cglm_SOURCE_DIR}/include
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_ui PRIVATE VK_NO_PROTOTYPES UNDEBUG)
+target_link_libraries(test_ui PRIVATE volk GPUOpen::VulkanMemoryAllocator cglm Vulkan::Headers m ${CMAKE_DL_LIBS})
+add_test(NAME ui COMMAND test_ui)
 
 add_executable(test_remote_player
     tests/test_remote_player.c
