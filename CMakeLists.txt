@@ -180,3 +180,11 @@ add_test(NAME agent_json COMMAND test_agent)
 add_executable(test_net tests/test_net.c src/net.c src/reliable.c)
 target_include_directories(test_net PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME net COMMAND test_net)
+
+add_executable(test_remote_player
+    tests/test_remote_player.c
+    src/remote_player.c
+)
+target_include_directories(test_remote_player PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_remote_player PRIVATE cglm m)
+add_test(NAME remote_player COMMAND test_remote_player)
