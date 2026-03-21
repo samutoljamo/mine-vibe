@@ -95,6 +95,16 @@ int client_poll(Client* c)
             PacketHeader hdr;
             net_read_header(msg->data, &off, &hdr);
             uint8_t count = net_read_u8(msg->data, &off);
+
+            /* Validate: packet must contain at least count * (1+5*4) bytes after header+count */
+            int required = (int)off + count * (1 + 5 * 4);
+            if (required > msg->len) {
+                fprintf(stderr, "[client] PKT_WORLD_STATE truncated "
+                        "(need %d bytes, have %d)\n", required, msg->len);
+                free(msg);
+                continue;
+            }
+
             for (int i = 0; i < count; i++) {
                 uint8_t pid = net_read_u8(msg->data, &off);
                 float x     = net_read_float(msg->data, &off);
