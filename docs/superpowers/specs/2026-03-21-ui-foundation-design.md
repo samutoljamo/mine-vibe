@@ -285,7 +285,17 @@ Called from `scene_game`'s render function before `ui_frame_end()`. Draws crossh
 
 ---
 
-## 5. What Is NOT Changing
+## 5. Implementation Notes
+
+- **`test_hud` must be rewritten.** It calls `hud_build()` with the old signature and inspects `HudVertex` fields directly. After the refactor it should be deleted or rewritten to test `hud_build` via `ui_*` spy/mock, or just removed and coverage provided by integration.
+- **`agent.h` includes `hud.h` for `HUD_SLOT_COUNT`** — update include path to `"ui/hud.h"`.
+- **`--agent` flag skips `scene_launcher`** and enters `scene_game` directly, as today. `main.c` checks `argc/argv` before calling `scene_set` and routes accordingly.
+- **`font_data.h` is pre-generated and committed** (same as `shaders_generated.c` / `assets_generated.c`) rather than generated at build time, to avoid `xxd` portability issues.
+- **`Renderer` struct surgery is substantial**: 11 HUD-related fields (`hud_render_pass`, `hud_pipeline`, `hud_pipeline_layout`, `hud_framebuffers[2]`, vertex/index buffers + VMA allocations) are replaced with UI equivalents. `renderer_recreate_swapchain` must also be updated since it rebuilds `hud_framebuffers`.
+
+---
+
+## 6. What Is NOT Changing
 
 - The 3D renderer pipeline, world, physics, networking — untouched
 - `HUD` gameplay struct fields (`selected_slot`, `slot_blocks`) — unchanged
