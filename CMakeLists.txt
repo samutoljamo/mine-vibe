@@ -87,6 +87,8 @@ compile_shader(${SHADER_DIR}/player.vert)
 compile_shader(${SHADER_DIR}/player.frag)
 compile_shader(${SHADER_DIR}/hud.vert)
 compile_shader(${SHADER_DIR}/hud.frag)
+compile_shader(${SHADER_DIR}/ui.vert)
+compile_shader(${SHADER_DIR}/ui.frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 
 # ---- Executable ----
