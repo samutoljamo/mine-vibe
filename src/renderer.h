@@ -11,7 +11,7 @@
 #include "swapchain.h"
 #include "vertex.h"
 #include "player_model.h"
-#include "hud.h"
+#include "ui/hud.h"
 
 #define MAX_FRAMES_IN_FLIGHT 2
 

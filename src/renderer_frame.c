@@ -3,7 +3,7 @@
 #include "chunk_mesh.h"
 #include "frustum.h"
 #include "player_model.h"
-#include "hud.h"
+#include "ui/hud.h"
 #include "agent.h"
 #include "ui/ui.h"
 #include <stdio.h>

@@ -5,7 +5,7 @@
 #include "frustum.h"
 #include "chunk_mesh.h"
 #include "assets.h"
-#include "hud.h"
+#include "ui/hud.h"
 #include "agent.h"
 #include "ui/ui.h"
 #include <stdio.h>
