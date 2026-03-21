@@ -2,6 +2,7 @@
 #include "chunk.h"
 #include "block_physics.h"   /* WATER_SOURCE_LEVEL */
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 /* Atlas: 16 tiles per row in 256x256 texture */
@@ -31,12 +32,24 @@ void mesh_data_free(MeshData* md)
 static void ensure_capacity(MeshData* md, uint32_t need_verts, uint32_t need_idx)
 {
     while (md->vertex_count + need_verts > md->vertex_cap) {
-        md->vertex_cap *= 2;
-        md->vertices = realloc(md->vertices, md->vertex_cap * sizeof(BlockVertex));
+        uint32_t new_cap = md->vertex_cap * 2;
+        void* tmp = realloc(md->vertices, new_cap * sizeof(BlockVertex));
+        if (!tmp) {
+            fprintf(stderr, "ensure_capacity: out of memory (vertices)\n");
+            abort();
+        }
+        md->vertices   = tmp;
+        md->vertex_cap = new_cap;
     }
     while (md->index_count + need_idx > md->index_cap) {
-        md->index_cap *= 2;
-        md->indices = realloc(md->indices, md->index_cap * sizeof(uint32_t));
+        uint32_t new_cap = md->index_cap * 2;
+        void* tmp = realloc(md->indices, new_cap * sizeof(uint32_t));
+        if (!tmp) {
+            fprintf(stderr, "ensure_capacity: out of memory (indices)\n");
+            abort();
+        }
+        md->indices   = tmp;
+        md->index_cap = new_cap;
     }
 }
 
