@@ -206,7 +206,7 @@ target_include_directories(test_ui PRIVATE
     ${volk_SOURCE_DIR}
     ${vulkanmemoryallocator_SOURCE_DIR}/include
 )
-target_compile_definitions(test_ui PRIVATE VK_NO_PROTOTYPES)
+target_compile_definitions(test_ui PRIVATE VK_NO_PROTOTYPES UNDEBUG)
 target_link_libraries(test_ui PRIVATE cglm Vulkan::Headers m)
 add_test(NAME ui COMMAND test_ui)
 
