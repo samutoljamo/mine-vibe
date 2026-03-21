@@ -195,6 +195,21 @@ if(WIN32)
 endif()
 add_test(NAME net COMMAND test_net)
 
+add_executable(test_ui
+    tests/test_ui.c
+    src/ui/ui.c
+)
+target_include_directories(test_ui PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${stb_SOURCE_DIR}
+    ${cglm_SOURCE_DIR}/include
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_ui PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_ui PRIVATE cglm Vulkan::Headers m)
+add_test(NAME ui COMMAND test_ui)
+
 add_executable(test_remote_player
     tests/test_remote_player.c
     src/remote_player.c

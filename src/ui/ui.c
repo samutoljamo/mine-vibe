@@ -74,8 +74,40 @@ static uint32_t  g_image_index;
 
 bool ui_font_bake(void)
 {
-    /* TODO: implement in Task 4 */
-    return false;
+    if (g_font_baked) return true;
+
+    /* Set white pixel region (top-left 2×2) before packing glyphs */
+    for (int y = 0; y < 2; y++)
+        for (int x = 0; x < 2; x++)
+            g_atlas_cpu[y * ATLAS_W + x] = 0xFF;
+
+    stbtt_pack_context pc;
+    if (!stbtt_PackBegin(&pc, g_atlas_cpu, ATLAS_W, ATLAS_H, ATLAS_W, 1, NULL)) {
+        fprintf(stderr, "ui_font_bake: stbtt_PackBegin failed\n");
+        return false;
+    }
+
+    stbtt_packedchar packed[GLYPH_COUNT];
+    stbtt_PackFontRange(&pc, ui_font_data, 0, ATLAS_BAKE_PX,
+                        GLYPH_FIRST, GLYPH_COUNT, packed);
+    stbtt_PackEnd(&pc);
+
+    /* Build glyph metric table */
+    for (int i = 0; i < GLYPH_COUNT; i++) {
+        stbtt_packedchar* p = &packed[i];
+        g_glyphs[i].u0       = (float)p->x0 / ATLAS_W;
+        g_glyphs[i].v0       = (float)p->y0 / ATLAS_H;
+        g_glyphs[i].u1       = (float)p->x1 / ATLAS_W;
+        g_glyphs[i].v1       = (float)p->y1 / ATLAS_H;
+        g_glyphs[i].width    = (float)(p->x1 - p->x0);
+        g_glyphs[i].height   = (float)(p->y1 - p->y0);
+        g_glyphs[i].bearing_x = p->xoff;
+        g_glyphs[i].bearing_y = p->yoff;
+        g_glyphs[i].advance   = p->xadvance;
+    }
+
+    g_font_baked = true;
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -149,9 +181,15 @@ void ui_text(float x, float y, float size, const char* text, vec4 color)
 
 float ui_text_width(const char* text, float size)
 {
-    /* TODO: implement in Task 4 */
-    (void)text; (void)size;
-    return 0.0f;
+    if (!g_font_baked) return 0.0f;
+    float scale = size / ATLAS_BAKE_PX;
+    float w = 0.0f;
+    for (const char* p = text; *p; p++) {
+        int ci = (unsigned char)*p - GLYPH_FIRST;
+        if (ci < 0 || ci >= GLYPH_COUNT) continue;
+        w += g_glyphs[ci].advance * scale;
+    }
+    return w;
 }
 
 /* ------------------------------------------------------------------ */
