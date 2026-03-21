@@ -6,7 +6,7 @@
 #include <cglm/cglm.h>
 
 #define REMOTE_PLAYER_MAX    32
-#define REMOTE_PLAYER_DELAY  0.1  /* seconds of interpolation lag */
+#define REMOTE_PLAYER_DELAY  0.025  /* seconds of interpolation lag */
 
 typedef struct {
     uint8_t  player_id;
