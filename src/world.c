@@ -647,9 +647,15 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
 
             /* Grow array if needed */
             if (world->render_count >= world->render_cap) {
-                world->render_cap *= 2;
-                world->render_meshes = realloc(world->render_meshes,
-                                                sizeof(ChunkMesh) * world->render_cap);
+                uint32_t new_cap = world->render_cap * 2;
+                void* tmp = realloc(world->render_meshes,
+                                    sizeof(ChunkMesh) * new_cap);
+                if (!tmp) {
+                    fprintf(stderr, "world_collect_meshes: out of memory\n");
+                    abort();
+                }
+                world->render_meshes = tmp;
+                world->render_cap    = new_cap;
             }
 
             world->render_meshes[world->render_count++] = chunk->mesh;
