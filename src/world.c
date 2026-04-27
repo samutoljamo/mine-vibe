@@ -862,10 +862,27 @@ bool world_set_block(World* world, int x, int y, int z, BlockID id) {
     if (!chunk) return false;
 
     int state = atomic_load(&chunk->state);
-    if (state == CHUNK_MESHING) return false; /* deferred — safe write rule */
+    if (state == CHUNK_MESHING) return false;  /* deferred — safe write rule */
+    if (state == CHUNK_LIGHTING) return false; /* deferred — same rule */
     if (state < CHUNK_GENERATED) return false;
 
+    BlockID old_id = chunk_get_block(chunk, lx, y, lz);
     chunk_set_block(chunk, lx, y, lz, id);
+
+    /* Run inline relight if the chunk has been lit at least once. The
+     * BFS is bounded to 15 levels and runs fast for single-block changes. */
+    if (state >= CHUNK_LIT) {
+        Chunk* nx_pos = chunk_map_get(&world->map, cx + 1, cz);
+        Chunk* nx_neg = chunk_map_get(&world->map, cx - 1, cz);
+        Chunk* nz_pos = chunk_map_get(&world->map, cx, cz + 1);
+        Chunk* nz_neg = chunk_map_get(&world->map, cx, cz - 1);
+        LightingNeighbors lnb = {
+            .neg_x = nx_neg, .pos_x = nx_pos,
+            .neg_z = nz_neg, .pos_z = nz_pos,
+        };
+        lighting_on_block_changed(chunk, &lnb, lx, y, lz, old_id, id);
+    }
+
     chunk->needs_remesh = true;
     return true;
 }
