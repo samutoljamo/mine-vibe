@@ -8,7 +8,9 @@ layout(location = 1) in vec4 frag_color;
 layout(location = 0) out vec4 out_color;
 
 void main() {
-    /* Solid quads: UV = white pixel → atlas.r = 1.0 → color passes through.
-     * Glyphs: UV = glyph region → atlas.r = glyph alpha. */
-    out_color = vec4(frag_color.rgb, frag_color.a * texture(atlas, frag_uv).r);
+    /* RGBA atlas:
+     *   - White pixel region: sampled (1,1,1,1), tint passes through.
+     *   - Glyphs: sampled (g,g,g,g), tint multiplies through (matches old R8 behaviour).
+     *   - Block icons: sampled full RGBA, tint white passes full color through. */
+    out_color = texture(atlas, frag_uv) * frag_color;
 }

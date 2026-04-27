@@ -1,6 +1,7 @@
 #include "../renderer.h"
 #include "ui.h"
 #include "../pipeline.h"
+#include "../block.h"
 #include "font_data.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -32,8 +33,19 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 
 static UiGlyph   g_glyphs[GLYPH_COUNT];
-static uint8_t   g_atlas_cpu[ATLAS_W * ATLAS_H];  /* R8 bitmap */
+static uint8_t   g_atlas_cpu[ATLAS_W * ATLAS_H * 4];  /* RGBA bitmap */
 static bool      g_font_baked = false;
+
+/* ------------------------------------------------------------------ */
+/*  Block icon strip (baked at the bottom of the atlas)                */
+/* ------------------------------------------------------------------ */
+
+#define ICON_PX        32
+#define ICON_STRIP_Y0  (ATLAS_H - ICON_PX)
+#define ICON_COUNT     BLOCK_COUNT
+
+typedef struct { float u0, v0, u1, v1; } UiBlockIcon;
+static UiBlockIcon g_block_icons[ICON_COUNT];
 
 /* Vulkan objects — populated by ui_init */
 static VkDevice          g_device;
@@ -69,6 +81,83 @@ static int       g_frame_index;
 static uint32_t  g_image_index;
 
 /* ------------------------------------------------------------------ */
+/*  Block icon baking helpers                                          */
+/* ------------------------------------------------------------------ */
+
+static void put_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b)
+{
+    if (x < 0 || x >= ATLAS_W || y < 0 || y >= ATLAS_H) return;
+    int i = (y * ATLAS_W + x) * 4;
+    g_atlas_cpu[i + 0] = r;
+    g_atlas_cpu[i + 1] = g;
+    g_atlas_cpu[i + 2] = b;
+    g_atlas_cpu[i + 3] = 255;
+}
+
+static void bake_one_icon(int cell_x, int cell_y, BlockID b)
+{
+    uint8_t cr, cg, cb;
+    block_representative_color(b, &cr, &cg, &cb);
+
+    /* Iso projection inside a 32x32 cell.
+     * Top face (rhombus, lighter):  shading 1.0
+     * Right face (parallelogram):    shading 0.8
+     * Left face (parallelogram):     shading 0.6
+     * Coordinates relative to cell origin:
+     *   top centre at (16, 4); top side at y=12 (left/right vertices at x=4 and x=28).
+     *   bottom centre at (16, 28). */
+
+    /* Top face: rhombus with corners (16,4) (28,12) (16,20) (4,12). */
+    for (int y = 4; y <= 20; y++) {
+        int half;
+        if (y <= 12) half = (y - 4) * 12 / 8;
+        else         half = (20 - y) * 12 / 8;
+        for (int dx = -half; dx <= half; dx++) {
+            put_pixel(cell_x + 16 + dx, cell_y + y, cr, cg, cb);
+        }
+    }
+
+    /* Right face: from (16,20) up-right to (28,12), down to (28,28), down to (16,32). */
+    for (int y = 12; y < 32; y++) {
+        int x0;
+        if (y < 20) x0 = 28 - (y - 12) * 12 / 8;
+        else        x0 = 16;
+        for (int x = x0; x < 32; x++) {
+            uint8_t r2 = (uint8_t)(cr * 0.8f);
+            uint8_t g2 = (uint8_t)(cg * 0.8f);
+            uint8_t b2 = (uint8_t)(cb * 0.8f);
+            put_pixel(cell_x + x, cell_y + y, r2, g2, b2);
+        }
+    }
+
+    /* Left face: mirror of right. */
+    for (int y = 12; y < 32; y++) {
+        int x1;
+        if (y < 20) x1 = 4 + (y - 12) * 12 / 8;
+        else        x1 = 16;
+        for (int x = 0; x < x1; x++) {
+            uint8_t r2 = (uint8_t)(cr * 0.6f);
+            uint8_t g2 = (uint8_t)(cg * 0.6f);
+            uint8_t b2 = (uint8_t)(cb * 0.6f);
+            put_pixel(cell_x + x, cell_y + y, r2, g2, b2);
+        }
+    }
+}
+
+static void bake_block_icons(void)
+{
+    for (int b = 0; b < ICON_COUNT; b++) {
+        int cell_x = b * ICON_PX;
+        if (cell_x + ICON_PX > ATLAS_W) break;
+        bake_one_icon(cell_x, ICON_STRIP_Y0, (BlockID)b);
+        g_block_icons[b].u0 =  cell_x                     / (float)ATLAS_W;
+        g_block_icons[b].v0 =  ICON_STRIP_Y0              / (float)ATLAS_H;
+        g_block_icons[b].u1 = (cell_x + ICON_PX)          / (float)ATLAS_W;
+        g_block_icons[b].v1 = (ICON_STRIP_Y0 + ICON_PX)   / (float)ATLAS_H;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Font baking (no Vulkan)                                            */
 /* ------------------------------------------------------------------ */
 
@@ -76,8 +165,12 @@ bool ui_font_bake(void)
 {
     if (g_font_baked) return true;
 
+    /* stbtt writes single-channel R8; we splat into RGBA below. */
+    static uint8_t r8[ATLAS_W * ATLAS_H];
+    memset(r8, 0, sizeof(r8));
+
     stbtt_pack_context pc;
-    if (!stbtt_PackBegin(&pc, g_atlas_cpu, ATLAS_W, ATLAS_H, ATLAS_W, 1, NULL)) {
+    if (!stbtt_PackBegin(&pc, r8, ATLAS_W, ATLAS_H, ATLAS_W, 1, NULL)) {
         fprintf(stderr, "ui_font_bake: stbtt_PackBegin failed\n");
         return false;
     }
@@ -87,10 +180,27 @@ bool ui_font_bake(void)
                         GLYPH_FIRST, GLYPH_COUNT, packed);
     stbtt_PackEnd(&pc);
 
-    /* Set white pixel region (top-left 2×2) AFTER packing — PackBegin zeroes the buffer */
-    for (int y = 0; y < 2; y++)
-        for (int x = 0; x < 2; x++)
-            g_atlas_cpu[y * ATLAS_W + x] = 0xFF;
+    /* Splat R8 -> RGBA. Grayscale glyph (v,v,v,v) so the fragment shader's
+     * `texture(atlas, uv) * tint` reproduces the original alpha-mask behaviour. */
+    memset(g_atlas_cpu, 0, sizeof(g_atlas_cpu));
+    for (int i = 0; i < ATLAS_W * ATLAS_H; i++) {
+        uint8_t v = r8[i];
+        g_atlas_cpu[i * 4 + 0] = v;
+        g_atlas_cpu[i * 4 + 1] = v;
+        g_atlas_cpu[i * 4 + 2] = v;
+        g_atlas_cpu[i * 4 + 3] = v;
+    }
+
+    /* White pixel region for ui_rect — opaque white RGBA. */
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            int i = (y * ATLAS_W + x) * 4;
+            g_atlas_cpu[i + 0] = 255;
+            g_atlas_cpu[i + 1] = 255;
+            g_atlas_cpu[i + 2] = 255;
+            g_atlas_cpu[i + 3] = 255;
+        }
+    }
 
     /* Build glyph metric table */
     for (int i = 0; i < GLYPH_COUNT; i++) {
@@ -105,6 +215,9 @@ bool ui_font_bake(void)
         g_glyphs[i].bearing_y = p->yoff;
         g_glyphs[i].advance   = p->xadvance;
     }
+
+    /* Bake isometric block icons into the bottom strip of the atlas. */
+    bake_block_icons();
 
     g_font_baked = true;
     return true;
@@ -129,7 +242,7 @@ void ui_init(struct Renderer* r)
     VkImageCreateInfo img_ci = {
         .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType     = VK_IMAGE_TYPE_2D,
-        .format        = VK_FORMAT_R8_UNORM,
+        .format        = VK_FORMAT_R8G8B8A8_UNORM,
         .extent        = { ATLAS_W, ATLAS_H, 1 },
         .mipLevels     = 1,
         .arrayLayers   = 1,
@@ -145,8 +258,8 @@ void ui_init(struct Renderer* r)
     vmaCreateImage(r->allocator, &img_ci, &img_alloc_ci,
                    &g_atlas_image, &g_atlas_alloc, NULL);
 
-    /* Upload atlas via staging buffer */
-    VkDeviceSize atlas_size = ATLAS_W * ATLAS_H;
+    /* Upload atlas via staging buffer (RGBA8 = 4 bytes/pixel) */
+    VkDeviceSize atlas_size = ATLAS_W * ATLAS_H * 4;
     VkBuffer      staging;
     VmaAllocation staging_alloc;
     VkBufferCreateInfo stg_ci = {
@@ -212,7 +325,7 @@ void ui_init(struct Renderer* r)
         .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image    = g_atlas_image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format   = VK_FORMAT_R8_UNORM,
+        .format   = VK_FORMAT_R8G8B8A8_UNORM,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
     vkCreateImageView(r->device, &view_ci, NULL, &g_atlas_view);
@@ -631,6 +744,14 @@ void ui_text(float x, float y, float size, const char* text, vec4 color)
                   color[0], color[1], color[2], color[3]);
         cx += g->advance * scale;
     }
+}
+
+void ui_block_icon(BlockID id, float x, float y, float size)
+{
+    if ((int)id < 0 || (int)id >= ICON_COUNT) return;
+    UiBlockIcon* ic = &g_block_icons[id];
+    emit_quad(x, y, size, size, ic->u0, ic->v0, ic->u1, ic->v1,
+              1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 float ui_text_width(const char* text, float size)

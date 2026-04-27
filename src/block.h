@@ -31,6 +31,10 @@ typedef struct BlockDef {
 
 const BlockDef* block_get_def(BlockID id);
 
+/* Returns a representative RGB colour for a block, used by UI block icons
+ * (inventory, hotbar). Unknown IDs map to magenta to flag missing entries. */
+void block_representative_color(BlockID id, uint8_t* r, uint8_t* g, uint8_t* b);
+
 static inline bool block_is_solid(BlockID id) {
     return block_get_def(id)->is_solid;
 }
