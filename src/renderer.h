@@ -100,6 +100,15 @@ typedef struct Renderer {
     VkBuffer      player_ib;
     VmaAllocation player_ib_alloc;
     uint32_t      player_index_count;
+
+    /* Block-outline pipeline (drawn in the world renderpass after world
+     * geometry, before the renderpass ends). */
+    VkPipeline       outline_pipeline;
+    VkPipelineLayout outline_pipeline_layout;
+    VkBuffer         outline_vb[MAX_FRAMES_IN_FLIGHT];
+    VmaAllocation    outline_vb_alloc[MAX_FRAMES_IN_FLIGHT];
+    void*            outline_vb_mapped[MAX_FRAMES_IN_FLIGHT];
+    uint32_t         outline_vert_count;   /* reset to 0 per frame; one block emits 24 verts */
 } Renderer;
 
 bool renderer_init(Renderer* r, GLFWwindow* window);
@@ -126,5 +135,11 @@ void renderer_draw_remote_players(Renderer* r,
 
 VkCommandBuffer renderer_begin_single_cmd(Renderer* r);
 void            renderer_end_single_cmd(Renderer* r, VkCommandBuffer cmd);
+
+/* Emit a wireframe outline for the given block-cell into the current frame's
+ * outline vertex buffer. No-op if the per-frame buffer would overflow.
+ * Must be called between the per-frame reset (start of renderer_draw_frame)
+ * and the world renderpass draw of the outline pipeline. */
+void renderer_outline_emit_block(Renderer* r, int x, int y, int z);
 
 #endif

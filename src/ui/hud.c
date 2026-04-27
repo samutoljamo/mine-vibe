@@ -1,7 +1,6 @@
 #include "hud.h"
 #include "ui.h"
 #include "../inventory.h"
-#include "../raycast.h"
 #include <stdio.h>
 
 #define SLOT_SIZE   40
@@ -67,10 +66,4 @@ void hud_build(const Inventory* inv, float sw, float sh)
 BlockID hud_selected_block(const Inventory* inv)
 {
     return inv->slots[inv->selected].block;
-}
-
-void hud_build_target(const RaycastHit* hit)
-{
-    /* Stub for Task 8 — Task 9 wires up the outline pipeline. */
-    (void)hit;
 }

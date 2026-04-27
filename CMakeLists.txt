@@ -101,6 +101,8 @@ compile_shader(${SHADER_DIR}/hud.vert)
 compile_shader(${SHADER_DIR}/hud.frag)
 compile_shader(${SHADER_DIR}/ui.vert)
 compile_shader(${SHADER_DIR}/ui.frag)
+compile_shader(${SHADER_DIR}/outline.vert)
+compile_shader(${SHADER_DIR}/outline.frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 
 # ---- Executable ----
