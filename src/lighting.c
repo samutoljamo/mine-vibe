@@ -66,16 +66,22 @@ static void sky_column_pass(Chunk* c)
     }
 }
 
-/* Append a boundary delta to the neighbor's pending queue. Grows on demand. */
+/* Append a boundary delta to the neighbor's pending queue. Grows on demand.
+ * Guarded by pending_mutex so multiple workers can safely push concurrently. */
 static void push_boundary_delta(Chunk* nb_chunk, uint8_t face,
                                 uint8_t axis_coord, uint16_t y, uint8_t new_light)
 {
+    pt_mutex_lock(&nb_chunk->pending_mutex);
+
     if (nb_chunk->pending_delta_count >= nb_chunk->pending_delta_cap) {
         uint32_t new_cap = nb_chunk->pending_delta_cap == 0
             ? 64u : nb_chunk->pending_delta_cap * 2u;
         BoundaryDelta* tmp = realloc(nb_chunk->pending_deltas,
                                      new_cap * sizeof(BoundaryDelta));
-        if (!tmp) return;
+        if (!tmp) {
+            pt_mutex_unlock(&nb_chunk->pending_mutex);
+            return;
+        }
         nb_chunk->pending_deltas    = tmp;
         nb_chunk->pending_delta_cap = new_cap;
     }
@@ -85,6 +91,8 @@ static void push_boundary_delta(Chunk* nb_chunk, uint8_t face,
     d->y          = y;
     d->new_light  = new_light;
     nb_chunk->needs_relight = true;
+
+    pt_mutex_unlock(&nb_chunk->pending_mutex);
 }
 
 static void horizontal_bfs(Chunk* c, const LightingNeighbors* nb)
@@ -182,25 +190,38 @@ void lighting_initial_pass(Chunk* c, const LightingNeighbors* nb)
 
 void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
 {
+    /* Snapshot the queue under the lock and clear it so concurrent pushes
+     * from other workers go to a fresh queue. */
+    pt_mutex_lock(&c->pending_mutex);
     if (c->pending_delta_count == 0) {
         c->needs_relight = false;
+        pt_mutex_unlock(&c->pending_mutex);
         return;
     }
+
+    BoundaryDelta* deltas = c->pending_deltas;
+    uint32_t       count  = c->pending_delta_count;
+    /* uint32_t       cap    = c->pending_delta_cap; */ /* unused — we own the buffer now */
+
+    c->pending_deltas       = NULL;
+    c->pending_delta_count  = 0;
+    c->pending_delta_cap    = 0;
+    c->needs_relight        = false;
+    pt_mutex_unlock(&c->pending_mutex);
 
     LightQueue* q = malloc(sizeof(LightQueue));
     if (!q) {
         fprintf(stderr, "lighting: out of memory for BFS queue\n");
+        free(deltas);
         return;
     }
     lq_init(q);
 
-    /* Apply each pending delta directly into c->lights, then seed a queue
-     * with the changed cells so addition-BFS spreads from them. */
-    for (uint32_t i = 0; i < c->pending_delta_count; i++) {
-        BoundaryDelta d = c->pending_deltas[i];
+    for (uint32_t i = 0; i < count; i++) {
+        BoundaryDelta d = deltas[i];
         int x, z;
         switch (d.face) {
-        case 0: x = 0;            z = d.axis_coord; break;  /* +X face: write at x=0 */
+        case 0: x = 0;            z = d.axis_coord; break;
         case 1: x = CHUNK_X - 1;  z = d.axis_coord; break;
         case 2: x = d.axis_coord; z = 0;            break;
         case 3: x = d.axis_coord; z = CHUNK_Z - 1;  break;
@@ -214,10 +235,9 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
         }
     }
 
-    c->pending_delta_count = 0;
-    c->needs_relight       = false;
+    free(deltas);
 
-    /* Re-run the same propagation logic. */
+    /* Re-run propagation. */
     static const int dx[6] = { 1, -1,  0,  0,  0,  0 };
     static const int dy[6] = { 0,  0,  1, -1,  0,  0 };
     static const int dz[6] = { 0,  0,  0,  0,  1, -1 };
@@ -262,6 +282,7 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
             }
         }
     }
+
     free(q);
 }
 
