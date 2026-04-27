@@ -265,11 +265,13 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
     free(q);
 }
 
-/* Removal-BFS: visit cells reachable from (x,y,z) whose only support was a
- * value <= the cell's old contribution. Zero them and queue brighter
- * surviving neighbors as re-propagation seeds. The caller-supplied
- * re_propagate queue receives those seeds. The caller-supplied removal
- * queue is the working queue for this BFS. */
+/* Removal-BFS: starting at the cell whose light dropped, visit cells whose
+ * light value was SUSTAINED by us (i.e., nb_sky + neighbor_cost <= cell.light).
+ * Zero them and continue removal from their old value. Cells with higher light
+ * (sustained by an independent source) become re-propagation seeds.
+ *
+ * The caller-supplied re_propagate queue receives those seeds. The caller-supplied
+ * removal queue is the working queue for this BFS. */
 static void removal_bfs(Chunk* c, const LightingNeighbors* nb,
                         int x, int y, int z,
                         uint8_t old_value,
@@ -289,17 +291,22 @@ static void removal_bfs(Chunk* c, const LightingNeighbors* nb,
             int ny_ = cell.y + dy[f];
             int nz_ = cell.z + dz[f];
             if (ny_ < 0 || ny_ >= CHUNK_Y) continue;
-            if (nx_ < 0 || nx_ >= CHUNK_X) continue;  /* spec 1: local only */
+            if (nx_ < 0 || nx_ >= CHUNK_X) continue;  /* spec 1: cross-chunk removal not implemented */
             if (nz_ < 0 || nz_ >= CHUNK_Z) continue;
 
             uint8_t nb_sky = chunk_get_skylight(c, nx_, ny_, nz_);
             if (nb_sky == 0) continue;
 
-            /* If this neighbor's light could have been sustained by us
-             * (cell.light - cost == nb_sky), zero it and continue removal.
-             * Otherwise it's brighter than we contributed — queue it as a
-             * re-propagation seed. */
-            if (nb_sky < cell.light) {
+            BlockID b = chunk_get_block(c, nx_, ny_, nz_);
+            uint8_t cost = block_get_def(b)->light_absorb;
+            if (cost < 1) cost = 1;
+
+            /* If this neighbor's light could have been sustained by `cell`
+             * (nb_sky + cost <= cell.light), then `cell` was a (possibly the
+             * only) source — zero it and continue removal. Otherwise the
+             * neighbor has an independent brighter source; queue it as an
+             * addition seed so its light flows back into our zeroed region. */
+            if (nb_sky + cost <= cell.light) {
                 chunk_set_skylight(c, nx_, ny_, nz_, 0);
                 lq_push(rq, nx_, ny_, nz_, nb_sky);
             } else {
@@ -308,7 +315,7 @@ static void removal_bfs(Chunk* c, const LightingNeighbors* nb,
         }
     }
 
-    (void)nb; /* cross-chunk removal is bounded; see Risks in spec */
+    (void)nb; /* cross-chunk removal not implemented in spec 1 */
 }
 
 /* Addition-BFS: relax outward from a queue of cells. Same code shape as

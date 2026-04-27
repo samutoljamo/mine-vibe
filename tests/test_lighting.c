@@ -348,6 +348,48 @@ static void test_relight_break_opaque_roof(void)
     printf("PASS: test_relight_break_opaque_roof\n");
 }
 
+/* Place an opaque block where light comes laterally (not from above).
+ * Cells lit by independent paths must NOT be zeroed by removal_bfs. */
+static void test_relight_place_does_not_clear_lateral_light(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    /* Stone roof at y=20 covering x=4..11 only (open at x<4 and x>11).
+     * Light reaches under the roof from both sides. */
+    for (int x = 4; x <= 11; x++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            chunk_set_block(c, x, 20, z, BLOCK_STONE);
+
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+
+    /* Trace expected values pre-relight: cells under the roof get light
+     * from BFS through the open sides. (5, 19, 8) is under the roof, two
+     * steps from open at x=3, so sky should be ~13. (8, 19, 8) is the
+     * middle cell, ~10. We don't assert the exact pre-values, just that
+     * they're nonzero. */
+    uint8_t sky_before_5 = chunk_get_skylight(c, 5, 19, 8);
+    uint8_t sky_before_10 = chunk_get_skylight(c, 10, 19, 8);
+    assert(sky_before_5 > 0);
+    assert(sky_before_10 > 0);
+
+    /* Place stone at (5, 19, 8) — under the roof, between two paths.
+     * Lateral light through the doorway at x=3 still feeds (4, 19, 8),
+     * and through x=12 still feeds (10, 19, 8). The placed block must
+     * not zero those independent paths. */
+    chunk_set_block(c, 5, 19, 8, BLOCK_STONE);
+    lighting_on_block_changed(c, &nb, 5, 19, 8, BLOCK_AIR, BLOCK_STONE);
+
+    /* (4, 19, 8) is independently lit from x<4 open. Must remain bright. */
+    assert(chunk_get_skylight(c, 4, 19, 8) > 0);
+    /* (10, 19, 8) is independently lit from x>11 open. Must remain bright. */
+    assert(chunk_get_skylight(c, 10, 19, 8) > 0);
+    /* The placed block itself is opaque → 0. */
+    assert(chunk_get_skylight(c, 5, 19, 8) == 0);
+
+    chunk_destroy(c);
+    printf("PASS: test_relight_place_does_not_clear_lateral_light\n");
+}
+
 int main(void)
 {
     test_block_light_absorb_values();
@@ -360,5 +402,6 @@ int main(void)
     test_cross_chunk_boundary_delta();
     test_relight_place_opaque_at_sky();
     test_relight_break_opaque_roof();
+    test_relight_place_does_not_clear_lateral_light();
     return 0;
 }
