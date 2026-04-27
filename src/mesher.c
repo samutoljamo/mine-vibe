@@ -153,6 +153,102 @@ static void get_tile_uv(uint8_t tile, float* u0, float* v0, float* u1, float* v1
     *v1 = (float)(ty + 1) * TILE_UV - HALF_TEXEL;
 }
 
+/* Standard 3-block AO test. side1, side2 are the two edge-adjacent
+ * neighbors on the air side of the face; corner is the corner-adjacent
+ * neighbor. Returns 0 (max occlusion) to 3 (none). */
+static uint8_t ao_value(bool side1, bool side2, bool corner)
+{
+    if (side1 && side2) return 0;
+    return (uint8_t)(3 - ((int)side1 + (int)side2 + (int)corner));
+}
+
+/* Lookup helper that returns true if the block at chunk-local (x,y,z),
+ * accounting for crossing into a neighbor's BlockID slice, is solid
+ * (i.e. would occlude AO/light). */
+static bool is_solid_at(const Chunk* c, const ChunkNeighbors* nb, int x, int y, int z)
+{
+    if (y < 0 || y >= CHUNK_Y) return false;
+
+    BlockID b;
+    if (x < 0) {
+        if (!nb || !nb->neg_x) return false;
+        b = nb->neg_x[(z < 0 ? 0 : (z >= CHUNK_Z ? CHUNK_Z - 1 : z)) * CHUNK_Y + y];
+    } else if (x >= CHUNK_X) {
+        if (!nb || !nb->pos_x) return false;
+        b = nb->pos_x[(z < 0 ? 0 : (z >= CHUNK_Z ? CHUNK_Z - 1 : z)) * CHUNK_Y + y];
+    } else if (z < 0) {
+        if (!nb || !nb->neg_z) return false;
+        b = nb->neg_z[x * CHUNK_Y + y];
+    } else if (z >= CHUNK_Z) {
+        if (!nb || !nb->pos_z) return false;
+        b = nb->pos_z[x * CHUNK_Y + y];
+    } else {
+        b = chunk_get_block(c, x, y, z);
+    }
+    return !block_is_transparent(b) && b != BLOCK_AIR;
+}
+
+/* For face dir (0=+X..5=-Z), fill ao[4] with computed AO for the 4 corners.
+ * Vertex ordering matches the existing emit_quad order.
+ *
+ * Per-face basis vectors (u, v) span the face plane. The 4 corners are
+ * placed according to signs_u/signs_v = {(-1,-1),(+1,-1),(+1,+1),(-1,+1)},
+ * derived directly from the vertex positions emitted by mesher_build's switch:
+ *
+ *  Face 0 (+X): v0=(x+1,y,  z  ), v1=(x+1,y,  z+1), v2=(x+1,y+1,z+1), v3=(x+1,y+1,z  )
+ *               air=(x+1,y,z), u=+Z (0,0,1), v=+Y (0,1,0)
+ *  Face 1 (-X): v0=(x,  y,  z+1), v1=(x,  y,  z  ), v2=(x,  y+1,z  ), v3=(x,  y+1,z+1)
+ *               air=(x-1,y,z), u=-Z (0,0,-1), v=+Y (0,1,0)
+ *  Face 2 (+Y): v0=(x,  y+1,z  ), v1=(x+1,y+1,z  ), v2=(x+1,y+1,z+1), v3=(x,  y+1,z+1)
+ *               air=(x,y+1,z), u=+X (1,0,0), v=+Z (0,0,1)
+ *  Face 3 (-Y): v0=(x,  y,  z+1), v1=(x+1,y,  z+1), v2=(x+1,y,  z  ), v3=(x,  y,  z  )
+ *               air=(x,y-1,z), u=+X (1,0,0), v=-Z (0,0,-1)
+ *  Face 4 (+Z): v0=(x+1,y,  z+1), v1=(x,  y,  z+1), v2=(x,  y+1,z+1), v3=(x+1,y+1,z+1)
+ *               air=(x,y,z+1), u=-X (-1,0,0), v=+Y (0,1,0)
+ *  Face 5 (-Z): v0=(x,  y,  z  ), v1=(x+1,y,  z  ), v2=(x+1,y+1,z  ), v3=(x,  y+1,z  )
+ *               air=(x,y,z-1), u=+X (1,0,0), v=+Y (0,1,0)
+ */
+static void compute_face_ao(const Chunk* c, const ChunkNeighbors* nb,
+                            int x, int y, int z, int face, uint8_t ao[4])
+{
+    /* Air block one step in face direction. */
+    static const int fdx[6] = { 1, -1,  0,  0,  0,  0 };
+    static const int fdy[6] = { 0,  0,  1, -1,  0,  0 };
+    static const int fdz[6] = { 0,  0,  0,  0,  1, -1 };
+
+    /* u and v basis vectors for each face (integer offsets in world space).
+     * Derived from the vertex positions in mesher_build's switch statement. */
+    static const int ux[6] = { 0,  0,  1,  1, -1,  1 };
+    static const int uy[6] = { 0,  0,  0,  0,  0,  0 };
+    static const int uz[6] = { 1, -1,  0,  0,  0,  0 };
+    static const int vx[6] = { 0,  0,  0,  0,  0,  0 };
+    static const int vy[6] = { 1,  1,  0,  0,  1,  1 };
+    static const int vz[6] = { 0,  0,  1, -1,  0,  0 };
+
+    /* Corners (in emit_quad order):
+     *   v0 = (-u, -v)
+     *   v1 = (+u, -v)
+     *   v2 = (+u, +v)
+     *   v3 = (-u, +v) */
+    static const int signs_u[4] = { -1, +1, +1, -1 };
+    static const int signs_v[4] = { -1, -1, +1, +1 };
+
+    int ax = x + fdx[face], ay = y + fdy[face], az = z + fdz[face];
+
+    for (int i = 0; i < 4; i++) {
+        int su = signs_u[i], sv = signs_v[i];
+        bool side1 = is_solid_at(c, nb,
+            ax + su * ux[face], ay + su * uy[face], az + su * uz[face]);
+        bool side2 = is_solid_at(c, nb,
+            ax + sv * vx[face], ay + sv * vy[face], az + sv * vz[face]);
+        bool corner = is_solid_at(c, nb,
+            ax + su * ux[face] + sv * vx[face],
+            ay + su * uy[face] + sv * vy[face],
+            az + su * uz[face] + sv * vz[face]);
+        ao[i] = ao_value(side1, side2, corner);
+    }
+}
+
 void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
                   const uint8_t* meta_snapshot, MeshData* out)
 {
@@ -190,7 +286,8 @@ void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
 
                     float pos[4][3];
                     float uv[4][2];
-                    uint8_t ao[4] = {3, 3, 3, 3}; /* Default: no AO */
+                    uint8_t ao[4];
+                    compute_face_ao(chunk, neighbors, x, y, z, face, ao);
 
                     /* UV mapping: v0=(u0,v1) v1=(u1,v1) v2=(u1,v0) v3=(u0,v0) */
                     uv[0][0] = u0; uv[0][1] = v1;
