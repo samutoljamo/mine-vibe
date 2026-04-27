@@ -271,7 +271,7 @@ add_executable(test_inventory
     src/inventory.c
 )
 target_include_directories(test_inventory PRIVATE ${CMAKE_SOURCE_DIR}/src)
-add_test(NAME test_inventory COMMAND test_inventory)
+add_test(NAME inventory COMMAND test_inventory)
 
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mesher test_client test_inventory)

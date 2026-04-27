@@ -3,10 +3,10 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <limits.h>
 #include "block.h"
-#include "ui/hud.h"   /* HUD_SLOT_COUNT */
 
-#define INVENTORY_SLOTS     HUD_SLOT_COUNT
+#define INVENTORY_SLOTS     6
 #define INVENTORY_STACK_MAX 64
 
 typedef struct {

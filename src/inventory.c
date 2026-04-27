@@ -1,12 +1,20 @@
 #include "inventory.h"
 #include <string.h>
 
+_Static_assert(BLOCK_AIR == 0,
+    "inventory_init relies on BLOCK_AIR == 0 (memset zero = empty inventory)");
+_Static_assert(INVENTORY_STACK_MAX > 0 && INVENTORY_STACK_MAX <= UINT8_MAX,
+    "INVENTORY_STACK_MAX must fit in a uint8_t to avoid silent overflow in inventory_add");
+
 void inventory_init(Inventory* inv) {
     memset(inv, 0, sizeof(*inv));   /* BLOCK_AIR == 0, count == 0 */
     inv->selected = 0;
 }
 
 uint8_t inventory_add(Inventory* inv, BlockID block, uint8_t count) {
+    /* Load-bearing guard, NOT just a fast path: removing this would let
+     * pass 1 below "top up" empty slots whose block field is BLOCK_AIR,
+     * breaking the (block == BLOCK_AIR) <=> (count == 0) invariant. */
     if (block == BLOCK_AIR || count == 0) return count;
 
     /* Pass 1: top up matching non-full stacks. */

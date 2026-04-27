@@ -1,6 +1,10 @@
 #include "hud.h"
 #include "ui.h"
+#include "../inventory.h"
 #include <string.h>
+
+_Static_assert(HUD_SLOT_COUNT == INVENTORY_SLOTS,
+    "HUD_SLOT_COUNT must match INVENTORY_SLOTS — UI hotbar mirrors model inventory");
 
 /* Pixel sizes — must match original hud.c */
 #define SLOT_SIZE   40
