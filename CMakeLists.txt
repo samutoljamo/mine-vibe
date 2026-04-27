@@ -135,6 +135,8 @@ add_executable(minecraft
     src/server.c
     src/client.c
     src/remote_player.c
+    src/inventory.c
+    src/raycast.c
     src/vma_impl.cpp
     src/assets_generated.c
     src/shaders_generated.c

@@ -10,6 +10,7 @@
 #endif
 #include "reliable.h"
 #include "net_thread.h"
+#include "inventory.h"
 
 #define SERVER_MAX_CLIENTS  32
 #define SERVER_TICK_RATE    20     /* Hz */
@@ -24,6 +25,7 @@ typedef struct {
     float              x, y, z;
     float              yaw, pitch;
     ReliableChannel    reliable;
+    Inventory          inventory;
 } ServerClient;
 
 typedef struct {

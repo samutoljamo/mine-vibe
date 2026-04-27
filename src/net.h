@@ -198,13 +198,17 @@ static inline size_t net_write_world_state(uint8_t* buf,
 
 /* ------------------------------------------------------------------ */
 /*  Block edit packets                                                 */
-/*    BlockBreakPacket  — client → server, 20 wire bytes (8 + 12)     */
+/*    BlockBreakPacket  — client → server, 21 wire bytes (8 + 12 + 1) */
 /*    BlockPlacePacket  — client → server, 22 wire bytes (8 + 14)     */
 /*    BlockChangePacket — server → all,    21 wire bytes (8 + 13)     */
 /* ------------------------------------------------------------------ */
 typedef struct {
     PacketHeader header;
     int32_t      x, y, z;
+    uint8_t      block;   /* claimed block ID being broken — server checks
+                            * it isn't AIR/WATER/BEDROCK before crediting
+                            * inventory. Server has no world today, so it
+                            * trusts the client on the actual cell content. */
 } BlockBreakPacket;
 
 typedef struct {
@@ -239,6 +243,7 @@ static inline size_t net_write_block_break(uint8_t* buf,
     net_write_i32(buf, &off, p->x);
     net_write_i32(buf, &off, p->y);
     net_write_i32(buf, &off, p->z);
+    net_write_u8(buf, &off, p->block);
     return off;
 }
 
@@ -247,9 +252,10 @@ static inline void net_read_block_break(const uint8_t* buf,
 {
     size_t off = 0;
     net_read_header(buf, &off, &p->header);
-    p->x = net_read_i32(buf, &off);
-    p->y = net_read_i32(buf, &off);
-    p->z = net_read_i32(buf, &off);
+    p->x     = net_read_i32(buf, &off);
+    p->y     = net_read_i32(buf, &off);
+    p->z     = net_read_i32(buf, &off);
+    p->block = net_read_u8(buf, &off);
 }
 
 static inline size_t net_write_block_place(uint8_t* buf,

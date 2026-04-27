@@ -2,9 +2,19 @@
 #include "net.h"
 #include "net_thread.h"
 #include "platform_thread.h"
+#include "inventory.h"
+#include "raycast.h"   /* for block_face_offset / FACE_PZ */
+#include "gameplay.h"  /* for MAX_REACH */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
+
+/* server.c is the first translation unit that pulls in both the inventory
+ * model and the inventory wire format, so this is where we assert the
+ * cross-header invariant. */
+_Static_assert(INVENTORY_SLOTS == INVENTORY_NET_SLOTS,
+    "wire format and inventory model must agree on slot count");
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -49,6 +59,7 @@ static ServerClient* alloc_client(Server* s, const struct sockaddr_in* addr)
         c->player_id      = pid;
         c->last_recv_time = net_time();
         reliable_init(&c->reliable);
+        inventory_init(&c->inventory);
         return c;
     }
     return NULL;
@@ -148,6 +159,104 @@ static void handle_position(Server* s, ServerClient* c,
 }
 
 /* ------------------------------------------------------------------ */
+/*  Block edit helpers                                                 */
+/* ------------------------------------------------------------------ */
+
+static void server_broadcast_block_change(Server* s, int x, int y, int z, BlockID b)
+{
+    BlockChangePacket p = {
+        .header = { .type = PKT_BLOCK_CHANGE, .player_id = 0 },
+        .x = x, .y = y, .z = z, .block = (uint8_t)b,
+    };
+    uint8_t buf[64];
+    size_t  len = net_write_block_change(buf, &p);
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        ServerClient* c = &s->clients[i];
+        if (!c->active) continue;
+        reliable_send(&c->reliable, s->net->fd, &c->addr, buf, (uint16_t)len);
+    }
+}
+
+static void server_send_inventory(Server* s, ServerClient* c)
+{
+    InventoryPacket p = {
+        .header = { .type = PKT_INVENTORY, .player_id = 0 },
+        .slot_count = INVENTORY_NET_SLOTS,
+    };
+    for (int i = 0; i < INVENTORY_NET_SLOTS; i++) {
+        p.slots[i].block = (uint8_t)c->inventory.slots[i].block;
+        p.slots[i].count = c->inventory.slots[i].count;
+    }
+    uint8_t buf[64];
+    size_t  len = net_write_inventory(buf, &p);
+    reliable_send(&c->reliable, s->net->fd, &c->addr, buf, (uint16_t)len);
+}
+
+static void handle_block_break(Server* s, ServerClient* c,
+                                const uint8_t* data, size_t len)
+{
+    /* Header is 8 bytes; payload is 12 (xyz) + 1 (block) = 13. */
+    if (len < 8 + 13) return;
+    BlockBreakPacket p;
+    net_read_block_break(data, &p);
+
+    /* Reach check: distance from player position to block centre. */
+    float dx = (p.x + 0.5f) - c->x;
+    float dy = (p.y + 0.5f) - c->y;
+    float dz = (p.z + 0.5f) - c->z;
+    if (dx*dx + dy*dy + dz*dz > MAX_REACH * MAX_REACH) return;
+
+    /* Server doesn't own a world to validate replaceability against, so we
+     * trust the client's claimed block ID, but reject obvious nonsense. */
+    BlockID b = (BlockID)p.block;
+    if (b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_BEDROCK) return;
+
+    inventory_add(&c->inventory, b, 1);
+    server_broadcast_block_change(s, p.x, p.y, p.z, BLOCK_AIR);
+    server_send_inventory(s, c);
+}
+
+static void handle_block_place(Server* s, ServerClient* c,
+                                const uint8_t* data, size_t len)
+{
+    /* Header 8 + payload 12 (xyz) + 1 (face) + 1 (slot) = 22 wire bytes. */
+    if (len < 8 + 14) return;
+    BlockPlacePacket p;
+    net_read_block_place(data, &p);
+    if (p.face > FACE_PZ || p.slot >= INVENTORY_SLOTS) return;
+    if (c->inventory.slots[p.slot].count == 0) return;
+
+    int dx, dy, dz;
+    block_face_offset((BlockFace)p.face, &dx, &dy, &dz);
+    int tx = p.x + dx, ty = p.y + dy, tz = p.z + dz;
+
+    /* Reach check on the target cell, not the clicked block. */
+    float fx = (tx + 0.5f) - c->x;
+    float fy = (ty + 0.5f) - c->y;
+    float fz = (tz + 0.5f) - c->z;
+    if (fx*fx + fy*fy + fz*fz > MAX_REACH * MAX_REACH) return;
+
+    /* Don't trap the placing player inside their own block.
+     * Player AABB: width 0.6, height 1.8, feet at (px, py, pz). */
+    {
+        float pminx = c->x - 0.3f, pmaxx = c->x + 0.3f;
+        float pminy = c->y,         pmaxy = c->y + 1.8f;
+        float pminz = c->z - 0.3f, pmaxz = c->z + 0.3f;
+        float bminx = (float)tx,     bmaxx = (float)tx + 1.0f;
+        float bminy = (float)ty,     bmaxy = (float)ty + 1.0f;
+        float bminz = (float)tz,     bmaxz = (float)tz + 1.0f;
+        if (pmaxx > bminx && pminx < bmaxx &&
+            pmaxy > bminy && pminy < bmaxy &&
+            pmaxz > bminz && pminz < bmaxz) return;
+    }
+
+    BlockID b = c->inventory.slots[p.slot].block;
+    inventory_consume(&c->inventory, p.slot);
+    server_broadcast_block_change(s, tx, ty, tz, b);
+    server_send_inventory(s, c);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Server tick                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -165,8 +274,10 @@ static void server_tick(Server* s, int tick_num)
         if (type == PKT_CONNECT_REQUEST) {
             handle_connect_request(s, &msg->addr);
         } else if (c) {
-            if      (type == PKT_POSITION)   handle_position(s, c, msg->data, msg->len);
-            else if (type == PKT_DISCONNECT) disconnect_client(s, c);
+            if      (type == PKT_POSITION)     handle_position(s, c, msg->data, msg->len);
+            else if (type == PKT_DISCONNECT)   disconnect_client(s, c);
+            else if (type == PKT_BLOCK_BREAK)  handle_block_break(s, c, msg->data, (size_t)msg->len);
+            else if (type == PKT_BLOCK_PLACE)  handle_block_place(s, c, msg->data, (size_t)msg->len);
         }
         free(msg);
     }
