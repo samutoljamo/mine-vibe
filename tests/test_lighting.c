@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "../src/block.h"
 #include "../src/chunk.h"
+#include "../src/lighting.h"
 
 static void test_block_light_absorb_values(void)
 {
@@ -84,9 +85,93 @@ static void test_chunk_light_lazy_alloc_and_pack(void)
     printf("PASS: test_chunk_light_lazy_alloc_and_pack\n");
 }
 
+/* Helper: empty (all-air) chunk with optional pillar. */
+static Chunk* make_chunk_with_pillar(int px, int pz, int top_y, BlockID b)
+{
+    Chunk* c = chunk_create(0, 0);
+    /* Already calloc'd to BLOCK_AIR (0). */
+    if (top_y >= 0) {
+        for (int y = 0; y <= top_y; y++) {
+            chunk_set_block(c, px, y, pz, b);
+        }
+    }
+    return c;
+}
+
+static void test_sky_column_empty_chunk(void)
+{
+    Chunk* c = make_chunk_with_pillar(0, 0, -1, BLOCK_AIR); /* no pillar */
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+
+    lighting_initial_pass(c, &nb);
+
+    /* Every cell sees full sky. */
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                assert(chunk_get_skylight(c, x, y, z) == 15);
+
+    chunk_destroy(c);
+    printf("PASS: test_sky_column_empty_chunk\n");
+}
+
+/* Pillar cell itself is opaque -> sky=0; cell above pillar sees sky=15.
+ * Both assertions are BFS-stable:
+ *   - sky_column_pass never writes into a cell whose absorb=15 except as 0.
+ *   - horizontal_bfs (Task 4) computes new_sky = step_light(neighbor, 15) = 0,
+ *     so it never raises stone cells. The cell above is in an open column
+ *     and stays 15. */
+static void test_sky_column_at_pillar(void)
+{
+    /* Stone pillar at (5, *, 7) reaching y=64. */
+    Chunk* c = make_chunk_with_pillar(5, 7, 64, BLOCK_STONE);
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+
+    lighting_initial_pass(c, &nb);
+
+    /* Cells above the pillar see sky. */
+    for (int y = 65; y < CHUNK_Y; y++)
+        assert(chunk_get_skylight(c, 5, y, 7) == 15);
+
+    /* The pillar cells themselves are opaque (absorb=15) -> sky=0. */
+    for (int y = 0; y <= 64; y++)
+        assert(chunk_get_skylight(c, 5, y, 7) == 0);
+
+    chunk_destroy(c);
+    printf("PASS: test_sky_column_at_pillar\n");
+}
+
+/* Leaves cell itself absorbs 2; the cell above sees full sky.
+ * Both assertions are BFS-stable:
+ *   - The cell above is in an open column at sky=15; horizontal BFS sees
+ *     no neighbor brighter than 15, so it stays.
+ *   - The leaves cell's sky after column pass is 13. After BFS, neighbors
+ *     at the same y in open air are sky=15; BFS computes
+ *     step_light(15, 2) = 13 into the leaves cell, which is not greater
+ *     than the existing 13, so no change. */
+static void test_sky_column_through_leaves(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    chunk_set_block(c, 3, 100, 3, BLOCK_LEAVES);
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+
+    lighting_initial_pass(c, &nb);
+
+    /* Above leaves: 15. */
+    assert(chunk_get_skylight(c, 3, 101, 3) == 15);
+    /* Leaves cell: 15 - absorb(2) = 13. */
+    assert(chunk_get_skylight(c, 3, 100, 3) == 13);
+
+    chunk_destroy(c);
+    printf("PASS: test_sky_column_through_leaves\n");
+}
+
 int main(void)
 {
     test_block_light_absorb_values();
     test_chunk_light_lazy_alloc_and_pack();
+    test_sky_column_empty_chunk();
+    test_sky_column_at_pillar();
+    test_sky_column_through_leaves();
     return 0;
 }

@@ -121,6 +121,7 @@ add_executable(minecraft
     src/chunk_map.c
     src/worldgen.c
     src/mesher.c
+    src/lighting.c
     src/world.c
     src/player.c
     src/physics.c
@@ -259,6 +260,7 @@ add_executable(test_lighting
     tests/test_lighting.c
     src/block.c
     src/chunk.c
+    src/lighting.c
 )
 target_include_directories(test_lighting PRIVATE
     ${CMAKE_SOURCE_DIR}/src
