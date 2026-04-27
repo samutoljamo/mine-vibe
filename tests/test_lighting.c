@@ -166,6 +166,61 @@ static void test_sky_column_through_leaves(void)
     printf("PASS: test_sky_column_through_leaves\n");
 }
 
+static void test_bfs_through_doorway(void)
+{
+    /* Floor of stone at y=10. Wall of stone at z=8 from y=10..15.
+     * One opening at (5, 11..15, 8) so light leaks south. */
+    Chunk* c = chunk_create(0, 0);
+    for (int x = 0; x < CHUNK_X; x++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            chunk_set_block(c, x, 10, z, BLOCK_STONE);
+    for (int x = 0; x < CHUNK_X; x++)
+        for (int y = 10; y <= 15; y++)
+            chunk_set_block(c, x, y, 8, BLOCK_STONE);
+    /* Knock out a 1x5 doorway. */
+    for (int y = 11; y <= 15; y++)
+        chunk_set_block(c, 5, y, 8, BLOCK_AIR);
+
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+
+    /* Inside the doorway, sky-15 enters from above. */
+    assert(chunk_get_skylight(c, 5, 15, 8) == 15);
+
+    /* One step away from the doorway opening (still under the wall but in
+     * open space at z=9, y=11): light is 14 (one step of cost 1). */
+    assert(chunk_get_skylight(c, 5, 11, 9) == 14);
+
+    /* Light falls off as we move further south under the overhang. */
+    assert(chunk_get_skylight(c, 5, 11, 10) == 13);
+    assert(chunk_get_skylight(c, 5, 11, 11) == 12);
+
+    chunk_destroy(c);
+    printf("PASS: test_bfs_through_doorway\n");
+}
+
+static void test_bfs_blocked_by_solid(void)
+{
+    /* Solid roof at y=15 covers everything; sky cannot penetrate. */
+    Chunk* c = chunk_create(0, 0);
+    for (int x = 0; x < CHUNK_X; x++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            chunk_set_block(c, x, 15, z, BLOCK_STONE);
+
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+
+    /* Above the roof: 15. */
+    assert(chunk_get_skylight(c, 8, 16, 8) == 15);
+
+    /* Under the roof: 0 (no doorway). */
+    for (int y = 0; y < 15; y++)
+        assert(chunk_get_skylight(c, 8, y, 8) == 0);
+
+    chunk_destroy(c);
+    printf("PASS: test_bfs_blocked_by_solid\n");
+}
+
 int main(void)
 {
     test_block_light_absorb_values();
@@ -173,5 +228,7 @@ int main(void)
     test_sky_column_empty_chunk();
     test_sky_column_at_pillar();
     test_sky_column_through_leaves();
+    test_bfs_through_doorway();
+    test_bfs_blocked_by_solid();
     return 0;
 }
