@@ -168,7 +168,7 @@ void renderer_draw_frame(Renderer* r,
     float sw = (float)r->swapchain.extent.width;
     float sh = (float)r->swapchain.extent.height;
     ui_frame_begin(cmd, image_index, r->current_frame, sw, sh);
-    if (inventory) hud_build(inventory, sw, sh);
+    hud_build(inventory, sw, sh);   /* hud_build draws crosshair unconditionally; hotbar only if inv non-null */
     if (target)    hud_build_target(target);   /* stub until Task 9 */
     ui_frame_end();
 

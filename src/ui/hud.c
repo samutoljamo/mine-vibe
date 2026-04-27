@@ -14,15 +14,20 @@
 _Static_assert(HUD_SLOT_COUNT == INVENTORY_SLOTS,
     "HUD slot count must match Inventory slot count");
 
+/* hud_build — accepts a NULL `inv`. The crosshair is always drawn (e.g., in
+ * single-player / pre-connect runs before the first PKT_INVENTORY arrives);
+ * the hotbar slots are only drawn when `inv` is non-NULL. */
 void hud_build(const Inventory* inv, float sw, float sh)
 {
-    /* Crosshair. */
+    /* Crosshair — always rendered, even with no inventory yet. */
     vec4 white = {1, 1, 1, 0.9f};
     float cx = sw * 0.5f, cy = sh * 0.5f;
     ui_rect(cx - CROSSHAIR_W * 0.5f, cy - CROSSHAIR_T * 0.5f,
             CROSSHAIR_W, CROSSHAIR_T, white);
     ui_rect(cx - CROSSHAIR_T * 0.5f, cy - CROSSHAIR_W * 0.5f,
             CROSSHAIR_T, CROSSHAIR_W, white);
+
+    if (!inv) return;
 
     /* Hotbar layout. */
     int n = HUD_SLOT_COUNT;
