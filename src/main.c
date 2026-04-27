@@ -34,7 +34,6 @@
 #define WORLD_SEED 420
 
 static Player  g_player;
-static HUD     g_hud;
 static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
 static RaycastHit g_target;       /* refreshed each frame for outline + click */
 
@@ -245,7 +244,6 @@ int main(int argc, char *argv[])
 
     BlockPhysics physics;
     block_physics_init(&physics);
-    hud_init(&g_hud);
     if (agent_mode) agent_init();
 
     /* Loading threshold: 30% of circular render area */
@@ -282,7 +280,9 @@ int main(int argc, char *argv[])
             camera_get_proj(&g_player.camera, aspect, proj);
 
             renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir,
-                                &g_hud, false, NULL);
+                                networking ? &client.inventory : NULL,
+                                NULL,
+                                false, NULL);
 
             uint32_t pct = (uint32_t)(100.0f * (float)mesh_count
                                               / (float)load_threshold);
@@ -396,7 +396,9 @@ int main(int argc, char *argv[])
         renderer_draw_frame(&renderer, meshes, mesh_count,
                             rcount > 0 ? rp_states : NULL, rcount,
                             view, proj, sun_dir,
-                            &g_hud, dump_frame, dump_path);
+                            networking ? &client.inventory : NULL,
+                            &g_target,
+                            dump_frame, dump_path);
 
         if (agent_mode) {
             float yaw_deg   = g_player.camera.yaw   * (180.0f / 3.14159265f);
@@ -410,9 +412,9 @@ int main(int argc, char *argv[])
                 .mode      = (g_player.mode == MODE_FREE) ? 0 : 1,
                 .tick      = tick,
             };
-            snap.selected_slot = g_hud.selected_slot;
-            for (int i = 0; i < HUD_SLOT_COUNT; i++)
-                snap.hotbar[i] = (int)g_hud.slot_blocks[i];
+            snap.selected_slot = 0;             /* TODO Task 11: wire from client.inventory */
+            for (int i = 0; i < INVENTORY_SLOTS; i++)
+                snap.hotbar[i] = 0;             /* TODO Task 11 */
             agent_emit_snapshot(&snap);
             tick++;
         }

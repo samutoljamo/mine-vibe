@@ -11,7 +11,7 @@ typedef enum {
     FACE_NZ,     FACE_PZ
 } BlockFace;
 
-typedef struct {
+typedef struct RaycastHit {
     bool      hit;
     int       x, y, z;     /* hit cell, valid only if hit */
     BlockFace face;        /* face of the hit cell that the ray crossed */

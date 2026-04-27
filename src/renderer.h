@@ -13,6 +13,9 @@
 #include "player_model.h"
 #include "ui/hud.h"
 
+struct Inventory;       /* forward decl, keep includes lean */
+struct RaycastHit;
+
 #define MAX_FRAMES_IN_FLIGHT 2
 
 typedef struct ChunkMesh ChunkMesh;
@@ -104,7 +107,9 @@ void renderer_draw_frame(Renderer* r,
                          ChunkMesh* meshes, uint32_t mesh_count,
                          const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir,
-                         const HUD* hud, bool dump_frame, const char* dump_path);
+                         const struct Inventory* inventory,
+                         const struct RaycastHit* target,
+                         bool dump_frame, const char* dump_path);
 void renderer_cleanup(Renderer* r);
 bool renderer_dump_frame(Renderer* r, const char *path);
 

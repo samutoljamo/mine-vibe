@@ -4,6 +4,8 @@
 #include "frustum.h"
 #include "player_model.h"
 #include "ui/hud.h"
+#include "inventory.h"
+#include "raycast.h"
 #include "agent.h"
 #include "ui/ui.h"
 #include <stdio.h>
@@ -17,7 +19,9 @@ void renderer_draw_frame(Renderer* r,
                          ChunkMesh* meshes, uint32_t mesh_count,
                          const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir,
-                         const HUD* hud, bool dump_frame, const char* dump_path)
+                         const Inventory* inventory,
+                         const RaycastHit* target,
+                         bool dump_frame, const char* dump_path)
 {
     uint32_t fi = r->current_frame;
 
@@ -164,7 +168,8 @@ void renderer_draw_frame(Renderer* r,
     float sw = (float)r->swapchain.extent.width;
     float sh = (float)r->swapchain.extent.height;
     ui_frame_begin(cmd, image_index, r->current_frame, sw, sh);
-    if (hud) hud_build(hud, sw, sh);
+    if (inventory) hud_build(inventory, sw, sh);
+    if (target)    hud_build_target(target);   /* stub until Task 9 */
     ui_frame_end();
 
     vkEndCommandBuffer(cmd);

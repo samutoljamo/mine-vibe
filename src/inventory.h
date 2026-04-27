@@ -14,7 +14,7 @@ typedef struct {
     uint8_t count;     /* 0..INVENTORY_STACK_MAX */
 } InventorySlot;
 
-typedef struct {
+typedef struct Inventory {
     InventorySlot slots[INVENTORY_SLOTS];
     int           selected;                 /* 0..INVENTORY_SLOTS-1 */
 } Inventory;
