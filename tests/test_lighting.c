@@ -66,6 +66,20 @@ static void test_chunk_light_lazy_alloc_and_pack(void)
     chunk_set_skylight(c,  0, 0, -1, 15);
     assert(chunk_get_skylight(c, 0, 0, 0) == 0);
 
+    /* Upper-bound OOB writes are also no-ops. */
+    chunk_set_skylight(c, CHUNK_X, 0, 0, 15);
+    chunk_set_skylight(c, 0, CHUNK_Y, 0, 15);
+    chunk_set_skylight(c, 0, 0, CHUNK_Z, 15);
+    /* Max valid corner round-trips. */
+    chunk_set_skylight(c, CHUNK_X - 1, CHUNK_Y - 1, CHUNK_Z - 1, 7);
+    assert(chunk_get_skylight(c, CHUNK_X - 1, CHUNK_Y - 1, CHUNK_Z - 1) == 7);
+
+    /* Setters truncate to nibble: only low 4 bits stored. */
+    chunk_set_skylight(c, 5, 5, 5, 16);  /* 16 == 0b10000 → low nibble = 0 */
+    assert(chunk_get_skylight(c, 5, 5, 5) == 0);
+    chunk_set_blocklight(c, 5, 5, 5, 17); /* 17 == 0b10001 → low nibble = 1 */
+    assert(chunk_get_blocklight(c, 5, 5, 5) == 1);
+
     chunk_destroy(c);
     printf("PASS: test_chunk_light_lazy_alloc_and_pack\n");
 }

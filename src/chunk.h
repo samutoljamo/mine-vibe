@@ -35,12 +35,21 @@ typedef struct Chunk {
     BlockID          blocks[CHUNK_BLOCKS];
     ChunkMesh        mesh;
     uint8_t*         meta;          /* lazily allocated; NULL if unused */
+    /* Lighting fields. Concurrency contract:
+     *   - lights[]: written by lighting worker during CHUNK_LIGHTING; read
+     *     by mesher worker during CHUNK_MESHING; read-only after; main-thread
+     *     in-place writes (block-change relight) are gated on state != LIGHTING/MESHING.
+     *   - pending_deltas / pending_delta_count / pending_delta_cap: written by
+     *     a NEIGHBOR's lighting worker (cross-chunk delta), drained by this
+     *     chunk's lighting worker. Concrete synchronization: see lighting.c
+     *     once Task 5 lands (likely a per-chunk mutex around the queue). */
     uint8_t*         lights;        /* lazily allocated; packed [block:4][sky:4] */
     uint16_t         pending_delta_count;
     uint16_t         pending_delta_cap;
     BoundaryDelta*   pending_deltas; /* malloc'd; NULL if cap == 0 */
     bool             needs_remesh;  /* set on block change; cleared on remesh submit */
-    bool             needs_relight; /* set when neighbor wrote pending_deltas */
+    bool             needs_relight; /* main-thread observable; set when a neighbor
+                                       wrote pending_deltas, cleared on relight. */
 } Chunk;
 
 Chunk* chunk_create(int32_t cx, int32_t cz);
