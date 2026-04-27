@@ -223,6 +223,77 @@ static void test_bfs_blocked_by_solid(void)
     printf("PASS: test_bfs_blocked_by_solid\n");
 }
 
+/* Two chunks side by side. Chunk A (left) has a doorway opening into
+ * the BFS field; Chunk B (right) is fully open with sky=15 already.
+ * After A's pass, A's eastern boundary cells should match the propagated
+ * values; B should have a needs_relight flag set so it picks up A's
+ * boundary contribution next. */
+static void test_cross_chunk_boundary_delta(void)
+{
+    Chunk* a = chunk_create(0, 0);
+    Chunk* b = chunk_create(1, 0); /* +X neighbor */
+
+    /* Seal A under a stone roof at y=15 except a doorway at +X edge. */
+    for (int x = 0; x < CHUNK_X; x++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            chunk_set_block(a, x, 15, z, BLOCK_STONE);
+    chunk_set_block(a, CHUNK_X - 1, 15, 8, BLOCK_AIR); /* doorway */
+
+    /* B is fully open (all air), pre-lit with sky=15 by its own pass. */
+    LightingNeighbors nb_b = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(b, &nb_b);
+
+    /* Now run A's pass with B as +X neighbor. */
+    LightingNeighbors nb_a = { NULL, b, NULL, NULL };
+    lighting_initial_pass(a, &nb_a);
+
+    /* Inside A under the doorway: sky=15 directly under, falls off west. */
+    assert(chunk_get_skylight(a, CHUNK_X - 1, 15, 8) == 15);
+    /* One step west of doorway under roof: 14. */
+    assert(chunk_get_skylight(a, CHUNK_X - 2, 14, 8) == 14);
+
+    /* B's western boundary (x=0) should not yet be re-lit. The BFS only
+     * RECORDS deltas onto B's pending queue. After consume_pending runs,
+     * B's boundary cells are unchanged because they were already 15. */
+    assert(chunk_get_skylight(b, 0, 15, 8) == 15);
+
+    /* Reverse case: B has a column of solid blocks at x=0. After A lights
+     * via the doorway, B's x=0 column under the column should rise from 0
+     * to whatever propagates from A. */
+    chunk_destroy(a);
+    chunk_destroy(b);
+
+    /* Reset for second sub-case. */
+    a = chunk_create(0, 0);
+    b = chunk_create(1, 0);
+
+    /* B has solid pillar at x=0 from y=10..14 — fully shaded under it. */
+    for (int y = 10; y <= 14; y++)
+        chunk_set_block(b, 0, y, 8, BLOCK_STONE);
+
+    /* A is fully open. */
+    LightingNeighbors nb_a2 = { NULL, b, NULL, NULL };
+    LightingNeighbors nb_b2 = { a, NULL, NULL, NULL };
+    lighting_initial_pass(a, &nb_a2);
+    lighting_initial_pass(b, &nb_b2);
+
+    /* After both passes, B should be flagged needs_relight (A's bright
+     * boundary at x=15 wants to push light into B at x=0). */
+    assert(b->needs_relight == true);
+
+    /* Consume pending on B and re-run BFS. */
+    lighting_consume_pending(b, &nb_b2);
+
+    /* B's cell at (0, 12, 8) is solid stone — light=0. But (0, 12, 7)
+     * under the pillar's shade now sees A's bright neighbor and gets
+     * sky=14 (one step from A's x=15 edge). */
+    assert(chunk_get_skylight(b, 0, 12, 7) >= 13);
+
+    chunk_destroy(a);
+    chunk_destroy(b);
+    printf("PASS: test_cross_chunk_boundary_delta\n");
+}
+
 int main(void)
 {
     test_block_light_absorb_values();
@@ -232,5 +303,6 @@ int main(void)
     test_sky_column_through_leaves();
     test_bfs_through_doorway();
     test_bfs_blocked_by_solid();
+    test_cross_chunk_boundary_delta();
     return 0;
 }
