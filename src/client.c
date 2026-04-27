@@ -82,7 +82,11 @@ void client_send_break(Client* c, int x, int y, int z, uint8_t block)
 {
     if (c->state != CLIENT_CONNECTED) return;
     BlockBreakPacket p = {
-        .header = { .type = PKT_BLOCK_BREAK, .player_id = c->local_player_id },
+        .header = {
+            .type      = PKT_BLOCK_BREAK,
+            .player_id = c->local_player_id,
+            .seq       = c->tick++,
+        },
         .x = x, .y = y, .z = z, .block = block,
     };
     reliable_fill_ack(&c->reliable, &p.header.ack, &p.header.ack_bits);
@@ -97,7 +101,11 @@ void client_send_place(Client* c, int x, int y, int z,
 {
     if (c->state != CLIENT_CONNECTED) return;
     BlockPlacePacket p = {
-        .header = { .type = PKT_BLOCK_PLACE, .player_id = c->local_player_id },
+        .header = {
+            .type      = PKT_BLOCK_PLACE,
+            .player_id = c->local_player_id,
+            .seq       = c->tick++,
+        },
         .x = x, .y = y, .z = z, .face = face, .slot = slot,
     };
     reliable_fill_ack(&c->reliable, &p.header.ack, &p.header.ack_bits);

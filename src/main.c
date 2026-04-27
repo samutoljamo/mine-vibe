@@ -436,6 +436,12 @@ int main(int argc, char *argv[])
     vkDeviceWaitIdle(renderer.device);
 
     if (networking) {
+        /* Clear GLFW callbacks and g_client BEFORE network teardown so that
+         * any callback firing during glfwDestroyWindow can't dereference a
+         * client whose socket has already been closed. */
+        g_client = NULL;
+        glfwSetMouseButtonCallback(window, NULL);
+        glfwSetScrollCallback(window, NULL);
         client_disconnect(&client);
         net_thread_stop(&net_thread);
         net_socket_close(net_fd);
