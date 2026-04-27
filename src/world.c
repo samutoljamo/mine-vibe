@@ -3,6 +3,7 @@
 #include "chunk.h"
 #include "chunk_map.h"
 #include "chunk_mesh.h"
+#include "lighting.h"
 #include "mesher.h"
 #include "worldgen.h"
 #include "renderer.h"
@@ -21,6 +22,7 @@
 
 typedef enum WorkType {
     WORK_GENERATE,
+    WORK_LIGHT,
     WORK_MESH,
 } WorkType;
 
@@ -28,13 +30,28 @@ typedef struct WorkItem {
     WorkType         type;
     Chunk*           chunk;
     int              seed;
-    /* For WORK_MESH: boundary slices (malloc'd, freed after meshing) */
-    BlockID*         boundary_pos_x;  /* x=0 slice of +X neighbor */
-    BlockID*         boundary_neg_x;  /* x=15 slice of -X neighbor */
-    BlockID*         boundary_pos_z;  /* z=0 slice of +Z neighbor */
-    BlockID*         boundary_neg_z;  /* z=15 slice of -Z neighbor */
+
+    /* For WORK_MESH: boundary block + light slices (malloc'd, freed by worker) */
+    BlockID*         boundary_pos_x;
+    BlockID*         boundary_neg_x;
+    BlockID*         boundary_pos_z;
+    BlockID*         boundary_neg_z;
+    uint8_t*         light_pos_x;
+    uint8_t*         light_neg_x;
+    uint8_t*         light_pos_z;
+    uint8_t*         light_neg_z;
+
+    /* For WORK_LIGHT: pointers to neighbor chunks (chunks live as long
+     * as the world; worker is allowed to read them). NULL means edge of
+     * the loaded world or the neighbor isn't ready. */
+    Chunk*           lighting_neg_x;
+    Chunk*           lighting_pos_x;
+    Chunk*           lighting_neg_z;
+    Chunk*           lighting_pos_z;
+
     /* Snapshot of chunk->meta at submission time (calloc if meta==NULL) */
     uint8_t*         meta_snapshot;
+
     struct WorkItem* next;
 } WorkItem;
 
@@ -124,13 +141,42 @@ static void* worker_func(void* arg)
             world->result_head = result;
             pt_mutex_unlock(&world->result_mutex);
 
+        } else if (item->type == WORK_LIGHT) {
+            LightingNeighbors lnb = {
+                .neg_x = item->lighting_neg_x,
+                .pos_x = item->lighting_pos_x,
+                .neg_z = item->lighting_neg_z,
+                .pos_z = item->lighting_pos_z,
+            };
+            lighting_initial_pass(item->chunk, &lnb);
+            lighting_consume_pending(item->chunk, &lnb);
+
+            ResultItem* result = malloc(sizeof(ResultItem));
+            if (!result) {
+                fprintf(stderr, "worker_func: out of memory for light ResultItem\n");
+                free(item);
+                continue;
+            }
+            result->chunk = item->chunk;
+            result->mesh_data = NULL;
+            result->next = NULL;
+
+            pt_mutex_lock(&world->result_mutex);
+            result->next = world->result_head;
+            world->result_head = result;
+            pt_mutex_unlock(&world->result_mutex);
+
         } else if (item->type == WORK_MESH) {
             /* Build ChunkNeighbors from boundary slices */
             ChunkNeighbors neighbors = {
-                .pos_x = item->boundary_pos_x,
-                .neg_x = item->boundary_neg_x,
-                .pos_z = item->boundary_pos_z,
-                .neg_z = item->boundary_neg_z,
+                .pos_x        = item->boundary_pos_x,
+                .neg_x        = item->boundary_neg_x,
+                .pos_z        = item->boundary_pos_z,
+                .neg_z        = item->boundary_neg_z,
+                .pos_x_lights = item->light_pos_x,
+                .neg_x_lights = item->light_neg_x,
+                .pos_z_lights = item->light_pos_z,
+                .neg_z_lights = item->light_neg_z,
             };
 
             MeshData* md = malloc(sizeof(MeshData));
@@ -140,6 +186,10 @@ static void* worker_func(void* arg)
                 free(item->boundary_neg_x);
                 free(item->boundary_pos_z);
                 free(item->boundary_neg_z);
+                free(item->light_pos_x);
+                free(item->light_neg_x);
+                free(item->light_pos_z);
+                free(item->light_neg_z);
                 free(item->meta_snapshot);
                 free(item);
                 continue;
@@ -152,6 +202,10 @@ static void* worker_func(void* arg)
             free(item->boundary_neg_x);
             free(item->boundary_pos_z);
             free(item->boundary_neg_z);
+            free(item->light_pos_x);
+            free(item->light_neg_x);
+            free(item->light_pos_z);
+            free(item->light_neg_z);
             free(item->meta_snapshot);
 
             /* Push mesh result */
@@ -281,6 +335,10 @@ void world_destroy(World* world)
             free(wi->boundary_neg_x);
             free(wi->boundary_pos_z);
             free(wi->boundary_neg_z);
+            free(wi->light_pos_x);
+            free(wi->light_neg_x);
+            free(wi->light_pos_z);
+            free(wi->light_neg_z);
             free(wi->meta_snapshot);
         }
         free(wi);
@@ -387,28 +445,34 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
                     if (agent_is_active())
                         agent_notify_chunk_loaded(chunk->cx, chunk->cz);
                 } else {
-                    /* Upload limit hit - set back to GENERATED so it
-                     * re-enters the mesh pipeline next frame (mesh data
-                     * is freed below, so we can't retry the upload). */
-                    atomic_store(&chunk->state, CHUNK_GENERATED);
+                    /* Upload limit hit - set back to LIT so it re-enters
+                     * the mesh pipeline next frame (mesh data is freed
+                     * below, so we can't retry the upload). Lighting has
+                     * already been done, so we don't go back to GENERATED. */
+                    atomic_store(&chunk->state, CHUNK_LIT);
                 }
 
                 mesh_data_free(md);
                 free(md);
 
             } else {
-                /* Generate result - state already set by worldgen.
-                 * Seed physics with water and gravity blocks. */
-                if (bp) {
-                    int base_x = chunk->cx * CHUNK_X;
-                    int base_z = chunk->cz * CHUNK_Z;
-                    for (int lx = 0; lx < CHUNK_X; lx++) {
-                        for (int lz = 0; lz < CHUNK_Z; lz++) {
-                            for (int ly = 0; ly < CHUNK_Y; ly++) {
-                                BlockID b = chunk_get_block(chunk, lx, ly, lz);
-                                if (b == BLOCK_WATER || block_is_gravity(b)) {
-                                    block_physics_notify(bp,
-                                        base_x + lx, ly, base_z + lz);
+                int state = atomic_load(&chunk->state);
+                if (state == CHUNK_LIGHTING) {
+                    atomic_store(&chunk->state, CHUNK_LIT);
+                } else {
+                    /* Generate completed (worldgen sets state to GENERATED
+                     * before pushing the result, but we re-confirm here). */
+                    if (bp) {
+                        int base_x = chunk->cx * CHUNK_X;
+                        int base_z = chunk->cz * CHUNK_Z;
+                        for (int lx = 0; lx < CHUNK_X; lx++) {
+                            for (int lz = 0; lz < CHUNK_Z; lz++) {
+                                for (int ly = 0; ly < CHUNK_Y; ly++) {
+                                    BlockID b = chunk_get_block(chunk, lx, ly, lz);
+                                    if (b == BLOCK_WATER || block_is_gravity(b)) {
+                                        block_physics_notify(bp,
+                                            base_x + lx, ly, base_z + lz);
+                                    }
                                 }
                             }
                         }
@@ -436,7 +500,9 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
             if (dist_sq > unload_sq) {
                 int state = atomic_load(&chunk->state);
                 /* Don't unload chunks being processed by workers */
-                if (state == CHUNK_GENERATING || state == CHUNK_MESHING)
+                if (state == CHUNK_GENERATING ||
+                    state == CHUNK_LIGHTING   ||
+                    state == CHUNK_MESHING)
                     continue;
 
                 if (remove_count < 1024)
@@ -503,7 +569,41 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
         }
     }
 
-    /* ---- Step 4: Submit meshing for GENERATED chunks (nearest first) ---- */
+    /* ---- Step 3b: Submit lighting for GENERATED chunks ---- */
+    {
+        uint32_t idx = 0;
+        Chunk* chunk;
+        int light_submits = 0;
+
+        while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL
+               && light_submits < 32) {
+            if (atomic_load(&chunk->state) != CHUNK_GENERATED) continue;
+
+            Chunk* nx_pos = chunk_map_get(&world->map, chunk->cx + 1, chunk->cz);
+            Chunk* nx_neg = chunk_map_get(&world->map, chunk->cx - 1, chunk->cz);
+            Chunk* nz_pos = chunk_map_get(&world->map, chunk->cx, chunk->cz + 1);
+            Chunk* nz_neg = chunk_map_get(&world->map, chunk->cx, chunk->cz - 1);
+
+            if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_GENERATED) continue;
+            if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_GENERATED) continue;
+            if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_GENERATED) continue;
+            if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_GENERATED) continue;
+
+            atomic_store(&chunk->state, CHUNK_LIGHTING);
+
+            WorkItem* wi = calloc(1, sizeof(WorkItem));
+            wi->type           = WORK_LIGHT;
+            wi->chunk          = chunk;
+            wi->lighting_neg_x = nx_neg;
+            wi->lighting_pos_x = nx_pos;
+            wi->lighting_neg_z = nz_neg;
+            wi->lighting_pos_z = nz_pos;
+            submit_work(world, wi);
+            light_submits++;
+        }
+    }
+
+    /* ---- Step 4: Submit meshing for LIT chunks (nearest first) ---- */
     {
         /* Collect all mesh-ready chunks and sort by distance so closer chunks
          * get mesh tasks submitted first, giving a center-outward load order. */
@@ -515,15 +615,15 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
             uint32_t idx = 0;
             Chunk* chunk;
             while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL) {
-                if (atomic_load(&chunk->state) != CHUNK_GENERATED) continue;
+                if (atomic_load(&chunk->state) != CHUNK_LIT) continue;
                 Chunk* nx_pos = chunk_map_get(&world->map, chunk->cx + 1, chunk->cz);
                 Chunk* nx_neg = chunk_map_get(&world->map, chunk->cx - 1, chunk->cz);
                 Chunk* nz_pos = chunk_map_get(&world->map, chunk->cx, chunk->cz + 1);
                 Chunk* nz_neg = chunk_map_get(&world->map, chunk->cx, chunk->cz - 1);
-                if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_GENERATED) continue;
-                if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_GENERATED) continue;
-                if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_GENERATED) continue;
-                if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_GENERATED) continue;
+                if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_LIT) continue;
+                if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_LIT) continue;
+                if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_LIT) continue;
+                if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_LIT) continue;
                 if (cand_count < 4096) {
                     int dx = chunk->cx - pcx, dz = chunk->cz - pcz;
                     candidates[cand_count++] = (MeshCandidate){ chunk, dx*dx + dz*dz };
@@ -547,53 +647,64 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
             Chunk* chunk = candidates[i].chunk;
 
             /* Re-check state in case another path changed it */
-            if (atomic_load(&chunk->state) != CHUNK_GENERATED) continue;
+            if (atomic_load(&chunk->state) != CHUNK_LIT) continue;
 
             Chunk* nx_pos = chunk_map_get(&world->map, chunk->cx + 1, chunk->cz);
             Chunk* nx_neg = chunk_map_get(&world->map, chunk->cx - 1, chunk->cz);
             Chunk* nz_pos = chunk_map_get(&world->map, chunk->cx, chunk->cz + 1);
             Chunk* nz_neg = chunk_map_get(&world->map, chunk->cx, chunk->cz - 1);
 
-            if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_GENERATED) continue;
-            if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_GENERATED) continue;
-            if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_GENERATED) continue;
-            if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_GENERATED) continue;
+            if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_LIT) continue;
+            if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_LIT) continue;
+            if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_LIT) continue;
+            if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_LIT) continue;
 
             /* Set state to MESHING before extracting boundaries */
             atomic_store(&chunk->state, CHUNK_MESHING);
 
             /* Extract boundary slices (malloc'd, will be freed by worker) */
-            size_t slice_size = 16 * CHUNK_Y * sizeof(BlockID);
+            size_t slice_size       = 16 * CHUNK_Y * sizeof(BlockID);
+            size_t light_slice_size = 16 * CHUNK_Y * sizeof(uint8_t);
 
-            BlockID* b_pos_x = NULL;
-            BlockID* b_neg_x = NULL;
-            BlockID* b_pos_z = NULL;
-            BlockID* b_neg_z = NULL;
+            BlockID* b_pos_x  = NULL, *b_neg_x  = NULL, *b_pos_z  = NULL, *b_neg_z  = NULL;
+            uint8_t* lb_pos_x = NULL, *lb_neg_x = NULL, *lb_pos_z = NULL, *lb_neg_z = NULL;
 
             if (nx_pos) {
-                b_pos_x = malloc(slice_size);
-                mesher_extract_boundary(nx_pos, 0, b_pos_x); /* x=0 of +X neighbor */
+                b_pos_x  = malloc(slice_size);
+                lb_pos_x = malloc(light_slice_size);
+                mesher_extract_boundary       (nx_pos, 0, b_pos_x);
+                mesher_extract_light_boundary (nx_pos, 0, lb_pos_x);
             }
             if (nx_neg) {
-                b_neg_x = malloc(slice_size);
-                mesher_extract_boundary(nx_neg, 1, b_neg_x); /* x=15 of -X neighbor */
+                b_neg_x  = malloc(slice_size);
+                lb_neg_x = malloc(light_slice_size);
+                mesher_extract_boundary       (nx_neg, 1, b_neg_x);
+                mesher_extract_light_boundary (nx_neg, 1, lb_neg_x);
             }
             if (nz_pos) {
-                b_pos_z = malloc(slice_size);
-                mesher_extract_boundary(nz_pos, 2, b_pos_z); /* z=0 of +Z neighbor */
+                b_pos_z  = malloc(slice_size);
+                lb_pos_z = malloc(light_slice_size);
+                mesher_extract_boundary       (nz_pos, 2, b_pos_z);
+                mesher_extract_light_boundary (nz_pos, 2, lb_pos_z);
             }
             if (nz_neg) {
-                b_neg_z = malloc(slice_size);
-                mesher_extract_boundary(nz_neg, 3, b_neg_z); /* z=15 of -Z neighbor */
+                b_neg_z  = malloc(slice_size);
+                lb_neg_z = malloc(light_slice_size);
+                mesher_extract_boundary       (nz_neg, 3, b_neg_z);
+                mesher_extract_light_boundary (nz_neg, 3, lb_neg_z);
             }
 
             WorkItem* wi = calloc(1, sizeof(WorkItem));
-            wi->type = WORK_MESH;
-            wi->chunk = chunk;
+            wi->type           = WORK_MESH;
+            wi->chunk          = chunk;
             wi->boundary_pos_x = b_pos_x;
             wi->boundary_neg_x = b_neg_x;
             wi->boundary_pos_z = b_pos_z;
             wi->boundary_neg_z = b_neg_z;
+            wi->light_pos_x    = lb_pos_x;
+            wi->light_neg_x    = lb_neg_x;
+            wi->light_pos_z    = lb_pos_z;
+            wi->light_neg_z    = lb_neg_z;
             wi->meta_snapshot  = take_meta_snapshot(chunk);
             submit_work(world, wi);
             if (++mesh_submits >= 32) break;
@@ -616,44 +727,56 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
             Chunk* nz_pos = chunk_map_get(&world->map, chunk->cx, chunk->cz + 1);
             Chunk* nz_neg = chunk_map_get(&world->map, chunk->cx, chunk->cz - 1);
 
-            if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_GENERATED) continue;
-            if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_GENERATED) continue;
-            if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_GENERATED) continue;
-            if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_GENERATED) continue;
+            if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_LIT) continue;
+            if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_LIT) continue;
+            if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_LIT) continue;
+            if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_LIT) continue;
 
             chunk->needs_remesh = false;
             atomic_store(&chunk->state, CHUNK_MESHING);
 
-            size_t slice_size = (size_t)CHUNK_Z * CHUNK_Y * sizeof(BlockID);
-            BlockID* b_pos_x = NULL;
-            BlockID* b_neg_x = NULL;
-            BlockID* b_pos_z = NULL;
-            BlockID* b_neg_z = NULL;
+            size_t slice_size       = (size_t)CHUNK_Z * CHUNK_Y * sizeof(BlockID);
+            size_t light_slice_size = (size_t)CHUNK_Z * CHUNK_Y * sizeof(uint8_t);
+
+            BlockID* b_pos_x  = NULL, *b_neg_x  = NULL, *b_pos_z  = NULL, *b_neg_z  = NULL;
+            uint8_t* lb_pos_x = NULL, *lb_neg_x = NULL, *lb_pos_z = NULL, *lb_neg_z = NULL;
 
             if (nx_pos) {
-                b_pos_x = malloc(slice_size);
-                mesher_extract_boundary(nx_pos, 0, b_pos_x);
+                b_pos_x  = malloc(slice_size);
+                lb_pos_x = malloc(light_slice_size);
+                mesher_extract_boundary       (nx_pos, 0, b_pos_x);
+                mesher_extract_light_boundary (nx_pos, 0, lb_pos_x);
             }
             if (nx_neg) {
-                b_neg_x = malloc(slice_size);
-                mesher_extract_boundary(nx_neg, 1, b_neg_x);
+                b_neg_x  = malloc(slice_size);
+                lb_neg_x = malloc(light_slice_size);
+                mesher_extract_boundary       (nx_neg, 1, b_neg_x);
+                mesher_extract_light_boundary (nx_neg, 1, lb_neg_x);
             }
             if (nz_pos) {
-                b_pos_z = malloc(slice_size);
-                mesher_extract_boundary(nz_pos, 2, b_pos_z);
+                b_pos_z  = malloc(slice_size);
+                lb_pos_z = malloc(light_slice_size);
+                mesher_extract_boundary       (nz_pos, 2, b_pos_z);
+                mesher_extract_light_boundary (nz_pos, 2, lb_pos_z);
             }
             if (nz_neg) {
-                b_neg_z = malloc(slice_size);
-                mesher_extract_boundary(nz_neg, 3, b_neg_z);
+                b_neg_z  = malloc(slice_size);
+                lb_neg_z = malloc(light_slice_size);
+                mesher_extract_boundary       (nz_neg, 3, b_neg_z);
+                mesher_extract_light_boundary (nz_neg, 3, lb_neg_z);
             }
 
             WorkItem* wi = calloc(1, sizeof(WorkItem));
-            wi->type = WORK_MESH;
-            wi->chunk = chunk;
+            wi->type           = WORK_MESH;
+            wi->chunk          = chunk;
             wi->boundary_pos_x = b_pos_x;
             wi->boundary_neg_x = b_neg_x;
             wi->boundary_pos_z = b_pos_z;
             wi->boundary_neg_z = b_neg_z;
+            wi->light_pos_x    = lb_pos_x;
+            wi->light_neg_x    = lb_neg_x;
+            wi->light_pos_z    = lb_pos_z;
+            wi->light_neg_z    = lb_neg_z;
             wi->meta_snapshot  = take_meta_snapshot(chunk);
             submit_work(world, wi);
             remesh_submits++;

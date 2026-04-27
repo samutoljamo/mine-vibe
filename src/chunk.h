@@ -18,6 +18,8 @@ typedef enum ChunkState {
     CHUNK_UNLOADED = 0,
     CHUNK_GENERATING,
     CHUNK_GENERATED,
+    CHUNK_LIGHTING,
+    CHUNK_LIT,
     CHUNK_MESHING,
     CHUNK_READY,
 } ChunkState;
