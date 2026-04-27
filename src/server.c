@@ -1,10 +1,10 @@
 #include "server.h"
 #include "net.h"
 #include "net_thread.h"
+#include "platform_thread.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -253,8 +253,7 @@ void server_run(uint16_t port, int max_clients)
             accum -= tick_dt;
         }
 
-        struct timespec ts = { 0, 1000000 };
-        nanosleep(&ts, NULL);
+        pt_sleep_ms(1);
     }
 
     net_thread_stop(&nt);

@@ -5,7 +5,11 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <netinet/in.h>
+#ifdef _WIN32
+#  include <winsock2.h>
+#else
+#  include <netinet/in.h>
+#endif
 #include "net.h"
 #include "reliable.h"
 #include "net_thread.h"

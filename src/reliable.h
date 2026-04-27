@@ -4,7 +4,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <netinet/in.h>
+#ifdef _WIN32
+#  include <winsock2.h>
+#else
+#  include <netinet/in.h>
+#endif
 
 #define RELIABLE_WINDOW      32
 #define RELIABLE_TIMEOUT     0.1   /* seconds before retransmit */

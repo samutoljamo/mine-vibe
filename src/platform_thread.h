@@ -18,6 +18,7 @@
 
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
 
 typedef pthread_t       PT_Thread;
 typedef pthread_mutex_t PT_Mutex;
@@ -44,6 +45,12 @@ static inline int pt_cpu_count(void)
 {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return (n > 0) ? (int)n : 1;
+}
+
+static inline void pt_sleep_ms(unsigned int ms)
+{
+    struct timespec ts = { (time_t)(ms / 1000), (long)((ms % 1000) * 1000000L) };
+    nanosleep(&ts, NULL);
 }
 
 #else /* _WIN32 */
@@ -105,6 +112,8 @@ static inline int pt_cpu_count(void)
     GetSystemInfo(&si);
     return (int)si.dwNumberOfProcessors;
 }
+
+static inline void pt_sleep_ms(unsigned int ms) { Sleep(ms); }
 
 #endif /* _WIN32 */
 #endif /* PLATFORM_THREAD_H */

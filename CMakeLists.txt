@@ -6,6 +6,11 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# MSVC needs an explicit flag to enable C11 <stdatomic.h>.
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+endif()
+
 # ---- Dependencies via FetchContent ----
 include(FetchContent)
 

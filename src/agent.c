@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <pthread.h>
+#include "platform_thread.h"
 #include <inttypes.h>
 
 /* ------------------------------------------------------------------ */
@@ -15,23 +15,23 @@ typedef struct {
     AgentCommand    cmds[CMD_RING_CAP];
     int             head;   /* main thread reads here */
     int             tail;   /* I/O thread writes here */
-    pthread_mutex_t mtx;
+    PT_Mutex        mtx;
 } CmdRing;
 
-static _Atomic bool    g_active = false;
-static CmdRing         g_ring;
-static pthread_t       g_io_thread;
-static pthread_mutex_t g_stdout_mtx;
+static _Atomic bool g_active = false;
+static CmdRing      g_ring;
+static PT_Thread    g_io_thread;
+static PT_Mutex     g_stdout_mtx;
 
 /* ------------------------------------------------------------------ */
 /*  Internal: stdout helper                                           */
 /* ------------------------------------------------------------------ */
 static void emit_raw(const char *s)
 {
-    pthread_mutex_lock(&g_stdout_mtx);
+    pt_mutex_lock(&g_stdout_mtx);
     fputs(s, stdout);
     fflush(stdout);
-    pthread_mutex_unlock(&g_stdout_mtx);
+    pt_mutex_unlock(&g_stdout_mtx);
 }
 
 /* ------------------------------------------------------------------ */
@@ -56,17 +56,17 @@ static void *io_thread_func(void *arg)
             continue;
         }
 
-        pthread_mutex_lock(&g_ring.mtx);
+        pt_mutex_lock(&g_ring.mtx);
         int next_tail = (g_ring.tail + 1) % CMD_RING_CAP;
         if (next_tail == g_ring.head) {
             /* Queue full: tail drop */
-            pthread_mutex_unlock(&g_ring.mtx);
+            pt_mutex_unlock(&g_ring.mtx);
             emit_raw("{\"event\":\"error\",\"msg\":\"command queue full, command dropped\"}\n");
             continue;
         }
         g_ring.cmds[g_ring.tail] = cmd;
         g_ring.tail = next_tail;
-        pthread_mutex_unlock(&g_ring.mtx);
+        pt_mutex_unlock(&g_ring.mtx);
     }
     return NULL;
 }
@@ -76,12 +76,12 @@ static void *io_thread_func(void *arg)
 /* ------------------------------------------------------------------ */
 void agent_init(void)
 {
-    g_active      = true;
-    g_ring.head   = 0;
-    g_ring.tail   = 0;
-    pthread_mutex_init(&g_ring.mtx, NULL);
-    pthread_mutex_init(&g_stdout_mtx, NULL);
-    pthread_create(&g_io_thread, NULL, io_thread_func, NULL);
+    g_active    = true;
+    g_ring.head = 0;
+    g_ring.tail = 0;
+    pt_mutex_init(&g_ring.mtx);
+    pt_mutex_init(&g_stdout_mtx);
+    pt_thread_create(&g_io_thread, io_thread_func, NULL);
 }
 
 void agent_destroy(void)
@@ -89,23 +89,23 @@ void agent_destroy(void)
     if (!g_active) return;
     g_active = false;
     /* I/O thread exits on its own when stdin closes */
-    pthread_join(g_io_thread, NULL);
-    pthread_mutex_destroy(&g_ring.mtx);
-    pthread_mutex_destroy(&g_stdout_mtx);
+    pt_thread_join(g_io_thread);
+    pt_mutex_destroy(&g_ring.mtx);
+    pt_mutex_destroy(&g_stdout_mtx);
 }
 
 bool agent_is_active(void) { return g_active; }
 
 bool agent_pop_command(AgentCommand *out)
 {
-    pthread_mutex_lock(&g_ring.mtx);
+    pt_mutex_lock(&g_ring.mtx);
     if (g_ring.head == g_ring.tail) {
-        pthread_mutex_unlock(&g_ring.mtx);
+        pt_mutex_unlock(&g_ring.mtx);
         return false;
     }
     *out = g_ring.cmds[g_ring.head];
     g_ring.head = (g_ring.head + 1) % CMD_RING_CAP;
-    pthread_mutex_unlock(&g_ring.mtx);
+    pt_mutex_unlock(&g_ring.mtx);
     return true;
 }
 

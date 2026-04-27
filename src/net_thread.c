@@ -2,7 +2,6 @@
 #include "net.h"
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 static void* thread_func(void* arg)
 {
@@ -43,8 +42,7 @@ static void* thread_func(void* arg)
         }
 
         /* ~1ms sleep to avoid burning CPU */
-        struct timespec ts = { 0, 1000000 };
-        nanosleep(&ts, NULL);
+        pt_sleep_ms(1);
     }
     return NULL;
 }

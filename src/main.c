@@ -20,7 +20,12 @@
 #include "remote_player.h"
 #include "player_model.h"
 #include "platform_thread.h"
-#include <arpa/inet.h>
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#else
+#  include <arpa/inet.h>
+#endif
 #include <time.h>
 
 #define WORLD_SEED 420
@@ -179,8 +184,7 @@ int main(int argc, char *argv[])
         sargs->max  = SERVER_MAX_CLIENTS;
         pt_thread_create(&server_thread, server_thread_func, sargs);
         /* Give server 200ms to bind before client tries to connect */
-        struct timespec ts = { 0, 200000000 };
-        nanosleep(&ts, NULL);
+        pt_sleep_ms(200);
     }
 
     int net_fd = -1;

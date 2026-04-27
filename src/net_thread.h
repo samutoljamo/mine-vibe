@@ -4,7 +4,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <netinet/in.h>
+#ifdef _WIN32
+#  include <winsock2.h>
+#else
+#  include <netinet/in.h>
+#endif
 #include "platform_thread.h"
 #include <stdatomic.h>
 
