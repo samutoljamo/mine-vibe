@@ -603,6 +603,43 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
         }
     }
 
+    /* ---- Step 3c: Re-light LIT chunks that received cross-chunk deltas ---- */
+    {
+        uint32_t idx = 0;
+        Chunk* chunk;
+        int relight_submits = 0;
+
+        while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL
+               && relight_submits < 16) {
+            if (atomic_load(&chunk->state) != CHUNK_LIT) continue;
+            if (!chunk->needs_relight) continue;
+
+            Chunk* nx_pos = chunk_map_get(&world->map, chunk->cx + 1, chunk->cz);
+            Chunk* nx_neg = chunk_map_get(&world->map, chunk->cx - 1, chunk->cz);
+            Chunk* nz_pos = chunk_map_get(&world->map, chunk->cx, chunk->cz + 1);
+            Chunk* nz_neg = chunk_map_get(&world->map, chunk->cx, chunk->cz - 1);
+
+            /* Same neighbor-readiness rule as Step 3b: neighbors must be at
+             * least GENERATED so the worker can read their blocks. */
+            if (nx_pos && atomic_load(&nx_pos->state) < CHUNK_GENERATED) continue;
+            if (nx_neg && atomic_load(&nx_neg->state) < CHUNK_GENERATED) continue;
+            if (nz_pos && atomic_load(&nz_pos->state) < CHUNK_GENERATED) continue;
+            if (nz_neg && atomic_load(&nz_neg->state) < CHUNK_GENERATED) continue;
+
+            atomic_store(&chunk->state, CHUNK_LIGHTING);
+
+            WorkItem* wi = calloc(1, sizeof(WorkItem));
+            wi->type           = WORK_LIGHT;
+            wi->chunk          = chunk;
+            wi->lighting_neg_x = nx_neg;
+            wi->lighting_pos_x = nx_pos;
+            wi->lighting_neg_z = nz_neg;
+            wi->lighting_pos_z = nz_pos;
+            submit_work(world, wi);
+            relight_submits++;
+        }
+    }
+
     /* ---- Step 4: Submit meshing for LIT chunks (nearest first) ---- */
     {
         /* Collect all mesh-ready chunks and sort by distance so closer chunks
