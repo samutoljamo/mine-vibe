@@ -7,14 +7,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # MSVC needs /std:c11 + /experimental:c11atomics to enable <stdatomic.h>.
-# These get applied per-target below via msvc_enable_c11_atomics(), since
-# neither string(APPEND CMAKE_C_FLAGS ...) nor a COMPILE_LANGUAGE genex on
-# add_compile_options() reliably reaches MSBuild's C compile step.
+# Applied per-target below via msvc_enable_c11_atomics(). Each target that
+# this is called on must be pure C (no .cpp sources) — the C++ compiler
+# rejects /std:c11. The VMA C++ glue is in its own static lib (vma_glue)
+# for exactly this reason.
 function(msvc_enable_c11_atomics target)
     if(MSVC)
         target_compile_options(${target} PRIVATE
-            $<$<COMPILE_LANGUAGE:C>:/std:c11>
-            $<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+            /std:c11 /experimental:c11atomics)
     endif()
 endfunction()
 
@@ -104,6 +104,14 @@ compile_shader(${SHADER_DIR}/ui.frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 
 # ---- Executable ----
+# VMA glue is C++. Put it in its own static lib so the main target stays
+# pure C — this lets MSVC C-only flags (/std:c11, /experimental:c11atomics)
+# be applied via target_compile_options without a COMPILE_LANGUAGE genex,
+# which is unreliable on the Visual Studio generator for mixed-language
+# targets.
+add_library(vma_glue STATIC src/vma_impl.cpp)
+target_link_libraries(vma_glue PUBLIC volk GPUOpen::VulkanMemoryAllocator)
+
 add_executable(minecraft
     src/main.c
     src/renderer.c
@@ -135,7 +143,6 @@ add_executable(minecraft
     src/server.c
     src/client.c
     src/remote_player.c
-    src/vma_impl.cpp
     src/assets_generated.c
     src/shaders_generated.c
 )
@@ -153,7 +160,7 @@ target_include_directories(minecraft PRIVATE
 target_link_libraries(minecraft PRIVATE
     glfw
     volk
-    GPUOpen::VulkanMemoryAllocator
+    vma_glue
     cglm
     ${CMAKE_DL_LIBS}
 )
@@ -209,7 +216,6 @@ add_executable(test_ui
     tests/test_ui.c
     src/ui/ui.c
     src/pipeline.c
-    src/vma_impl.cpp
     tests/renderer_stubs.c
 )
 target_include_directories(test_ui PRIVATE
@@ -220,7 +226,7 @@ target_include_directories(test_ui PRIVATE
     ${vulkanmemoryallocator_SOURCE_DIR}/include
 )
 target_compile_definitions(test_ui PRIVATE VK_NO_PROTOTYPES UNDEBUG)
-target_link_libraries(test_ui PRIVATE glfw volk GPUOpen::VulkanMemoryAllocator cglm Vulkan::Headers ${CMAKE_DL_LIBS})
+target_link_libraries(test_ui PRIVATE glfw volk vma_glue cglm Vulkan::Headers ${CMAKE_DL_LIBS})
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_ui PRIVATE m)
 endif()
