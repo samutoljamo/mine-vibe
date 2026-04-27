@@ -19,7 +19,7 @@ typedef struct {
 
 /* Voxel DDA (Amanatides & Woo) against the world. `max_dist` in blocks.
  * Returns the first non-air, non-water cell hit, or {hit=false} otherwise. */
-RaycastHit raycast_voxel(const World* world,
+RaycastHit raycast_voxel(World* world,
                          vec3 origin, vec3 dir, float max_dist);
 
 /* Fills (dx,dy,dz) ∈ {-1,0,1}^3 with the unit offset from a block to the

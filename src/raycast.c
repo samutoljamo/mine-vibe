@@ -1,4 +1,5 @@
 #include "raycast.h"
+#include <assert.h>
 #include <math.h>
 
 void block_face_offset(BlockFace face, int* dx, int* dy, int* dz) {
@@ -10,17 +11,19 @@ void block_face_offset(BlockFace face, int* dx, int* dy, int* dz) {
         case FACE_PY: *dy =  1; break;
         case FACE_NZ: *dz = -1; break;
         case FACE_PZ: *dz =  1; break;
+        default: assert(0 && "block_face_offset: invalid BlockFace");
     }
 }
 
 static int floor_int(float v) { return (int)floorf(v); }
 
-RaycastHit raycast_voxel(const World* world,
+RaycastHit raycast_voxel(World* world,
                          vec3 origin, vec3 dir, float max_dist) {
     RaycastHit miss = { .hit = false };
     float dx = dir[0], dy = dir[1], dz = dir[2];
     float dlen = sqrtf(dx*dx + dy*dy + dz*dz);
-    if (dlen < 1e-6f) return miss;
+    /* Guard zero/near-zero/NaN direction; later math depends on a finite, non-tiny dlen. */
+    if (!isfinite(dlen) || dlen < 1e-6f) return miss;
     dx /= dlen; dy /= dlen; dz /= dlen;
 
     int   x = floor_int(origin[0]);
@@ -45,9 +48,9 @@ RaycastHit raycast_voxel(const World* world,
     float t = 0.0f;
 
     /* First check the starting cell — handles ray-starts-inside-block. */
-    BlockID b0 = world_get_block((World*)world, x, y, z);
+    BlockID b0 = world_get_block(world, x, y, z);
     if (b0 != BLOCK_AIR && b0 != BLOCK_WATER) {
-        return (RaycastHit){ .hit = true, .x = x, .y = y, .z = z, .face = FACE_NY };
+        return (RaycastHit){ .hit = true, .x = x, .y = y, .z = z, .face = FACE_PY };
     }
 
     while (t <= max_dist) {
@@ -62,7 +65,7 @@ RaycastHit raycast_voxel(const World* world,
             last_face = (sz > 0) ? FACE_NZ : FACE_PZ;
         }
         if (t > max_dist) break;
-        BlockID b = world_get_block((World*)world, x, y, z);
+        BlockID b = world_get_block(world, x, y, z);
         if (b != BLOCK_AIR && b != BLOCK_WATER) {
             return (RaycastHit){ .hit = true, .x = x, .y = y, .z = z, .face = last_face };
         }

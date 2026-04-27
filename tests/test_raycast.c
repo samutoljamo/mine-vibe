@@ -77,6 +77,31 @@ static void test_water_is_not_a_hit(void) {
     assert(h.x == 7);
 }
 
+static void test_diagonal_ray_hits(void) {
+    /* Diagonal ray from (0.5,0.5,0.5) toward (1,1,1).  Block placed at (3,3,3). */
+    clear_grid();
+    set_block(3, 3, 3, BLOCK_STONE);
+    vec3 origin = {0.5f, 0.5f, 0.5f};
+    vec3 dir    = {1.0f, 1.0f, 1.0f};
+    RaycastHit h = raycast_voxel(NULL, origin, dir, 10.0f);
+    assert(h.hit);
+    assert(h.x == 3 && h.y == 3 && h.z == 3);
+    /* Face is whichever axis the DDA crossed last — we don't lock the choice
+     * here, only that one of the three -axis entries is reported. */
+    assert(h.face == FACE_NX || h.face == FACE_NY || h.face == FACE_NZ);
+}
+
+static void test_starts_inside_block(void) {
+    clear_grid();
+    set_block(2, 2, 2, BLOCK_STONE);
+    vec3 origin = {2.5f, 2.5f, 2.5f};   /* inside the block */
+    vec3 dir    = {1.0f, 0.0f, 0.0f};
+    RaycastHit h = raycast_voxel(NULL, origin, dir, 10.0f);
+    assert(h.hit);
+    assert(h.x == 2 && h.y == 2 && h.z == 2);
+    assert(h.face == FACE_PY);   /* documented eject direction */
+}
+
 int main(void) {
     test_face_offset();
     test_hit_along_x();
@@ -84,6 +109,8 @@ int main(void) {
     test_no_hit_through_air();
     test_max_distance_terminates();
     test_water_is_not_a_hit();
+    test_diagonal_ray_hits();
+    test_starts_inside_block();
     printf("test_raycast: all passed\n");
     return 0;
 }
