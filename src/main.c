@@ -307,6 +307,18 @@ int main(int argc, char *argv[])
         }
 
         world_update(world, &physics, g_player.position);
+
+        /* Apply server-authoritative block edits buffered from the network
+         * thread. world_set_block marks chunks dirty for re-meshing. */
+        for (int i = 0; i < client.pending_block_change_count; i++) {
+            int x = client.pending_block_changes[i].x;
+            int y = client.pending_block_changes[i].y;
+            int z = client.pending_block_changes[i].z;
+            BlockID b = (BlockID)client.pending_block_changes[i].block;
+            world_set_block(world, x, y, z, b);
+        }
+        client.pending_block_change_count = 0;
+
         block_physics_update(&physics, world, g_player.position, dt);
 
         ChunkMesh* meshes;

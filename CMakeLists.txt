@@ -257,7 +257,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME mesher COMMAND test_mesher)
 
-add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c)
+add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads)

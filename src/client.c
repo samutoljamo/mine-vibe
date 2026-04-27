@@ -32,6 +32,8 @@ void client_init(Client* c, NetThread* net,
     c->state       = CLIENT_DISCONNECTED;
     c->server_addr = *server_addr;
     reliable_init(&c->reliable);
+    inventory_init(&c->inventory);
+    c->pending_block_change_count = 0;
 }
 
 void client_destroy(Client* c) { (void)c; }
@@ -137,6 +139,38 @@ int client_poll(Client* c)
                 else {
                     printf("[client] player %d left\n", h.player_id);
                     if (g_leave_cb) g_leave_cb(h.player_id, g_leave_user);
+                }
+            }
+
+        } else if (type == PKT_BLOCK_CHANGE && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0;
+            net_read_header(msg->data, &off, &h);
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new && (size_t)msg->len >= 8 + 13) {
+                BlockChangePacket bp;
+                net_read_block_change(msg->data, &bp);
+                if (c->pending_block_change_count < 64) {
+                    int i = c->pending_block_change_count++;
+                    c->pending_block_changes[i].x     = bp.x;
+                    c->pending_block_changes[i].y     = bp.y;
+                    c->pending_block_changes[i].z     = bp.z;
+                    c->pending_block_changes[i].block = bp.block;
+                }
+            }
+
+        } else if (type == PKT_INVENTORY && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0;
+            net_read_header(msg->data, &off, &h);
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new && (size_t)msg->len >= 8 + 1) {
+                InventoryPacket ip;
+                net_read_inventory(msg->data, &ip);
+                int prev_selected = c->inventory.selected;
+                inventory_init(&c->inventory);
+                c->inventory.selected = prev_selected;  /* preserve focus */
+                for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
+                    c->inventory.slots[i].block = (BlockID)ip.slots[i].block;
+                    c->inventory.slots[i].count = ip.slots[i].count;
                 }
             }
 

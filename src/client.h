@@ -13,6 +13,7 @@
 #include "net.h"
 #include "reliable.h"
 #include "net_thread.h"
+#include "inventory.h"
 
 typedef enum {
     CLIENT_DISCONNECTED,
@@ -32,6 +33,18 @@ typedef struct {
 
     double connect_sent_time;
     int   connect_attempts;  /* incremented on each retry; 0 = first send */
+
+    Inventory inventory;
+
+    /* Block-change events received from the server, drained by main.c each
+     * frame to call world_set_block + remesh on the main thread.
+     * (Network thread cannot remesh — meshing is not thread-safe with the
+     * renderer reading the world.) */
+    struct {
+        int     x, y, z;
+        uint8_t block;
+    } pending_block_changes[64];
+    int pending_block_change_count;
 } Client;
 
 void client_init(Client* c, NetThread* net,
