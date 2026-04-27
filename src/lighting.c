@@ -1,6 +1,7 @@
 #include "lighting.h"
 #include "chunk.h"
 #include <stdlib.h>  /* realloc/free for pending delta growth */
+#include <stdio.h>   /* fprintf for OOM diagnostics */
 
 /* Step the light value through a block of given absorption.
  * cost = max(1, absorb): air costs 1 per step, leaves cost 2, etc. */
@@ -18,6 +19,11 @@ typedef struct LightCell {
 } LightCell;
 
 #define LIGHT_QUEUE_CAP 65536
+
+_Static_assert((LIGHT_QUEUE_CAP & (LIGHT_QUEUE_CAP - 1)) == 0,
+               "LIGHT_QUEUE_CAP must be a power of two for masking");
+_Static_assert(LIGHT_QUEUE_CAP >= CHUNK_X * CHUNK_Y * CHUNK_Z,
+               "LIGHT_QUEUE_CAP must hold the worst-case full-chunk seeding");
 
 typedef struct LightQueue {
     LightCell cells[LIGHT_QUEUE_CAP];
@@ -79,14 +85,18 @@ static void push_boundary_delta(Chunk* nb_chunk, uint8_t face,
 
 static void horizontal_bfs(Chunk* c, const LightingNeighbors* nb)
 {
-    LightQueue q;
-    lq_init(&q);
+    LightQueue* q = malloc(sizeof(LightQueue));
+    if (!q) {
+        fprintf(stderr, "lighting: out of memory for BFS queue\n");
+        return;
+    }
+    lq_init(q);
 
     for (int y = 0; y < CHUNK_Y; y++) {
         for (int z = 0; z < CHUNK_Z; z++) {
             for (int x = 0; x < CHUNK_X; x++) {
                 uint8_t s = chunk_get_skylight(c, x, y, z);
-                if (s > 0) lq_push(&q, x, y, z, s);
+                if (s > 0) lq_push(q, x, y, z, s);
             }
         }
     }
@@ -95,8 +105,8 @@ static void horizontal_bfs(Chunk* c, const LightingNeighbors* nb)
     static const int dy[6] = { 0,  0,  1, -1,  0,  0 };
     static const int dz[6] = { 0,  0,  0,  0,  1, -1 };
 
-    while (!lq_empty(&q)) {
-        LightCell cell = lq_pop(&q);
+    while (!lq_empty(q)) {
+        LightCell cell = lq_pop(q);
         for (int f = 0; f < 6; f++) {
             int nx_ = cell.x + dx[f];
             int ny_ = cell.y + dy[f];
@@ -142,7 +152,7 @@ static void horizontal_bfs(Chunk* c, const LightingNeighbors* nb)
                 uint8_t cur = chunk_get_skylight(c, tx, ny_, tz);
                 if (new_sky > cur) {
                     chunk_set_skylight(c, tx, ny_, tz, new_sky);
-                    lq_push(&q, tx, ny_, tz, new_sky);
+                    lq_push(q, tx, ny_, tz, new_sky);
                 }
             } else {
                 /* Record on neighbor's pending queue. axis_coord is the
@@ -157,6 +167,7 @@ static void horizontal_bfs(Chunk* c, const LightingNeighbors* nb)
             }
         }
     }
+    free(q);
 }
 
 void lighting_initial_pass(Chunk* c, const LightingNeighbors* nb)
@@ -172,8 +183,12 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
         return;
     }
 
-    LightQueue q;
-    lq_init(&q);
+    LightQueue* q = malloc(sizeof(LightQueue));
+    if (!q) {
+        fprintf(stderr, "lighting: out of memory for BFS queue\n");
+        return;
+    }
+    lq_init(q);
 
     /* Apply each pending delta directly into c->lights, then seed a queue
      * with the changed cells so addition-BFS spreads from them. */
@@ -191,7 +206,7 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
         uint8_t v   = d.new_light & 0x0F;
         if (v > cur) {
             chunk_set_skylight(c, x, d.y, z, v);
-            lq_push(&q, x, d.y, z, v);
+            lq_push(q, x, d.y, z, v);
         }
     }
 
@@ -203,8 +218,8 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
     static const int dy[6] = { 0,  0,  1, -1,  0,  0 };
     static const int dz[6] = { 0,  0,  0,  0,  1, -1 };
 
-    while (!lq_empty(&q)) {
-        LightCell cell = lq_pop(&q);
+    while (!lq_empty(q)) {
+        LightCell cell = lq_pop(q);
         for (int f = 0; f < 6; f++) {
             int nx_ = cell.x + dx[f];
             int ny_ = cell.y + dy[f];
@@ -230,7 +245,7 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
                 uint8_t cur = chunk_get_skylight(c, tx, ny_, tz);
                 if (new_sky > cur) {
                     chunk_set_skylight(c, tx, ny_, tz, new_sky);
-                    lq_push(&q, tx, ny_, tz, new_sky);
+                    lq_push(q, tx, ny_, tz, new_sky);
                 }
             } else {
                 uint8_t axis = (out_face == 0 || out_face == 1)
@@ -243,6 +258,7 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
             }
         }
     }
+    free(q);
 }
 
 void lighting_on_block_changed(
