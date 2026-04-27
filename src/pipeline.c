@@ -136,14 +136,14 @@ bool pipeline_create(VkDevice device, VkRenderPass render_pass,
 
     /* Vertex input */
     VkVertexInputBindingDescription binding = vertex_binding_desc();
-    VkVertexInputAttributeDescription attrs[4];
+    VkVertexInputAttributeDescription attrs[5];
     vertex_attr_descs(attrs);
 
     VkPipelineVertexInputStateCreateInfo vertex_input = {
         .sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount   = 1,
         .pVertexBindingDescriptions      = &binding,
-        .vertexAttributeDescriptionCount = 4,
+        .vertexAttributeDescriptionCount = 5,
         .pVertexAttributeDescriptions    = attrs,
     };
 

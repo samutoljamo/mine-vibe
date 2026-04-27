@@ -95,10 +95,74 @@ static void test_ao_with_neighbor_on_top(void)
     printf("PASS: test_ao_with_neighbor_on_top\n");
 }
 
+/* With a fully-lit chunk (sky=15 everywhere), every emitted vertex should
+ * have light=15. */
+static void test_smooth_light_uniform(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    chunk_set_block(c, 8, 64, 8, BLOCK_STONE);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    /* Manually flood the chunk with sky=15 (skip lighting module to keep
+     * mesher tests independent). */
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_skylight(c, x, y, z, 15);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    for (uint32_t i = 0; i < md.vertex_count; i++) {
+        assert(md.vertices[i].light == 15);
+    }
+
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_smooth_light_uniform\n");
+}
+
+/* With sky=0 everywhere except one cell at light=12, a +Y face vertex
+ * adjacent to that lit cell should average down toward 12. */
+static void test_smooth_light_partial(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    chunk_set_block(c, 8, 64, 8, BLOCK_STONE);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    /* Default sky=0 everywhere (no allocation). Set just one cell. */
+    chunk_set_skylight(c, 8, 65, 8, 12);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    /* The +Y face should average non-zero contributions across 4 corners.
+     * Only the face_block (8,65,8) has light=12; the side1/side2/corner
+     * neighbors are all 0. With our averaging "non-zero only" rule, the
+     * single non-zero contributor gives light=12 at every corner. */
+    int saw = 0;
+    for (uint32_t i = 0; i < md.vertex_count; i++) {
+        if (md.vertices[i].normal != 2) continue;
+        assert(md.vertices[i].light == 12);
+        saw++;
+    }
+    assert(saw == 4);
+
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_smooth_light_partial\n");
+}
+
 int main(void)
 {
     test_solid_chunk_mesh();
     test_ao_isolated_block();
     test_ao_with_neighbor_on_top();
+    test_smooth_light_uniform();
+    test_smooth_light_partial();
     return 0;
 }

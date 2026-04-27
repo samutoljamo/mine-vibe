@@ -57,10 +57,10 @@ static void emit_quad(MeshData* md,
                       float pos[4][3],
                       float uv[4][2],
                       uint8_t normal_id,
-                      uint8_t ao[4])
+                      const uint8_t ao[4],
+                      const uint8_t light[4])
 {
     ensure_capacity(md, 4, 6);
-
     uint32_t base = md->vertex_count;
 
     for (int i = 0; i < 4; i++) {
@@ -68,18 +68,15 @@ static void emit_quad(MeshData* md,
         v->pos[0] = pos[i][0];
         v->pos[1] = pos[i][1];
         v->pos[2] = pos[i][2];
-        v->uv[0] = uv[i][0];
-        v->uv[1] = uv[i][1];
+        v->uv[0]  = uv[i][0];
+        v->uv[1]  = uv[i][1];
         v->normal = normal_id;
-        v->ao = ao[i];
-        v->_pad[0] = 0;
-        v->_pad[1] = 0;
+        v->ao     = ao[i];
+        v->light  = light[i];
+        v->_pad   = 0;
     }
 
-    /* AO-based triangle flip:
-     * if ao[0]+ao[2] > ao[1]+ao[3], flip the diagonal */
     if (ao[0] + ao[2] > ao[1] + ao[3]) {
-        /* Flipped: 0-1-3, 1-2-3 */
         md->indices[md->index_count++] = base + 0;
         md->indices[md->index_count++] = base + 1;
         md->indices[md->index_count++] = base + 3;
@@ -87,7 +84,6 @@ static void emit_quad(MeshData* md,
         md->indices[md->index_count++] = base + 2;
         md->indices[md->index_count++] = base + 3;
     } else {
-        /* Normal: 0-1-2, 0-2-3 */
         md->indices[md->index_count++] = base + 0;
         md->indices[md->index_count++] = base + 1;
         md->indices[md->index_count++] = base + 2;
@@ -186,6 +182,80 @@ static bool is_solid_at(const Chunk* c, const ChunkNeighbors* nb, int x, int y, 
         b = chunk_get_block(c, x, y, z);
     }
     return !block_is_transparent(b) && b != BLOCK_AIR;
+}
+
+/* Read packed [block:4][sky:4] light byte at (x,y,z), crossing into
+ * neighbor light slices as needed. Returns 0 if neighbor has no slice. */
+static uint8_t light_byte_at(const Chunk* c, const ChunkNeighbors* nb, int x, int y, int z)
+{
+    if (y < 0 || y >= CHUNK_Y) return 0;
+
+    if (x < 0) {
+        if (!nb || !nb->neg_x_lights) return 0;
+        int zc = z < 0 ? 0 : (z >= CHUNK_Z ? CHUNK_Z - 1 : z);
+        return nb->neg_x_lights[zc * CHUNK_Y + y];
+    } else if (x >= CHUNK_X) {
+        if (!nb || !nb->pos_x_lights) return 0;
+        int zc = z < 0 ? 0 : (z >= CHUNK_Z ? CHUNK_Z - 1 : z);
+        return nb->pos_x_lights[zc * CHUNK_Y + y];
+    } else if (z < 0) {
+        if (!nb || !nb->neg_z_lights) return 0;
+        return nb->neg_z_lights[x * CHUNK_Y + y];
+    } else if (z >= CHUNK_Z) {
+        if (!nb || !nb->pos_z_lights) return 0;
+        return nb->pos_z_lights[x * CHUNK_Y + y];
+    } else {
+        if (!c->lights) return 0;
+        return c->lights[x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z];
+    }
+}
+
+static inline uint8_t sky_at(const Chunk* c, const ChunkNeighbors* nb, int x, int y, int z)
+{
+    return light_byte_at(c, nb, x, y, z) & 0x0F;
+}
+
+/* Smooth corner light: average non-zero sky values from up to 4 cells
+ * meeting at the corner on the air side of the face. Returns 0..15. */
+static uint8_t corner_sky(uint8_t face_block, uint8_t side1, uint8_t side2, uint8_t corner)
+{
+    int sum = 0, count = 0;
+    if (face_block) { sum += face_block; count++; }
+    if (side1)      { sum += side1;      count++; }
+    if (side2)      { sum += side2;      count++; }
+    if (corner)     { sum += corner;     count++; }
+    return count == 0 ? 0 : (uint8_t)(sum / count);
+}
+
+/* Per-corner smooth light. Same basis vectors as compute_face_ao. */
+static void compute_face_light(const Chunk* c, const ChunkNeighbors* nb,
+                               int x, int y, int z, int face, uint8_t light[4])
+{
+    static const int fdx[6] = { 1, -1,  0,  0,  0,  0 };
+    static const int fdy[6] = { 0,  0,  1, -1,  0,  0 };
+    static const int fdz[6] = { 0,  0,  0,  0,  1, -1 };
+
+    int ux[6] = {0,0,1,1,-1,1}, uy[6] = {0,0,0,0,0,0}, uz[6] = {1,-1,0,0,0,0};
+    int vx[6] = {0,0,0,0,0,0},  vy[6] = {1,1,0,0,1,1}, vz[6] = {0,0,1,-1,0,0};
+    int signs_u[4] = { -1, +1, +1, -1 };
+    int signs_v[4] = { -1, -1, +1, +1 };
+
+    int ax = x + fdx[face], ay = y + fdy[face], az = z + fdz[face];
+
+    uint8_t face_block = sky_at(c, nb, ax, ay, az);
+
+    for (int i = 0; i < 4; i++) {
+        int su = signs_u[i], sv = signs_v[i];
+        uint8_t s1 = sky_at(c, nb,
+            ax + su * ux[face], ay + su * uy[face], az + su * uz[face]);
+        uint8_t s2 = sky_at(c, nb,
+            ax + sv * vx[face], ay + sv * vy[face], az + sv * vz[face]);
+        uint8_t cn = sky_at(c, nb,
+            ax + su * ux[face] + sv * vx[face],
+            ay + su * uy[face] + sv * vy[face],
+            az + su * uz[face] + sv * vz[face]);
+        light[i] = corner_sky(face_block, s1, s2, cn);
+    }
 }
 
 /* For face dir (0=+X..5=-Z), fill ao[4] with computed AO for the 4 corners.
@@ -287,7 +357,9 @@ void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
                     float pos[4][3];
                     float uv[4][2];
                     uint8_t ao[4];
-                    compute_face_ao(chunk, neighbors, x, y, z, face, ao);
+                    uint8_t light[4];
+                    compute_face_ao   (chunk, neighbors, x, y, z, face, ao);
+                    compute_face_light(chunk, neighbors, x, y, z, face, light);
 
                     /* UV mapping: v0=(u0,v1) v1=(u1,v1) v2=(u1,v0) v3=(u0,v0) */
                     uv[0][0] = u0; uv[0][1] = v1;
@@ -343,7 +415,7 @@ void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
                         break;
                     }
 
-                    emit_quad(out, pos, uv, (uint8_t)face, ao);
+                    emit_quad(out, pos, uv, (uint8_t)face, ao, light);
                 }
             }
         }
@@ -378,6 +450,36 @@ void mesher_extract_boundary(const Chunk* chunk, int face, BlockID* out)
         for (int x = 0; x < CHUNK_X; x++)
             for (int y = 0; y < CHUNK_Y; y++)
                 out[x * CHUNK_Y + y] = chunk_get_block(chunk, x, y, CHUNK_Z - 1);
+        break;
+    }
+}
+
+void mesher_extract_light_boundary(const Chunk* chunk, int face, uint8_t* out)
+{
+    switch (face) {
+    case 0: /* x=0 */
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int y = 0; y < CHUNK_Y; y++)
+                out[z * CHUNK_Y + y] =
+                    chunk->lights ? chunk->lights[0 + z * CHUNK_X + y * CHUNK_X * CHUNK_Z] : 0;
+        break;
+    case 1: /* x=15 */
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int y = 0; y < CHUNK_Y; y++)
+                out[z * CHUNK_Y + y] =
+                    chunk->lights ? chunk->lights[(CHUNK_X - 1) + z * CHUNK_X + y * CHUNK_X * CHUNK_Z] : 0;
+        break;
+    case 2: /* z=0 */
+        for (int x = 0; x < CHUNK_X; x++)
+            for (int y = 0; y < CHUNK_Y; y++)
+                out[x * CHUNK_Y + y] =
+                    chunk->lights ? chunk->lights[x + 0 * CHUNK_X + y * CHUNK_X * CHUNK_Z] : 0;
+        break;
+    case 3: /* z=15 */
+        for (int x = 0; x < CHUNK_X; x++)
+            for (int y = 0; y < CHUNK_Y; y++)
+                out[x * CHUNK_Y + y] =
+                    chunk->lights ? chunk->lights[x + (CHUNK_Z - 1) * CHUNK_X + y * CHUNK_X * CHUNK_Z] : 0;
         break;
     }
 }

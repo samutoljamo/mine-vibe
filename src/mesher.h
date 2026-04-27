@@ -21,6 +21,10 @@ typedef struct ChunkNeighbors {
     const BlockID* neg_x; /* x=15 slice of -X neighbor */
     const BlockID* pos_z; /* z=0 slice of +Z neighbor */
     const BlockID* neg_z; /* z=15 slice of -Z neighbor */
+    const uint8_t* pos_x_lights; /* matching light slices; NULL = treat as 0 */
+    const uint8_t* neg_x_lights;
+    const uint8_t* pos_z_lights;
+    const uint8_t* neg_z_lights;
 } ChunkNeighbors;
 
 void mesh_data_init(MeshData* md);
@@ -31,5 +35,9 @@ void mesh_data_free(MeshData* md);
 void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
                   const uint8_t* meta_snapshot, MeshData* out);
 void mesher_extract_boundary(const Chunk* chunk, int face, BlockID* out);
+
+/* Extract a light slice from one face of a chunk. Out layout matches
+ * the BlockID slice from mesher_extract_boundary. */
+void mesher_extract_light_boundary(const Chunk* chunk, int face, uint8_t* out);
 
 #endif
