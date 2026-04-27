@@ -1,11 +1,9 @@
 #include "player.h"
 #include "physics.h"
+#include "gameplay.h"
 #include <math.h>
 #include <GLFW/glfw3.h>
 
-#define PLAYER_HALF_W    0.3f
-#define PLAYER_HEIGHT    1.8f
-#define PLAYER_EYE_H     1.62f
 #define FLY_SPEED        20.0f
 #define WALK_SPEED       4.3f
 #define SWIM_SPEED       2.0f

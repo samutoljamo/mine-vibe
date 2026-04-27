@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
 
 /* server.c is the first translation unit that pulls in both the inventory
  * model and the inventory wire format, so this is where we assert the
@@ -156,6 +155,7 @@ static void handle_position(Server* s, ServerClient* c,
     c->z     = p.z;
     c->yaw   = p.yaw;
     c->pitch = p.pitch;
+    c->position_received = true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -173,7 +173,7 @@ static void server_broadcast_block_change(Server* s, int x, int y, int z, BlockI
     for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
         ServerClient* c = &s->clients[i];
         if (!c->active) continue;
-        reliable_send(&c->reliable, s->net->fd, &c->addr, buf, (uint16_t)len);
+        send_reliable(s, c, buf, (uint16_t)len);
     }
 }
 
@@ -189,7 +189,7 @@ static void server_send_inventory(Server* s, ServerClient* c)
     }
     uint8_t buf[64];
     size_t  len = net_write_inventory(buf, &p);
-    reliable_send(&c->reliable, s->net->fd, &c->addr, buf, (uint16_t)len);
+    send_reliable(s, c, buf, (uint16_t)len);
 }
 
 static void handle_block_break(Server* s, ServerClient* c,
@@ -200,18 +200,33 @@ static void handle_block_break(Server* s, ServerClient* c,
     BlockBreakPacket p;
     net_read_block_break(data, &p);
 
-    /* Reach check: distance from player position to block centre. */
+    bool is_new = reliable_on_recv(&c->reliable,
+                                    p.header.seq,
+                                    p.header.ack,
+                                    p.header.ack_bits);
+    if (!is_new) return;
+
+    c->last_recv_time = net_time();
+
+    if (!c->position_received) return;
+
+    /* Reach check: distance from eye position to block centre (matches
+     * client raycast origin). */
     float dx = (p.x + 0.5f) - c->x;
-    float dy = (p.y + 0.5f) - c->y;
+    float dy = (p.y + 0.5f) - (c->y + PLAYER_EYE_H);
     float dz = (p.z + 0.5f) - c->z;
     if (dx*dx + dy*dy + dz*dz > MAX_REACH * MAX_REACH) return;
 
     /* Server doesn't own a world to validate replaceability against, so we
      * trust the client's claimed block ID, but reject obvious nonsense. */
     BlockID b = (BlockID)p.block;
-    if (b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_BEDROCK) return;
+    if (b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_BEDROCK || b >= BLOCK_COUNT) return;
 
-    inventory_add(&c->inventory, b, 1);
+    uint8_t leftover = inventory_add(&c->inventory, b, 1);
+    if (leftover != 0) {
+        /* No room — refuse the break. Don't broadcast, don't send inventory. */
+        return;
+    }
     server_broadcast_block_change(s, p.x, p.y, p.z, BLOCK_AIR);
     server_send_inventory(s, c);
 }
@@ -223,6 +238,17 @@ static void handle_block_place(Server* s, ServerClient* c,
     if (len < 8 + 14) return;
     BlockPlacePacket p;
     net_read_block_place(data, &p);
+
+    bool is_new = reliable_on_recv(&c->reliable,
+                                    p.header.seq,
+                                    p.header.ack,
+                                    p.header.ack_bits);
+    if (!is_new) return;
+
+    c->last_recv_time = net_time();
+
+    if (!c->position_received) return;
+
     if (p.face > FACE_PZ || p.slot >= INVENTORY_SLOTS) return;
     if (c->inventory.slots[p.slot].count == 0) return;
 
@@ -230,27 +256,27 @@ static void handle_block_place(Server* s, ServerClient* c,
     block_face_offset((BlockFace)p.face, &dx, &dy, &dz);
     int tx = p.x + dx, ty = p.y + dy, tz = p.z + dz;
 
-    /* Reach check on the target cell, not the clicked block. */
+    /* Reach check on the target cell from eye height (matches client raycast). */
     float fx = (tx + 0.5f) - c->x;
-    float fy = (ty + 0.5f) - c->y;
+    float fy = (ty + 0.5f) - (c->y + PLAYER_EYE_H);
     float fz = (tz + 0.5f) - c->z;
     if (fx*fx + fy*fy + fz*fz > MAX_REACH * MAX_REACH) return;
 
-    /* Don't trap the placing player inside their own block.
-     * Player AABB: width 0.6, height 1.8, feet at (px, py, pz). */
+    /* Don't trap the placing player inside their own block. */
     {
-        float pminx = c->x - 0.3f, pmaxx = c->x + 0.3f;
-        float pminy = c->y,         pmaxy = c->y + 1.8f;
-        float pminz = c->z - 0.3f, pmaxz = c->z + 0.3f;
-        float bminx = (float)tx,     bmaxx = (float)tx + 1.0f;
-        float bminy = (float)ty,     bmaxy = (float)ty + 1.0f;
-        float bminz = (float)tz,     bmaxz = (float)tz + 1.0f;
+        float pminx = c->x - PLAYER_HALF_W, pmaxx = c->x + PLAYER_HALF_W;
+        float pminy = c->y,                  pmaxy = c->y + PLAYER_HEIGHT;
+        float pminz = c->z - PLAYER_HALF_W, pmaxz = c->z + PLAYER_HALF_W;
+        float bminx = (float)tx,             bmaxx = (float)tx + 1.0f;
+        float bminy = (float)ty,             bmaxy = (float)ty + 1.0f;
+        float bminz = (float)tz,             bmaxz = (float)tz + 1.0f;
         if (pmaxx > bminx && pminx < bmaxx &&
             pmaxy > bminy && pminy < bmaxy &&
             pmaxz > bminz && pminz < bmaxz) return;
     }
 
     BlockID b = c->inventory.slots[p.slot].block;
+    if (b == BLOCK_AIR || b >= BLOCK_COUNT) return;   /* should be impossible, but don't broadcast garbage */
     inventory_consume(&c->inventory, p.slot);
     server_broadcast_block_change(s, tx, ty, tz, b);
     server_send_inventory(s, c);

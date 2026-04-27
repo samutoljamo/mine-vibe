@@ -24,6 +24,7 @@ typedef struct {
     uint32_t           last_tick;
     float              x, y, z;
     float              yaw, pitch;
+    bool               position_received;   /* set true on first PKT_POSITION; gates break/place */
     ReliableChannel    reliable;
     Inventory          inventory;
 } ServerClient;
