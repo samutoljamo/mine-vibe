@@ -273,7 +273,24 @@ add_executable(test_inventory
 target_include_directories(test_inventory PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME inventory COMMAND test_inventory)
 
+add_executable(test_raycast
+    tests/test_raycast.c
+    src/raycast.c
+)
+target_include_directories(test_raycast PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_raycast PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_raycast PRIVATE cglm Vulkan::Headers)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_raycast PRIVATE m)
+endif()
+add_test(NAME raycast COMMAND test_raycast)
+
 foreach(t minecraft test_block_physics test_agent test_net test_ui
-          test_remote_player test_mesher test_client test_inventory)
+          test_remote_player test_mesher test_client test_inventory
+          test_raycast)
     msvc_enable_c11_atomics(${t})
 endforeach()
