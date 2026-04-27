@@ -1,7 +1,5 @@
 #include "lighting.h"
 #include "chunk.h"
-#include <stdlib.h>
-#include <string.h>
 
 /* Step the light value through a block of given absorption.
  * cost = max(1, absorb): air costs 1 per step, leaves cost 2, etc. */

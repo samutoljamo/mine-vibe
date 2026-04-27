@@ -168,32 +168,34 @@ static void test_sky_column_through_leaves(void)
 
 static void test_bfs_through_doorway(void)
 {
-    /* Floor of stone at y=10. Wall of stone at z=8 from y=10..15.
-     * One opening at (5, 11..15, 8) so light leaks south. */
+    /* Stone roof at y=15 covering everything EXCEPT one cell at (5, 15, 8).
+     * Below the roof (y < 15) is open air. Without BFS, sky_column_pass
+     * floods column (5, *, 8) with sky=15 (because the roof has a hole),
+     * but every other column under the roof is sky=0. With BFS, light
+     * propagates horizontally from (5, *, 8) through the open space below
+     * the roof, decrementing by 1 per step. */
     Chunk* c = chunk_create(0, 0);
     for (int x = 0; x < CHUNK_X; x++)
         for (int z = 0; z < CHUNK_Z; z++)
-            chunk_set_block(c, x, 10, z, BLOCK_STONE);
-    for (int x = 0; x < CHUNK_X; x++)
-        for (int y = 10; y <= 15; y++)
-            chunk_set_block(c, x, y, 8, BLOCK_STONE);
-    /* Knock out a 1x5 doorway. */
-    for (int y = 11; y <= 15; y++)
-        chunk_set_block(c, 5, y, 8, BLOCK_AIR);
+            chunk_set_block(c, x, 15, z, BLOCK_STONE);
+    /* Knock out one roof cell. */
+    chunk_set_block(c, 5, 15, 8, BLOCK_AIR);
 
     LightingNeighbors nb = { NULL, NULL, NULL, NULL };
     lighting_initial_pass(c, &nb);
 
-    /* Inside the doorway, sky-15 enters from above. */
-    assert(chunk_get_skylight(c, 5, 15, 8) == 15);
+    /* Directly under the hole at y=14: sky=15. */
+    assert(chunk_get_skylight(c, 5, 14, 8) == 15);
 
-    /* One step away from the doorway opening (still under the wall but in
-     * open space at z=9, y=11): light is 14 (one step of cost 1). */
-    assert(chunk_get_skylight(c, 5, 11, 9) == 14);
+    /* One BFS step away (still below the roof, so initially sky=0). */
+    assert(chunk_get_skylight(c, 5, 14, 9) == 14);
+    assert(chunk_get_skylight(c, 5, 14, 7) == 14);
+    assert(chunk_get_skylight(c, 4, 14, 8) == 14);
+    assert(chunk_get_skylight(c, 6, 14, 8) == 14);
 
-    /* Light falls off as we move further south under the overhang. */
-    assert(chunk_get_skylight(c, 5, 11, 10) == 13);
-    assert(chunk_get_skylight(c, 5, 11, 11) == 12);
+    /* Two and three steps away. */
+    assert(chunk_get_skylight(c, 5, 14, 10) == 13);
+    assert(chunk_get_skylight(c, 5, 14, 11) == 12);
 
     chunk_destroy(c);
     printf("PASS: test_bfs_through_doorway\n");
