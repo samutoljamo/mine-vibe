@@ -15,6 +15,7 @@ typedef struct {
     bool      hit;
     int       x, y, z;     /* hit cell, valid only if hit */
     BlockFace face;        /* face of the hit cell that the ray crossed */
+    BlockID   block;       /* block at the hit cell; BLOCK_AIR (0) if !hit */
 } RaycastHit;
 
 /* Voxel DDA (Amanatides & Woo) against the world. `max_dist` in blocks.

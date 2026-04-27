@@ -20,6 +20,9 @@
 #include "remote_player.h"
 #include "player_model.h"
 #include "platform_thread.h"
+#include "raycast.h"
+#include "gameplay.h"
+#include "inventory.h"
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
@@ -30,20 +33,42 @@
 
 #define WORLD_SEED 420
 
-static Player g_player;
-static HUD    g_hud;
+static Player  g_player;
+static HUD     g_hud;
+static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
+static RaycastHit g_target;       /* refreshed each frame for outline + click */
 
 static void scroll_callback(GLFWwindow* w, double xoff, double yoff) {
     (void)w; (void)xoff;
     int dir = (yoff > 0) ? -1 : 1;
-    g_hud.selected_slot =
-        (g_hud.selected_slot + dir + HUD_SLOT_COUNT) % HUD_SLOT_COUNT;
+    if (!g_client) return;
+    g_client->inventory.selected =
+        (g_client->inventory.selected + dir + INVENTORY_SLOTS) % INVENTORY_SLOTS;
 }
 
 static void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
     (void)window;
     camera_process_mouse(&g_player.camera, xpos, ypos);
+}
+
+static void mouse_button_callback(GLFWwindow* w, int button, int action, int mods)
+{
+    (void)w; (void)mods;
+    if (action != GLFW_PRESS) return;
+    if (!g_client) return;
+    if (!g_target.hit) return;
+
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        client_send_break(g_client,
+                          g_target.x, g_target.y, g_target.z,
+                          (uint8_t)g_target.block);
+    } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+        client_send_place(g_client,
+                          g_target.x, g_target.y, g_target.z,
+                          (uint8_t)g_target.face,
+                          (uint8_t)g_client->inventory.selected);
+    }
 }
 
 static void key_callback(GLFWwindow* window, int key, int scancode,
@@ -80,8 +105,8 @@ static bool apply_agent_command(const AgentCommand *cmd, Player *player,
         break;
     case CMD_SELECT_SLOT: {
         int s = cmd->select_slot.slot;
-        if (s >= 0 && s < HUD_SLOT_COUNT)
-            g_hud.selected_slot = s;
+        if (s >= 0 && s < INVENTORY_SLOTS && g_client)
+            g_client->inventory.selected = s;
         break;
     }
     case CMD_MODE:
@@ -165,6 +190,7 @@ int main(int argc, char *argv[])
         glfwSetCursorPosCallback(window, mouse_callback);
         glfwSetKeyCallback(window, key_callback);
         glfwSetScrollCallback(window, scroll_callback);
+        glfwSetMouseButtonCallback(window, mouse_button_callback);
     }
 
     Renderer renderer;
@@ -206,6 +232,7 @@ int main(int argc, char *argv[])
         remote_player_set_init(&remote_players);
 
         g_remote_players = &remote_players;
+        g_client         = &client;
         client_set_snapshot_cb(&client, on_snapshot, NULL);
         client_set_leave_cb(&client, on_player_leave, NULL);
         client_connect(&client);
@@ -294,6 +321,16 @@ int main(int argc, char *argv[])
         }
 
         player_update(&g_player, window, world, dt);
+
+        /* Refresh the look-target for outline rendering and click handling.
+         * Must happen after player_update (so eye_pos / yaw / pitch are
+         * current) and before mouse_button_callback can fire on the next
+         * glfwPollEvents (i.e. before we yield to the event loop). */
+        {
+            vec3 dir;
+            camera_get_front(&g_player.camera, dir);
+            g_target = raycast_voxel(world, g_player.eye_pos, dir, MAX_REACH);
+        }
 
         /* Networking tick */
         if (networking) {

@@ -59,6 +59,16 @@ void client_send_position(Client* c,
                            float x, float y, float z,
                            float yaw, float pitch);
 
+/* Send a reliable break request for the cell (x,y,z). `block` is the block
+ * the client believes occupies the cell — the server uses it for inventory
+ * crediting. */
+void client_send_break(Client* c, int x, int y, int z, uint8_t block);
+
+/* Send a reliable place request: place the inventory item at slot `slot`
+ * on the face `face` of the cell (x,y,z). */
+void client_send_place(Client* c, int x, int y, int z,
+                        uint8_t face, uint8_t slot);
+
 /* Process all inbound messages from the net thread.
  * Returns number of PKT_WORLD_STATE packets processed. */
 int client_poll(Client* c);

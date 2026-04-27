@@ -78,6 +78,35 @@ void client_send_position(Client* c,
     net_thread_push_outbound(c->net, buf, (int)len, &c->server_addr);
 }
 
+void client_send_break(Client* c, int x, int y, int z, uint8_t block)
+{
+    if (c->state != CLIENT_CONNECTED) return;
+    BlockBreakPacket p = {
+        .header = { .type = PKT_BLOCK_BREAK, .player_id = c->local_player_id },
+        .x = x, .y = y, .z = z, .block = block,
+    };
+    reliable_fill_ack(&c->reliable, &p.header.ack, &p.header.ack_bits);
+    uint8_t buf[64];
+    size_t  len = net_write_block_break(buf, &p);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr,
+                   buf, (uint16_t)len);
+}
+
+void client_send_place(Client* c, int x, int y, int z,
+                        uint8_t face, uint8_t slot)
+{
+    if (c->state != CLIENT_CONNECTED) return;
+    BlockPlacePacket p = {
+        .header = { .type = PKT_BLOCK_PLACE, .player_id = c->local_player_id },
+        .x = x, .y = y, .z = z, .face = face, .slot = slot,
+    };
+    reliable_fill_ack(&c->reliable, &p.header.ack, &p.header.ack_bits);
+    uint8_t buf[64];
+    size_t  len = net_write_block_place(buf, &p);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr,
+                   buf, (uint16_t)len);
+}
+
 int client_poll(Client* c)
 {
     int state_packets = 0;

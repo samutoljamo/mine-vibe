@@ -50,7 +50,8 @@ RaycastHit raycast_voxel(World* world,
     /* First check the starting cell — handles ray-starts-inside-block. */
     BlockID b0 = world_get_block(world, x, y, z);
     if (b0 != BLOCK_AIR && b0 != BLOCK_WATER) {
-        return (RaycastHit){ .hit = true, .x = x, .y = y, .z = z, .face = FACE_PY };
+        return (RaycastHit){ .hit = true, .x = x, .y = y, .z = z,
+                              .face = FACE_PY, .block = b0 };
     }
 
     while (t <= max_dist) {
@@ -67,7 +68,8 @@ RaycastHit raycast_voxel(World* world,
         if (t > max_dist) break;
         BlockID b = world_get_block(world, x, y, z);
         if (b != BLOCK_AIR && b != BLOCK_WATER) {
-            return (RaycastHit){ .hit = true, .x = x, .y = y, .z = z, .face = last_face };
+            return (RaycastHit){ .hit = true, .x = x, .y = y, .z = z,
+                                  .face = last_face, .block = b };
         }
     }
     return miss;
