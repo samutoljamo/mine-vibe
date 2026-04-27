@@ -294,6 +294,60 @@ static void test_cross_chunk_boundary_delta(void)
     printf("PASS: test_cross_chunk_boundary_delta\n");
 }
 
+/* Place an opaque block at a sky-exposed cell. Column under it should go dark. */
+static void test_relight_place_opaque_at_sky(void)
+{
+    Chunk* c = chunk_create(0, 0);
+
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+    /* All cells are 15. */
+    assert(chunk_get_skylight(c, 8, 64, 8) == 15);
+
+    /* Place stone at y=128 column (8,8). */
+    chunk_set_block(c, 8, 128, 8, BLOCK_STONE);
+    lighting_on_block_changed(c, &nb, 8, 128, 8, BLOCK_AIR, BLOCK_STONE);
+
+    /* Cells directly below should now be 0 (sky no longer reaches). */
+    assert(chunk_get_skylight(c, 8, 127, 8) == 0);
+    assert(chunk_get_skylight(c, 8, 64, 8)  == 0);
+    /* Side cells refilled by horizontal BFS from neighbors. */
+    assert(chunk_get_skylight(c, 7, 64, 8) == 15);
+    assert(chunk_get_skylight(c, 8, 64, 7) == 15);
+
+    chunk_destroy(c);
+    printf("PASS: test_relight_place_opaque_at_sky\n");
+}
+
+/* Break an opaque block in a roof. Column below should re-light. */
+static void test_relight_break_opaque_roof(void)
+{
+    Chunk* c = chunk_create(0, 0);
+
+    /* Stone roof at y=20 over the whole chunk. */
+    for (int x = 0; x < CHUNK_X; x++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            chunk_set_block(c, x, 20, z, BLOCK_STONE);
+
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+    assert(chunk_get_skylight(c, 5, 10, 5) == 0);
+
+    /* Break the roof above (5, *, 5). */
+    chunk_set_block(c, 5, 20, 5, BLOCK_AIR);
+    lighting_on_block_changed(c, &nb, 5, 20, 5, BLOCK_STONE, BLOCK_AIR);
+
+    /* Cells directly under the new hole get sky=15. */
+    assert(chunk_get_skylight(c, 5, 19, 5) == 15);
+    assert(chunk_get_skylight(c, 5, 10, 5) == 15);
+    /* Adjacent cells under the rest of the roof get less than 15. */
+    assert(chunk_get_skylight(c, 4, 19, 5) == 14);
+    assert(chunk_get_skylight(c, 5, 19, 4) == 14);
+
+    chunk_destroy(c);
+    printf("PASS: test_relight_break_opaque_roof\n");
+}
+
 int main(void)
 {
     test_block_light_absorb_values();
@@ -304,5 +358,7 @@ int main(void)
     test_bfs_through_doorway();
     test_bfs_blocked_by_solid();
     test_cross_chunk_boundary_delta();
+    test_relight_place_opaque_at_sky();
+    test_relight_break_opaque_roof();
     return 0;
 }
