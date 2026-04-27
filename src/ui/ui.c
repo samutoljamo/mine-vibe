@@ -180,14 +180,18 @@ bool ui_font_bake(void)
                         GLYPH_FIRST, GLYPH_COUNT, packed);
     stbtt_PackEnd(&pc);
 
-    /* Splat R8 -> RGBA. Grayscale glyph (v,v,v,v) so the fragment shader's
-     * `texture(atlas, uv) * tint` reproduces the original alpha-mask behaviour. */
+    /* Splat R8 -> RGBA. Store glyphs as (255, 255, 255, v) — RGB stays opaque,
+     * A is the glyph mask. With the fragment shader's `texture(atlas, uv) * tint`
+     * this yields output (r,g,b,v*a), so the non-premultiplied SRC_ALPHA blend
+     * stays linear in v and matches the pre-RGBA glyph alpha-mask semantics
+     * (avoids quadratic v² darkening on antialiased edges). */
     memset(g_atlas_cpu, 0, sizeof(g_atlas_cpu));
     for (int i = 0; i < ATLAS_W * ATLAS_H; i++) {
         uint8_t v = r8[i];
-        g_atlas_cpu[i * 4 + 0] = v;
-        g_atlas_cpu[i * 4 + 1] = v;
-        g_atlas_cpu[i * 4 + 2] = v;
+        if (v == 0) continue;   /* leave empty regions zero */
+        g_atlas_cpu[i * 4 + 0] = 255;
+        g_atlas_cpu[i * 4 + 1] = 255;
+        g_atlas_cpu[i * 4 + 2] = 255;
         g_atlas_cpu[i * 4 + 3] = v;
     }
 
