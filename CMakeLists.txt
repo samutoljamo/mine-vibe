@@ -258,8 +258,15 @@ add_test(NAME mesher COMMAND test_mesher)
 add_executable(test_lighting
     tests/test_lighting.c
     src/block.c
+    src/chunk.c
 )
-target_include_directories(test_lighting PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(test_lighting PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_lighting PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_lighting PRIVATE cglm Vulkan::Headers)
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_lighting PRIVATE m)
 endif()
