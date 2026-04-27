@@ -6,9 +6,12 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# MSVC needs an explicit flag to enable C11 <stdatomic.h>.
+# MSVC needs an explicit flag to enable C11 <stdatomic.h>. The flag is a
+# no-op for C++ (the C++ side of stdatomic.h uses std::atomic regardless),
+# so apply it unconditionally — the COMPILE_LANGUAGE genex doesn't take
+# effect with the Visual Studio generator.
 if(MSVC)
-    add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+    string(APPEND CMAKE_C_FLAGS " /experimental:c11atomics")
 endif()
 
 # ---- Dependencies via FetchContent ----

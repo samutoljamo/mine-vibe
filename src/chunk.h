@@ -24,7 +24,7 @@ typedef enum ChunkState {
 
 typedef struct Chunk {
     int32_t          cx, cz;
-    _Atomic int      state;
+    atomic_int       state;
     BlockID          blocks[CHUNK_BLOCKS];
     ChunkMesh        mesh;
     uint8_t*         meta;         /* lazily allocated; NULL if unused */

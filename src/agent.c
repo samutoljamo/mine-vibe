@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdatomic.h>
 #include "platform_thread.h"
 #include <inttypes.h>
 
@@ -18,7 +19,7 @@ typedef struct {
     PT_Mutex        mtx;
 } CmdRing;
 
-static _Atomic bool g_active = false;
+static atomic_bool g_active = false;
 static CmdRing      g_ring;
 static PT_Thread    g_io_thread;
 static PT_Mutex     g_stdout_mtx;

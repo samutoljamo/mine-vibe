@@ -27,7 +27,7 @@ typedef struct NetMsg {
 typedef struct {
     int          fd;
     PT_Thread    thread;
-    _Atomic bool running;
+    atomic_bool running;
 
     /* Inbound: network → game logic */
     NetMsg*      in_head;

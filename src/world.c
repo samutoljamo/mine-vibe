@@ -57,7 +57,7 @@ struct World {
     /* Worker threads */
     PT_Thread*     workers;
     int            worker_count;
-    _Atomic bool   shutdown;
+    atomic_bool    shutdown;
 
     /* Work queue (linked list, protected by mutex + condvar) */
     WorkItem*      work_head;
