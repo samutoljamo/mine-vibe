@@ -6,13 +6,17 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# MSVC needs an explicit flag to enable C11 <stdatomic.h>. The flag is a
-# no-op for C++ (the C++ side of stdatomic.h uses std::atomic regardless),
-# so apply it unconditionally — the COMPILE_LANGUAGE genex doesn't take
-# effect with the Visual Studio generator.
-if(MSVC)
-    string(APPEND CMAKE_C_FLAGS " /experimental:c11atomics")
-endif()
+# MSVC needs /std:c11 + /experimental:c11atomics to enable <stdatomic.h>.
+# These get applied per-target below via msvc_enable_c11_atomics(), since
+# neither string(APPEND CMAKE_C_FLAGS ...) nor a COMPILE_LANGUAGE genex on
+# add_compile_options() reliably reaches MSBuild's C compile step.
+function(msvc_enable_c11_atomics target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:C>:/std:c11>
+            $<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+    endif()
+endfunction()
 
 # ---- Dependencies via FetchContent ----
 include(FetchContent)
@@ -261,3 +265,8 @@ endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_client PRIVATE m)
 endif()
+
+foreach(t minecraft test_block_physics test_agent test_net test_ui
+          test_remote_player test_mesher test_client)
+    msvc_enable_c11_atomics(${t})
+endforeach()
