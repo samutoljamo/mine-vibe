@@ -5,6 +5,9 @@
 #include <string.h>
 #include <stdbool.h>
 
+_Static_assert(INVENTORY_SLOTS == INVENTORY_NET_SLOTS,
+    "wire format and inventory model must agree on slot count");
+
 static ClientSnapshotCb g_snap_cb   = NULL;
 static void*             g_snap_user = NULL;
 static ClientLeaveCb     g_leave_cb   = NULL;
@@ -149,12 +152,15 @@ int client_poll(Client* c)
             if (is_new && (size_t)msg->len >= 8 + 13) {
                 BlockChangePacket bp;
                 net_read_block_change(msg->data, &bp);
-                if (c->pending_block_change_count < 64) {
+                if (c->pending_block_change_count < 256) {
                     int i = c->pending_block_change_count++;
                     c->pending_block_changes[i].x     = bp.x;
                     c->pending_block_changes[i].y     = bp.y;
                     c->pending_block_changes[i].z     = bp.z;
                     c->pending_block_changes[i].block = bp.block;
+                } else {
+                    fprintf(stderr, "[client] pending_block_changes full (%d), dropping edit (%d,%d,%d block=%u); world will diverge until reload\n",
+                            c->pending_block_change_count, bp.x, bp.y, bp.z, bp.block);
                 }
             }
 
@@ -163,14 +169,22 @@ int client_poll(Client* c)
             net_read_header(msg->data, &off, &h);
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
             if (is_new && (size_t)msg->len >= 8 + 1) {
-                InventoryPacket ip;
-                net_read_inventory(msg->data, &ip);
-                int prev_selected = c->inventory.selected;
-                inventory_init(&c->inventory);
-                c->inventory.selected = prev_selected;  /* preserve focus */
-                for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
-                    c->inventory.slots[i].block = (BlockID)ip.slots[i].block;
-                    c->inventory.slots[i].count = ip.slots[i].count;
+                /* Peek slot_count from the wire and verify total length covers
+                 * the implied body (1B per block + 1B per count per slot). */
+                uint8_t declared_slots = ((const uint8_t*)msg->data)[8];
+                if (declared_slots > INVENTORY_NET_SLOTS) declared_slots = INVENTORY_NET_SLOTS;
+                if ((size_t)msg->len >= (size_t)(8 + 1 + declared_slots * 2)) {
+                    InventoryPacket ip;
+                    net_read_inventory(msg->data, &ip);
+                    int prev_selected = c->inventory.selected;
+                    inventory_init(&c->inventory);
+                    c->inventory.selected = prev_selected;  /* preserve focus */
+                    for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
+                        BlockID b = (BlockID)ip.slots[i].block;
+                        if ((unsigned)b >= BLOCK_COUNT) continue;   /* range-check; ignore garbage IDs */
+                        c->inventory.slots[i].block = b;
+                        c->inventory.slots[i].count = ip.slots[i].count;
+                    }
                 }
             }
 

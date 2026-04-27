@@ -315,7 +315,15 @@ int main(int argc, char *argv[])
             int y = client.pending_block_changes[i].y;
             int z = client.pending_block_changes[i].z;
             BlockID b = (BlockID)client.pending_block_changes[i].block;
-            world_set_block(world, x, y, z, b);
+            if ((unsigned)b >= BLOCK_COUNT) {
+                fprintf(stderr, "[main] pending block-change has invalid id %u at (%d,%d,%d), skipping\n",
+                        (unsigned)b, x, y, z);
+                continue;
+            }
+            if (!world_set_block(world, x, y, z, b)) {
+                fprintf(stderr, "[main] world_set_block failed at (%d,%d,%d) block=%u; chunk unloaded or busy\n",
+                        x, y, z, (unsigned)b);
+            }
         }
         client.pending_block_change_count = 0;
 

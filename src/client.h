@@ -43,7 +43,7 @@ typedef struct {
     struct {
         int     x, y, z;
         uint8_t block;
-    } pending_block_changes[64];
+    } pending_block_changes[256];
     int pending_block_change_count;
 } Client;
 
