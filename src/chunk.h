@@ -44,8 +44,8 @@ typedef struct Chunk {
      *     chunk's lighting worker. Concrete synchronization: see lighting.c
      *     once Task 5 lands (likely a per-chunk mutex around the queue). */
     uint8_t*         lights;        /* lazily allocated; packed [block:4][sky:4] */
-    uint16_t         pending_delta_count;
-    uint16_t         pending_delta_cap;
+    uint32_t         pending_delta_count;
+    uint32_t         pending_delta_cap;
     BoundaryDelta*   pending_deltas; /* malloc'd; NULL if cap == 0 */
     bool             needs_remesh;  /* set on block change; cleared on remesh submit */
     bool             needs_relight; /* main-thread observable; set when a neighbor

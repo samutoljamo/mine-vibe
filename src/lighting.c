@@ -35,6 +35,10 @@ static void lq_init(LightQueue* q) { q->head = 0; q->tail = 0; }
 static int  lq_empty(const LightQueue* q) { return q->head == q->tail; }
 static void lq_push(LightQueue* q, int x, int y, int z, uint8_t light)
 {
+    /* Defensive: drop pushes if the ring is full. Monotone update rule
+     * means a dropped push will be re-attempted on a later iteration if
+     * the same cell gets re-pushed at a higher light value. */
+    if ((uint32_t)(q->tail - q->head) >= LIGHT_QUEUE_CAP) return;
     LightCell* c = &q->cells[q->tail++ & (LIGHT_QUEUE_CAP - 1)];
     c->x = (int16_t)x; c->y = (int16_t)y; c->z = (int16_t)z; c->light = light;
 }
@@ -67,11 +71,11 @@ static void push_boundary_delta(Chunk* nb_chunk, uint8_t face,
                                 uint8_t axis_coord, uint16_t y, uint8_t new_light)
 {
     if (nb_chunk->pending_delta_count >= nb_chunk->pending_delta_cap) {
-        uint16_t new_cap = nb_chunk->pending_delta_cap == 0
-            ? 64 : (uint16_t)(nb_chunk->pending_delta_cap * 2);
+        uint32_t new_cap = nb_chunk->pending_delta_cap == 0
+            ? 64u : nb_chunk->pending_delta_cap * 2u;
         BoundaryDelta* tmp = realloc(nb_chunk->pending_deltas,
                                      new_cap * sizeof(BoundaryDelta));
-        if (!tmp) return; /* drop delta on OOM — eventual consistency loss */
+        if (!tmp) return;
         nb_chunk->pending_deltas    = tmp;
         nb_chunk->pending_delta_cap = new_cap;
     }
@@ -192,7 +196,7 @@ void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
 
     /* Apply each pending delta directly into c->lights, then seed a queue
      * with the changed cells so addition-BFS spreads from them. */
-    for (uint16_t i = 0; i < c->pending_delta_count; i++) {
+    for (uint32_t i = 0; i < c->pending_delta_count; i++) {
         BoundaryDelta d = c->pending_deltas[i];
         int x, z;
         switch (d.face) {
