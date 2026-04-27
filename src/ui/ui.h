@@ -2,6 +2,7 @@
 #define UI_H
 
 #include <stdbool.h>
+#include <volk.h>
 #include <cglm/cglm.h>
 
 /* Forward-declare Renderer to avoid circular include (renderer.h includes hud.h) */

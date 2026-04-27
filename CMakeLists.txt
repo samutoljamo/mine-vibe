@@ -171,7 +171,10 @@ target_include_directories(test_block_physics PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${fastnoiselite_SOURCE_DIR}/C
 )
-target_link_libraries(test_block_physics PRIVATE cglm m)
+target_link_libraries(test_block_physics PRIVATE cglm)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_block_physics PRIVATE m)
+endif()
 add_test(NAME block_physics COMMAND test_block_physics)
 
 # Agent JSON unit tests (no Vulkan/GLFW required)
@@ -205,7 +208,10 @@ target_include_directories(test_ui PRIVATE
     ${vulkanmemoryallocator_SOURCE_DIR}/include
 )
 target_compile_definitions(test_ui PRIVATE VK_NO_PROTOTYPES UNDEBUG)
-target_link_libraries(test_ui PRIVATE volk GPUOpen::VulkanMemoryAllocator cglm Vulkan::Headers m ${CMAKE_DL_LIBS})
+target_link_libraries(test_ui PRIVATE glfw volk GPUOpen::VulkanMemoryAllocator cglm Vulkan::Headers ${CMAKE_DL_LIBS})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_ui PRIVATE m)
+endif()
 add_test(NAME ui COMMAND test_ui)
 
 add_executable(test_remote_player
@@ -213,7 +219,10 @@ add_executable(test_remote_player
     src/remote_player.c
 )
 target_include_directories(test_remote_player PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_remote_player PRIVATE cglm m)
+target_link_libraries(test_remote_player PRIVATE cglm)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_remote_player PRIVATE m)
+endif()
 add_test(NAME remote_player COMMAND test_remote_player)
 
 add_executable(test_mesher
@@ -228,7 +237,10 @@ target_include_directories(test_mesher PRIVATE
     ${vulkanmemoryallocator_SOURCE_DIR}/include
 )
 target_compile_definitions(test_mesher PRIVATE VK_NO_PROTOTYPES)
-target_link_libraries(test_mesher PRIVATE cglm Vulkan::Headers m)
+target_link_libraries(test_mesher PRIVATE cglm Vulkan::Headers)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mesher PRIVATE m)
+endif()
 add_test(NAME mesher COMMAND test_mesher)
 
 add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c)
