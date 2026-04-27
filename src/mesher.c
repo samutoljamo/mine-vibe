@@ -168,10 +168,12 @@ static bool is_solid_at(const Chunk* c, const ChunkNeighbors* nb, int x, int y, 
     BlockID b;
     if (x < 0) {
         if (!nb || !nb->neg_x) return false;
-        b = nb->neg_x[(z < 0 ? 0 : (z >= CHUNK_Z ? CHUNK_Z - 1 : z)) * CHUNK_Y + y];
+        if (z < 0 || z >= CHUNK_Z) return false; /* diagonal corner: no data */
+        b = nb->neg_x[z * CHUNK_Y + y];
     } else if (x >= CHUNK_X) {
         if (!nb || !nb->pos_x) return false;
-        b = nb->pos_x[(z < 0 ? 0 : (z >= CHUNK_Z ? CHUNK_Z - 1 : z)) * CHUNK_Y + y];
+        if (z < 0 || z >= CHUNK_Z) return false;
+        b = nb->pos_x[z * CHUNK_Y + y];
     } else if (z < 0) {
         if (!nb || !nb->neg_z) return false;
         b = nb->neg_z[x * CHUNK_Y + y];
@@ -192,12 +194,12 @@ static uint8_t light_byte_at(const Chunk* c, const ChunkNeighbors* nb, int x, in
 
     if (x < 0) {
         if (!nb || !nb->neg_x_lights) return 0;
-        int zc = z < 0 ? 0 : (z >= CHUNK_Z ? CHUNK_Z - 1 : z);
-        return nb->neg_x_lights[zc * CHUNK_Y + y];
+        if (z < 0 || z >= CHUNK_Z) return 0; /* diagonal corner: no data */
+        return nb->neg_x_lights[z * CHUNK_Y + y];
     } else if (x >= CHUNK_X) {
         if (!nb || !nb->pos_x_lights) return 0;
-        int zc = z < 0 ? 0 : (z >= CHUNK_Z ? CHUNK_Z - 1 : z);
-        return nb->pos_x_lights[zc * CHUNK_Y + y];
+        if (z < 0 || z >= CHUNK_Z) return 0;
+        return nb->pos_x_lights[z * CHUNK_Y + y];
     } else if (z < 0) {
         if (!nb || !nb->neg_z_lights) return 0;
         return nb->neg_z_lights[x * CHUNK_Y + y];
