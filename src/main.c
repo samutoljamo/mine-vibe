@@ -346,23 +346,27 @@ int main(int argc, char *argv[])
         world_update(world, &physics, g_player.position);
 
         /* Apply server-authoritative block edits buffered from the network
-         * thread. world_set_block marks chunks dirty for re-meshing. */
-        for (int i = 0; i < client.pending_block_change_count; i++) {
-            int x = client.pending_block_changes[i].x;
-            int y = client.pending_block_changes[i].y;
-            int z = client.pending_block_changes[i].z;
-            BlockID b = (BlockID)client.pending_block_changes[i].block;
-            if ((unsigned)b >= BLOCK_COUNT) {
-                fprintf(stderr, "[main] pending block-change has invalid id %u at (%d,%d,%d), skipping\n",
-                        (unsigned)b, x, y, z);
-                continue;
+         * thread. world_set_block marks chunks dirty for re-meshing.
+         * Guarded: without networking the Client struct is uninitialised
+         * stack memory and pending_block_change_count would be garbage. */
+        if (networking) {
+            for (int i = 0; i < client.pending_block_change_count; i++) {
+                int x = client.pending_block_changes[i].x;
+                int y = client.pending_block_changes[i].y;
+                int z = client.pending_block_changes[i].z;
+                BlockID b = (BlockID)client.pending_block_changes[i].block;
+                if ((unsigned)b >= BLOCK_COUNT) {
+                    fprintf(stderr, "[main] pending block-change has invalid id %u at (%d,%d,%d), skipping\n",
+                            (unsigned)b, x, y, z);
+                    continue;
+                }
+                if (!world_set_block(world, x, y, z, b)) {
+                    fprintf(stderr, "[main] world_set_block failed at (%d,%d,%d) block=%u; chunk unloaded or busy\n",
+                            x, y, z, (unsigned)b);
+                }
             }
-            if (!world_set_block(world, x, y, z, b)) {
-                fprintf(stderr, "[main] world_set_block failed at (%d,%d,%d) block=%u; chunk unloaded or busy\n",
-                        x, y, z, (unsigned)b);
-            }
+            client.pending_block_change_count = 0;
         }
-        client.pending_block_change_count = 0;
 
         block_physics_update(&physics, world, g_player.position, dt);
 
