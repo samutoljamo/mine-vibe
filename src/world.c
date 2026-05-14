@@ -410,8 +410,14 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
 
                 if (md->vertex_count > 0 && uploads < 64) {
                     if (world->renderer) {
-                        /* Destroy old mesh if any */
+                        /* Destroy old mesh if any. Frames in flight may still
+                         * reference the old VkBuffer; wait for the GPU to be
+                         * idle before destroying so we don't free memory the
+                         * GPU is mid-draw against. This is a heavy stall —
+                         * replace with a per-frame deferred-destroy queue if
+                         * gameplay starts spamming remeshes. */
                         if (chunk->mesh.uploaded) {
+                            vkDeviceWaitIdle(world->renderer->device);
                             chunk_mesh_destroy(world->renderer->allocator, &chunk->mesh);
                         }
                         memset(&chunk->mesh, 0, sizeof(ChunkMesh));
