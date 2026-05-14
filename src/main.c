@@ -174,6 +174,12 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Single-player is a loopback host: spawn an in-process server and
+     * connect to it. Gameplay (inventory, block break/place) is server-
+     * authoritative, so without a server there is no interaction. */
+    if (!host_mode && !client_mode && !server_mode)
+        host_mode = true;
+
     if (server_mode) {
         server_run(port, SERVER_MAX_CLIENTS);
         return 0;
