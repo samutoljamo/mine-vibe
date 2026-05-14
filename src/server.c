@@ -72,6 +72,13 @@ static void send_reliable(Server* s, ServerClient* c,
     uint8_t buf[RELIABLE_MAX_PAYLOAD];
     if (len > RELIABLE_MAX_PAYLOAD) return;
     memcpy(buf, data, len);
+    /* Patch the wire seq (header bytes 2-3) with the value reliable_send
+     * is about to assign. Packet builders here leave header.seq=0; without
+     * this every reliable broadcast goes out with seq=0 and the client
+     * dedupes all but the first as duplicates. */
+    uint16_t seq = c->reliable.next_seq;
+    buf[2] = (uint8_t)(seq & 0xFF);
+    buf[3] = (uint8_t)(seq >> 8);
     buf[4] = (uint8_t)(ack & 0xFF);
     buf[5] = (uint8_t)(ack >> 8);
     buf[6] = (uint8_t)(bits & 0xFF);
