@@ -934,6 +934,29 @@ bool world_set_block(World* world, int x, int y, int z, BlockID id) {
     }
 
     chunk->needs_remesh = true;
+
+    /* A block change at the chunk boundary exposes or hides faces in the
+     * neighbor chunk's mesh — its mesher samples our boundary blocks via
+     * the shared-edge slice. Without marking the neighbor dirty, its mesh
+     * keeps its stale boundary faces and the player sees into chunk
+     * interiors when digging near edges. */
+    if (lx == 0) {
+        Chunk* n = chunk_map_get(&world->map, cx - 1, cz);
+        if (n) n->needs_remesh = true;
+    }
+    if (lx == CHUNK_X - 1) {
+        Chunk* n = chunk_map_get(&world->map, cx + 1, cz);
+        if (n) n->needs_remesh = true;
+    }
+    if (lz == 0) {
+        Chunk* n = chunk_map_get(&world->map, cx, cz - 1);
+        if (n) n->needs_remesh = true;
+    }
+    if (lz == CHUNK_Z - 1) {
+        Chunk* n = chunk_map_get(&world->map, cx, cz + 1);
+        if (n) n->needs_remesh = true;
+    }
+
     return true;
 }
 
