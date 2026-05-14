@@ -827,7 +827,14 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
         uint32_t idx = 0;
         Chunk* chunk;
         while ((chunk = chunk_map_iter(&world->map, &idx)) != NULL) {
-            if (atomic_load(&chunk->state) != CHUNK_READY) continue;
+            /* Render CHUNK_READY (fresh) or CHUNK_MESHING (re-mesh in flight —
+             * the previous mesh is still valid in chunk->mesh.uploaded and
+             * keeps drawing until the new one replaces it). Without this,
+             * any block edit makes its chunk disappear for the few frames
+             * the worker takes to rebuild — the player sees through the
+             * world. */
+            int state = atomic_load(&chunk->state);
+            if (state != CHUNK_READY && state != CHUNK_MESHING) continue;
             if (!chunk->mesh.uploaded) continue;
 
             /* Grow array if needed */
