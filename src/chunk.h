@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "block.h"
 #include "chunk_mesh.h"
+#include "platform_thread.h"
 
 #define CHUNK_X 16
 #define CHUNK_Y 256
@@ -18,17 +19,39 @@ typedef enum ChunkState {
     CHUNK_UNLOADED = 0,
     CHUNK_GENERATING,
     CHUNK_GENERATED,
+    CHUNK_LIGHTING,
+    CHUNK_LIT,
     CHUNK_MESHING,
     CHUNK_READY,
 } ChunkState;
 
+typedef struct BoundaryDelta {
+    uint8_t  face;       /* 0=+X, 1=-X, 2=+Z, 3=-Z (horizontal only) */
+    uint8_t  axis_coord; /* 0..15 along the boundary's other horizontal axis */
+    uint16_t y;          /* 0..CHUNK_Y-1 */
+    uint8_t  new_light;  /* packed sky+block nibble */
+} BoundaryDelta;
+
 typedef struct Chunk {
     int32_t          cx, cz;
-    atomic_int       state;
+    _Atomic int      state;
     BlockID          blocks[CHUNK_BLOCKS];
     ChunkMesh        mesh;
-    uint8_t*         meta;         /* lazily allocated; NULL if unused */
-    bool             needs_remesh; /* set on block change; cleared on remesh submit */
+    uint8_t*         meta;          /* lazily allocated; NULL if unused */
+    /* Lighting fields. Concurrency contract:
+     *   - lights[]: written by lighting worker during CHUNK_LIGHTING; read
+     *     by mesher worker during CHUNK_MESHING; read-only after; main-thread
+     *     in-place writes (block-change relight) are gated on state != LIGHTING/MESHING.
+     *   - pending_deltas / pending_delta_count / pending_delta_cap / needs_relight:
+     *     guarded by pending_mutex. Multiple workers may concurrently push_boundary_delta
+     *     onto a shared neighbor; the mutex serializes their realloc/append. */
+    PT_Mutex         pending_mutex;
+    uint8_t*         lights;
+    uint32_t         pending_delta_count;
+    uint32_t         pending_delta_cap;
+    BoundaryDelta*   pending_deltas;
+    bool             needs_remesh;
+    bool             needs_relight;
 } Chunk;
 
 Chunk* chunk_create(int32_t cx, int32_t cz);
@@ -68,6 +91,47 @@ static inline void chunk_set_meta(Chunk* c, int x, int y, int z, uint8_t val) {
         return;
     chunk_ensure_meta(c);
     c->meta[x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z] = val;
+}
+
+/* Ensure lights array is allocated. Call before any light write. */
+static inline void chunk_ensure_lights(Chunk* c) {
+    if (!c->lights) {
+        c->lights = calloc(CHUNK_BLOCKS, 1);
+        if (!c->lights) {
+            fprintf(stderr, "chunk_ensure_lights: out of memory\n");
+            abort();
+        }
+    }
+}
+
+static inline uint8_t chunk_get_skylight(const Chunk* c, int x, int y, int z) {
+    if (x < 0 || x >= CHUNK_X || y < 0 || y >= CHUNK_Y || z < 0 || z >= CHUNK_Z)
+        return 0;
+    if (!c->lights) return 0;
+    return c->lights[x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z] & 0x0F;
+}
+
+static inline uint8_t chunk_get_blocklight(const Chunk* c, int x, int y, int z) {
+    if (x < 0 || x >= CHUNK_X || y < 0 || y >= CHUNK_Y || z < 0 || z >= CHUNK_Z)
+        return 0;
+    if (!c->lights) return 0;
+    return (c->lights[x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z] >> 4) & 0x0F;
+}
+
+static inline void chunk_set_skylight(Chunk* c, int x, int y, int z, uint8_t v) {
+    if (x < 0 || x >= CHUNK_X || y < 0 || y >= CHUNK_Y || z < 0 || z >= CHUNK_Z)
+        return;
+    chunk_ensure_lights(c);
+    int idx = x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z;
+    c->lights[idx] = (uint8_t)((c->lights[idx] & 0xF0) | (v & 0x0F));
+}
+
+static inline void chunk_set_blocklight(Chunk* c, int x, int y, int z, uint8_t v) {
+    if (x < 0 || x >= CHUNK_X || y < 0 || y >= CHUNK_Y || z < 0 || z >= CHUNK_Z)
+        return;
+    chunk_ensure_lights(c);
+    int idx = x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z;
+    c->lights[idx] = (uint8_t)((c->lights[idx] & 0x0F) | ((v & 0x0F) << 4));
 }
 
 #endif

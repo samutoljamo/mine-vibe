@@ -7,10 +7,14 @@ Chunk* chunk_create(int32_t cx, int32_t cz) {
     c->cx = cx;
     c->cz = cz;
     atomic_store(&c->state, CHUNK_UNLOADED);
+    pt_mutex_init(&c->pending_mutex);
     return c;
 }
 
 void chunk_destroy(Chunk* chunk) {
+    pt_mutex_destroy(&chunk->pending_mutex);
     free(chunk->meta);
+    free(chunk->lights);
+    free(chunk->pending_deltas);
     free(chunk);
 }

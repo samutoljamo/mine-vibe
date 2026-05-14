@@ -24,6 +24,8 @@ typedef struct BlockDef {
     bool        is_solid;
     bool        is_transparent;
     bool        is_gravity;      /* falls when unsupported */
+    uint8_t     light_absorb;    /* 0 = transmits fully, 15 = opaque to light */
+    uint8_t     light_emit;      /* 0 in spec 1; spec 2 adds emitting blocks */
     uint8_t     tex_top;
     uint8_t     tex_side;
     uint8_t     tex_bottom;

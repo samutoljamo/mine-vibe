@@ -59,45 +59,45 @@ void renderer_init_player_mesh(Renderer* r)
     vi += 4; ii += 6;
 
     /* +X face (normal 0) */
-    QUAD(((BlockVertex){{PL_W, 0.0f, PL_D}, {0,0}, 0, 0, {0,0}}),
-         ((BlockVertex){{PL_W, 0.0f, 0.0f}, {1,0}, 0, 0, {0,0}}),
-         ((BlockVertex){{PL_W, PL_H, 0.0f}, {1,1}, 0, 0, {0,0}}),
-         ((BlockVertex){{PL_W, PL_H, PL_D}, {0,1}, 0, 0, {0,0}}),
+    QUAD(((BlockVertex){{PL_W, 0.0f, PL_D}, {0,0}, 0, 0, 0, 0}),
+         ((BlockVertex){{PL_W, 0.0f, 0.0f}, {1,0}, 0, 0, 0, 0}),
+         ((BlockVertex){{PL_W, PL_H, 0.0f}, {1,1}, 0, 0, 0, 0}),
+         ((BlockVertex){{PL_W, PL_H, PL_D}, {0,1}, 0, 0, 0, 0}),
          0)
 
     /* -X face (normal 1) */
-    QUAD(((BlockVertex){{0.0f, 0.0f, 0.0f}, {0,0}, 1, 0, {0,0}}),
-         ((BlockVertex){{0.0f, 0.0f, PL_D}, {1,0}, 1, 0, {0,0}}),
-         ((BlockVertex){{0.0f, PL_H, PL_D}, {1,1}, 1, 0, {0,0}}),
-         ((BlockVertex){{0.0f, PL_H, 0.0f}, {0,1}, 1, 0, {0,0}}),
+    QUAD(((BlockVertex){{0.0f, 0.0f, 0.0f}, {0,0}, 1, 0, 0, 0}),
+         ((BlockVertex){{0.0f, 0.0f, PL_D}, {1,0}, 1, 0, 0, 0}),
+         ((BlockVertex){{0.0f, PL_H, PL_D}, {1,1}, 1, 0, 0, 0}),
+         ((BlockVertex){{0.0f, PL_H, 0.0f}, {0,1}, 1, 0, 0, 0}),
          1)
 
     /* +Y face (normal 2) — top */
-    QUAD(((BlockVertex){{0.0f, PL_H, 0.0f}, {0,0}, 2, 0, {0,0}}),
-         ((BlockVertex){{0.0f, PL_H, PL_D}, {1,0}, 2, 0, {0,0}}),
-         ((BlockVertex){{PL_W, PL_H, PL_D}, {1,1}, 2, 0, {0,0}}),
-         ((BlockVertex){{PL_W, PL_H, 0.0f}, {0,1}, 2, 0, {0,0}}),
+    QUAD(((BlockVertex){{0.0f, PL_H, 0.0f}, {0,0}, 2, 0, 0, 0}),
+         ((BlockVertex){{0.0f, PL_H, PL_D}, {1,0}, 2, 0, 0, 0}),
+         ((BlockVertex){{PL_W, PL_H, PL_D}, {1,1}, 2, 0, 0, 0}),
+         ((BlockVertex){{PL_W, PL_H, 0.0f}, {0,1}, 2, 0, 0, 0}),
          2)
 
     /* -Y face (normal 3) — bottom */
-    QUAD(((BlockVertex){{0.0f, 0.0f, PL_D}, {0,0}, 3, 0, {0,0}}),
-         ((BlockVertex){{0.0f, 0.0f, 0.0f}, {1,0}, 3, 0, {0,0}}),
-         ((BlockVertex){{PL_W, 0.0f, 0.0f}, {1,1}, 3, 0, {0,0}}),
-         ((BlockVertex){{PL_W, 0.0f, PL_D}, {0,1}, 3, 0, {0,0}}),
+    QUAD(((BlockVertex){{0.0f, 0.0f, PL_D}, {0,0}, 3, 0, 0, 0}),
+         ((BlockVertex){{0.0f, 0.0f, 0.0f}, {1,0}, 3, 0, 0, 0}),
+         ((BlockVertex){{PL_W, 0.0f, 0.0f}, {1,1}, 3, 0, 0, 0}),
+         ((BlockVertex){{PL_W, 0.0f, PL_D}, {0,1}, 3, 0, 0, 0}),
          3)
 
     /* +Z face (normal 4) */
-    QUAD(((BlockVertex){{0.0f, 0.0f, PL_D}, {0,0}, 4, 0, {0,0}}),
-         ((BlockVertex){{PL_W, 0.0f, PL_D}, {1,0}, 4, 0, {0,0}}),
-         ((BlockVertex){{PL_W, PL_H, PL_D}, {1,1}, 4, 0, {0,0}}),
-         ((BlockVertex){{0.0f, PL_H, PL_D}, {0,1}, 4, 0, {0,0}}),
+    QUAD(((BlockVertex){{0.0f, 0.0f, PL_D}, {0,0}, 4, 0, 0, 0}),
+         ((BlockVertex){{PL_W, 0.0f, PL_D}, {1,0}, 4, 0, 0, 0}),
+         ((BlockVertex){{PL_W, PL_H, PL_D}, {1,1}, 4, 0, 0, 0}),
+         ((BlockVertex){{0.0f, PL_H, PL_D}, {0,1}, 4, 0, 0, 0}),
          4)
 
     /* -Z face (normal 5) */
-    QUAD(((BlockVertex){{PL_W, 0.0f, 0.0f}, {0,0}, 5, 0, {0,0}}),
-         ((BlockVertex){{0.0f, 0.0f, 0.0f}, {1,0}, 5, 0, {0,0}}),
-         ((BlockVertex){{0.0f, PL_H, 0.0f}, {1,1}, 5, 0, {0,0}}),
-         ((BlockVertex){{PL_W, PL_H, 0.0f}, {0,1}, 5, 0, {0,0}}),
+    QUAD(((BlockVertex){{PL_W, 0.0f, 0.0f}, {0,0}, 5, 0, 0, 0}),
+         ((BlockVertex){{0.0f, 0.0f, 0.0f}, {1,0}, 5, 0, 0, 0}),
+         ((BlockVertex){{0.0f, PL_H, 0.0f}, {1,1}, 5, 0, 0, 0}),
+         ((BlockVertex){{PL_W, PL_H, 0.0f}, {0,1}, 5, 0, 0, 0}),
          5)
 
 #undef QUAD

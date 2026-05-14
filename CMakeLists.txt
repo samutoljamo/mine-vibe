@@ -129,6 +129,7 @@ add_executable(minecraft
     src/chunk_map.c
     src/worldgen.c
     src/mesher.c
+    src/lighting.c
     src/world.c
     src/player.c
     src/physics.c
@@ -261,6 +262,24 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME mesher COMMAND test_mesher)
 
+add_executable(test_lighting
+    tests/test_lighting.c
+    src/block.c
+    src/chunk.c
+    src/lighting.c
+)
+target_include_directories(test_lighting PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_lighting PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_lighting PRIVATE cglm Vulkan::Headers)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_lighting PRIVATE m)
+endif()
+add_test(NAME lighting COMMAND test_lighting)
+
 add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
@@ -273,6 +292,6 @@ if(UNIX AND NOT APPLE)
 endif()
 
 foreach(t minecraft test_block_physics test_agent test_net test_ui
-          test_remote_player test_mesher test_client)
+          test_remote_player test_mesher test_lighting test_client)
     msvc_enable_c11_atomics(${t})
 endforeach()
