@@ -42,9 +42,12 @@ static const BoxUV LEG_UV = {
 
 /* ── Mesh builder ───────────────────────────────────────────────────────── */
 
+/* Positions are in BL, BR, TR, TL order as seen from OUTSIDE the cube.
+ * This produces CCW-from-outside winding (matching the block mesher),
+ * so faces render front-facing in Vulkan rather than getting back-culled. */
 static void add_face(PlayerVertex* verts, uint32_t* vi,
                      uint32_t* idxs, uint32_t* ii,
-                     /* TL, TR, BR, BL positions */
+                     /* BL, BR, TR, TL positions */
                      float v0x, float v0y, float v0z,
                      float v1x, float v1y, float v1z,
                      float v2x, float v2y, float v2z,
@@ -56,16 +59,17 @@ static void add_face(PlayerVertex* verts, uint32_t* vi,
     if (mirror_u) { float tmp = u0; u0 = u1; u1 = tmp; }
 
     uint32_t base = *vi;
-    verts[(*vi)++] = (PlayerVertex){v0x,v0y,v0z, u0,v0, face_idx, {0}};
-    verts[(*vi)++] = (PlayerVertex){v1x,v1y,v1z, u1,v0, face_idx, {0}};
-    verts[(*vi)++] = (PlayerVertex){v2x,v2y,v2z, u1,v1, face_idx, {0}};
-    verts[(*vi)++] = (PlayerVertex){v3x,v3y,v3z, u0,v1, face_idx, {0}};
+    /* UVs paired with each corner (image-V grows downward, so v1 > v0). */
+    verts[(*vi)++] = (PlayerVertex){v0x,v0y,v0z, u0,v1, face_idx, {0}}; /* BL */
+    verts[(*vi)++] = (PlayerVertex){v1x,v1y,v1z, u1,v1, face_idx, {0}}; /* BR */
+    verts[(*vi)++] = (PlayerVertex){v2x,v2y,v2z, u1,v0, face_idx, {0}}; /* TR */
+    verts[(*vi)++] = (PlayerVertex){v3x,v3y,v3z, u0,v0, face_idx, {0}}; /* TL */
 
     idxs[(*ii)++] = base+0; idxs[(*ii)++] = base+1; idxs[(*ii)++] = base+2;
     idxs[(*ii)++] = base+0; idxs[(*ii)++] = base+2; idxs[(*ii)++] = base+3;
 }
 
-/* CW winding per face, viewed from outside.
+/* CCW winding per face, viewed from outside (matches block-mesher).
    mirror_x: used for left arm/leg — swaps ±X face UVs and mirrors U. */
 static void add_box(PlayerVertex* verts, uint32_t* vi,
                     uint32_t* idxs, uint32_t* ii,
@@ -73,34 +77,34 @@ static void add_box(PlayerVertex* verts, uint32_t* vi,
                     float x1, float y1, float z1,
                     const BoxUV* uv, bool mirror_x)
 {
-    /* +X face (right), face_idx=0 */
+    /* +X face (right), face_idx=0. View from +X: up=+Y, right=+Z. */
     add_face(verts,vi,idxs,ii,
-        x1,y1,z0, x1,y1,z1, x1,y0,z1, x1,y0,z0,
+        x1,y0,z0, x1,y0,z1, x1,y1,z1, x1,y1,z0,
         mirror_x ? uv->mx : uv->px, mirror_x, 0);
 
-    /* -X face (left), face_idx=1 */
+    /* -X face (left), face_idx=1. View from -X: up=+Y, right=-Z. */
     add_face(verts,vi,idxs,ii,
-        x0,y1,z1, x0,y1,z0, x0,y0,z0, x0,y0,z1,
+        x0,y0,z1, x0,y0,z0, x0,y1,z0, x0,y1,z1,
         mirror_x ? uv->px : uv->mx, mirror_x, 1);
 
-    /* +Y face (top), face_idx=2 */
+    /* +Y face (top), face_idx=2. View from above: up=-Z, right=-X. */
     add_face(verts,vi,idxs,ii,
-        x0,y1,z1, x1,y1,z1, x1,y1,z0, x0,y1,z0,
+        x1,y1,z1, x0,y1,z1, x0,y1,z0, x1,y1,z0,
         uv->top, mirror_x, 2);
 
-    /* -Y face (bottom), face_idx=3 */
+    /* -Y face (bottom), face_idx=3. View from below: up=-Z, right=+X. */
     add_face(verts,vi,idxs,ii,
-        x0,y0,z0, x1,y0,z0, x1,y0,z1, x0,y0,z1,
+        x0,y0,z1, x1,y0,z1, x1,y0,z0, x0,y0,z0,
         uv->bot, mirror_x, 3);
 
-    /* +Z face (front), face_idx=4 */
+    /* +Z face (front), face_idx=4. View from +Z: up=+Y, right=-X. */
     add_face(verts,vi,idxs,ii,
-        x0,y1,z1, x1,y1,z1, x1,y0,z1, x0,y0,z1,
+        x1,y0,z1, x0,y0,z1, x0,y1,z1, x1,y1,z1,
         uv->frt, mirror_x, 4);
 
-    /* -Z face (back), face_idx=5 */
+    /* -Z face (back), face_idx=5. View from -Z: up=+Y, right=+X. */
     add_face(verts,vi,idxs,ii,
-        x1,y1,z0, x0,y1,z0, x0,y0,z0, x1,y0,z0,
+        x0,y0,z0, x1,y0,z0, x1,y1,z0, x0,y1,z0,
         uv->bck, mirror_x, 5);
 }
 
