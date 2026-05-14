@@ -4,6 +4,8 @@
 #include "frustum.h"
 #include "player_model.h"
 #include "ui/hud.h"
+#include "inventory.h"
+#include "raycast.h"
 #include "agent.h"
 #include "ui/ui.h"
 #include <stdio.h>
@@ -17,7 +19,9 @@ void renderer_draw_frame(Renderer* r,
                          ChunkMesh* meshes, uint32_t mesh_count,
                          const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir,
-                         const HUD* hud, bool dump_frame, const char* dump_path)
+                         const Inventory* inventory,
+                         const RaycastHit* target,
+                         bool dump_frame, const char* dump_path)
 {
     uint32_t fi = r->current_frame;
 
@@ -43,6 +47,13 @@ void renderer_draw_frame(Renderer* r,
 
     /* 3. Reset fence (only after we know we will submit work) */
     vkResetFences(r->device, 1, &r->in_flight_fences[fi]);
+
+    /* Per-frame outline state reset. Must happen before any
+     * renderer_outline_emit_block call this frame. */
+    r->outline_vert_count = 0;
+    if (target && target->hit) {
+        renderer_outline_emit_block(r, target->x, target->y, target->z);
+    }
 
     /* 4. Update UBO */
     GlobalUBO ubo;
@@ -157,6 +168,21 @@ void renderer_draw_frame(Renderer* r,
         player_model_draw(r, cmd, &r->player_model, players, player_count);
     }
 
+    /* Block outline (semi-transparent black wireframe on the targeted block).
+     * Drawn inside the world renderpass so depth test against world geometry
+     * works naturally, but with depthWrite=false to avoid affecting later
+     * depth-aware passes. */
+    if (r->outline_vert_count > 0) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r->outline_pipeline);
+        /* Reuse the world's bound descriptor set 0 — same layout, same UBO. */
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                r->outline_pipeline_layout, 0, 1,
+                                &r->descriptor_sets[fi], 0, NULL);
+        VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &r->outline_vb[fi], &off);
+        vkCmdDraw(cmd, r->outline_vert_count, 1, 0, 0);
+    }
+
     /* 7. End render pass */
     vkCmdEndRenderPass(cmd);
 
@@ -164,7 +190,10 @@ void renderer_draw_frame(Renderer* r,
     float sw = (float)r->swapchain.extent.width;
     float sh = (float)r->swapchain.extent.height;
     ui_frame_begin(cmd, image_index, r->current_frame, sw, sh);
-    if (hud) hud_build(hud, sw, sh);
+    hud_build(inventory, sw, sh);   /* hud_build draws crosshair unconditionally; hotbar only if inv non-null */
+    /* World-space block outline emission is handled at the top of this
+     * function via renderer_outline_emit_block; the draw command is recorded
+     * inside the world renderpass above. */
     ui_frame_end();
 
     vkEndCommandBuffer(cmd);

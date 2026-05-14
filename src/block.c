@@ -17,3 +17,17 @@ const BlockDef* block_get_def(BlockID id) {
     if (id >= BLOCK_COUNT) return &block_defs[BLOCK_AIR];
     return &block_defs[id];
 }
+
+void block_representative_color(BlockID id, uint8_t* r, uint8_t* g, uint8_t* b) {
+    switch (id) {
+        case BLOCK_STONE:   *r = 130; *g = 130; *b = 130; break;
+        case BLOCK_DIRT:    *r = 134; *g =  96; *b =  67; break;
+        case BLOCK_GRASS:   *r =  91; *g = 153; *b =  72; break;
+        case BLOCK_SAND:    *r = 219; *g = 211; *b = 160; break;
+        case BLOCK_WOOD:    *r = 109; *g =  82; *b =  47; break;
+        case BLOCK_LEAVES:  *r =  60; *g = 117; *b =  44; break;
+        case BLOCK_WATER:   *r =  64; *g = 128; *b = 220; break;
+        case BLOCK_BEDROCK: *r =  60; *g =  60; *b =  60; break;
+        default:            *r = 255; *g =   0; *b = 255; break;   /* magenta = bug */
+    }
+}

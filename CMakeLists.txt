@@ -101,6 +101,8 @@ compile_shader(${SHADER_DIR}/hud.vert)
 compile_shader(${SHADER_DIR}/hud.frag)
 compile_shader(${SHADER_DIR}/ui.vert)
 compile_shader(${SHADER_DIR}/ui.frag)
+compile_shader(${SHADER_DIR}/outline.vert)
+compile_shader(${SHADER_DIR}/outline.frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 
 # ---- Executable ----
@@ -144,6 +146,8 @@ add_executable(minecraft
     src/server.c
     src/client.c
     src/remote_player.c
+    src/inventory.c
+    src/raycast.c
     src/assets_generated.c
     src/shaders_generated.c
 )
@@ -216,6 +220,7 @@ add_test(NAME net COMMAND test_net)
 add_executable(test_ui
     tests/test_ui.c
     src/ui/ui.c
+    src/block.c
     src/pipeline.c
     tests/renderer_stubs.c
 )
@@ -280,7 +285,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME lighting COMMAND test_lighting)
 
-add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c)
+add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads)
@@ -291,7 +296,31 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_client PRIVATE m)
 endif()
 
+add_executable(test_inventory
+    tests/test_inventory.c
+    src/inventory.c
+)
+target_include_directories(test_inventory PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME inventory COMMAND test_inventory)
+
+add_executable(test_raycast
+    tests/test_raycast.c
+    src/raycast.c
+)
+target_include_directories(test_raycast PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_raycast PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_raycast PRIVATE cglm Vulkan::Headers)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_raycast PRIVATE m)
+endif()
+add_test(NAME raycast COMMAND test_raycast)
+
 foreach(t minecraft test_block_physics test_agent test_net test_ui
-          test_remote_player test_mesher test_lighting test_client)
+          test_remote_player test_mesher test_lighting test_client
+          test_inventory test_raycast)
     msvc_enable_c11_atomics(${t})
 endforeach()

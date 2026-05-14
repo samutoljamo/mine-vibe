@@ -5,6 +5,8 @@
 #include <volk.h>
 #include <cglm/cglm.h>
 
+#include "../block.h"
+
 /* Forward-declare Renderer to avoid circular include (renderer.h includes hud.h) */
 struct Renderer;
 
@@ -73,6 +75,9 @@ void ui_set_input(float mouse_x, float mouse_y, bool pressed, bool released);
 void  ui_rect(float x, float y, float w, float h, vec4 color);
 void  ui_text(float x, float y, float size, const char* text, vec4 color);
 float ui_text_width(const char* text, float size);
+
+/* Draw a baked isometric block icon at (x, y) with the given square pixel size. */
+void  ui_block_icon(BlockID id, float x, float y, float size);
 
 /* ------------------------------------------------------------------ */
 /*  Layout (Plan 2 — stubs now, full impl in Plan 2)                  */

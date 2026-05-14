@@ -445,6 +445,202 @@ static bool create_ubos(Renderer* r)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Block-outline pipeline                                            */
+/* ------------------------------------------------------------------ */
+
+#define OUTLINE_MAX_VERTS 64   /* up to 24 * a couple targets, with slack */
+
+static bool create_outline_buffers(Renderer* r)
+{
+    VkBufferCreateInfo bci = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size  = OUTLINE_MAX_VERTS * sizeof(float) * 3,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    };
+    VmaAllocationCreateInfo aci = {
+        .usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+    };
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(r->allocator, &bci, &aci,
+                            &r->outline_vb[i], &r->outline_vb_alloc[i],
+                            &info) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create outline VB %d\n", i);
+            return false;
+        }
+        r->outline_vb_mapped[i] = info.pMappedData;
+    }
+    return true;
+}
+
+static bool create_outline_pipeline(Renderer* r)
+{
+    /* Vertex input: just vec3 pos. */
+    VkVertexInputBindingDescription bind = {
+        .binding   = 0,
+        .stride    = sizeof(float) * 3,
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    VkVertexInputAttributeDescription attr = {
+        .location = 0, .binding = 0,
+        .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0,
+    };
+    VkPipelineVertexInputStateCreateInfo vi = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount   = 1, .pVertexBindingDescriptions   = &bind,
+        .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &attr,
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo ia = {
+        .sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+    };
+
+    VkPipelineViewportStateCreateInfo vp = {
+        .sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1, .scissorCount = 1,
+    };
+
+    /* lineWidth = 1.0f because we don't enable the wideLines device feature. */
+    VkPipelineRasterizationStateCreateInfo rs = {
+        .sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_LINE,
+        .cullMode    = VK_CULL_MODE_NONE,
+        .frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth   = 1.0f,
+    };
+
+    VkPipelineMultisampleStateCreateInfo ms = {
+        .sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    VkPipelineDepthStencilStateCreateInfo ds = {
+        .sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable  = VK_TRUE,
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp   = VK_COMPARE_OP_LESS,
+    };
+
+    VkPipelineColorBlendAttachmentState cba = {
+        .blendEnable         = VK_TRUE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp        = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp        = VK_BLEND_OP_ADD,
+        .colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+
+    VkPipelineColorBlendStateCreateInfo cb = {
+        .sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1, .pAttachments = &cba,
+    };
+
+    VkDynamicState dyn_states[] = {
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dyn = {
+        .sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2, .pDynamicStates = dyn_states,
+    };
+
+    /* Reuse the existing descriptor set layout (binding 0 = GlobalUBO).
+     * The outline shader doesn't sample binding 1, so it's fine to bind a
+     * descriptor set that has it. */
+    VkPipelineLayoutCreateInfo pl_ci = {
+        .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1, .pSetLayouts = &r->descriptor_set_layout,
+    };
+    if (vkCreatePipelineLayout(r->device, &pl_ci, NULL,
+                               &r->outline_pipeline_layout) != VK_SUCCESS) {
+        fprintf(stderr, "Failed to create outline pipeline layout\n");
+        return false;
+    }
+
+    /* Load shader modules from compiled SPV (matches UI pipeline pattern). */
+    VkShaderModule vs_mod = pipeline_load_shader_module(r->device,
+        "build/shaders/outline.vert.spv");
+    VkShaderModule fs_mod = pipeline_load_shader_module(r->device,
+        "build/shaders/outline.frag.spv");
+    if (vs_mod == VK_NULL_HANDLE || fs_mod == VK_NULL_HANDLE) {
+        if (vs_mod) vkDestroyShaderModule(r->device, vs_mod, NULL);
+        if (fs_mod) vkDestroyShaderModule(r->device, fs_mod, NULL);
+        vkDestroyPipelineLayout(r->device, r->outline_pipeline_layout, NULL);
+        r->outline_pipeline_layout = VK_NULL_HANDLE;
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+          .stage  = VK_SHADER_STAGE_VERTEX_BIT, .module = vs_mod, .pName = "main" },
+        { .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+          .stage  = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs_mod, .pName = "main" },
+    };
+
+    VkGraphicsPipelineCreateInfo gp_ci = {
+        .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount          = 2, .pStages = stages,
+        .pVertexInputState   = &vi,
+        .pInputAssemblyState = &ia,
+        .pViewportState      = &vp,
+        .pRasterizationState = &rs,
+        .pMultisampleState   = &ms,
+        .pDepthStencilState  = &ds,
+        .pColorBlendState    = &cb,
+        .pDynamicState       = &dyn,
+        .layout              = r->outline_pipeline_layout,
+        .renderPass          = r->render_pass,
+        .subpass             = 0,
+    };
+
+    VkResult res = vkCreateGraphicsPipelines(r->device, VK_NULL_HANDLE, 1,
+                                             &gp_ci, NULL, &r->outline_pipeline);
+    vkDestroyShaderModule(r->device, vs_mod, NULL);
+    vkDestroyShaderModule(r->device, fs_mod, NULL);
+
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "Failed to create outline pipeline\n");
+        vkDestroyPipelineLayout(r->device, r->outline_pipeline_layout, NULL);
+        r->outline_pipeline_layout = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
+}
+
+void renderer_outline_emit_block(Renderer* r, int x, int y, int z)
+{
+    if (r->outline_vert_count + 24 > OUTLINE_MAX_VERTS) return;
+
+    /* Tiny inflation to avoid z-fighting with block faces. */
+    float pad = 0.002f;
+    float x0 = (float)x - pad,        y0 = (float)y - pad,        z0 = (float)z - pad;
+    float x1 = (float)x + 1.0f + pad, y1 = (float)y + 1.0f + pad, z1 = (float)z + 1.0f + pad;
+
+    /* 12 edges = 24 line endpoints */
+    float edges[24][3] = {
+        /* bottom square */
+        {x0,y0,z0},{x1,y0,z0},  {x1,y0,z0},{x1,y0,z1},
+        {x1,y0,z1},{x0,y0,z1},  {x0,y0,z1},{x0,y0,z0},
+        /* top square */
+        {x0,y1,z0},{x1,y1,z0},  {x1,y1,z0},{x1,y1,z1},
+        {x1,y1,z1},{x0,y1,z1},  {x0,y1,z1},{x0,y1,z0},
+        /* verticals */
+        {x0,y0,z0},{x0,y1,z0},  {x1,y0,z0},{x1,y1,z0},
+        {x1,y0,z1},{x1,y1,z1},  {x0,y0,z1},{x0,y1,z1},
+    };
+
+    int fi = (int)r->current_frame;
+    float* dst = (float*)r->outline_vb_mapped[fi];
+    memcpy(dst + r->outline_vert_count * 3, edges, sizeof(edges));
+    r->outline_vert_count += 24;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Framebuffer resize callback                                       */
 /* ------------------------------------------------------------------ */
 
@@ -744,6 +940,12 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
     if (!player_model_init(r, &r->player_model))
         return false;
 
+    /* --- Block-outline pipeline + per-frame VBs --- */
+    if (!create_outline_buffers(r))
+        return false;
+    if (!create_outline_pipeline(r))
+        return false;
+
     /* --- Framebuffer resize callback --- */
     glfwSetWindowUserPointer(window, r);
     glfwSetFramebufferSizeCallback(window, framebuffer_resize_cb);
@@ -815,6 +1017,16 @@ void renderer_cleanup(Renderer* r)
 {
     /* UI system (calls vkDeviceWaitIdle internally) */
     ui_cleanup(r);
+
+    /* Block-outline pipeline + per-frame VBs */
+    if (r->outline_pipeline)
+        vkDestroyPipeline(r->device, r->outline_pipeline, NULL);
+    if (r->outline_pipeline_layout)
+        vkDestroyPipelineLayout(r->device, r->outline_pipeline_layout, NULL);
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (r->outline_vb[i])
+            vmaDestroyBuffer(r->allocator, r->outline_vb[i], r->outline_vb_alloc[i]);
+    }
 
     /* Player placeholder mesh */
     if (r->player_vb)

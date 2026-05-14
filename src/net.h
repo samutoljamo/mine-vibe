@@ -16,7 +16,10 @@ typedef enum {
     PKT_WORLD_STATE     = 4,
     PKT_PLAYER_JOIN     = 5,
     PKT_PLAYER_LEAVE    = 6,
-    PKT_BLOCK_CHANGE    = 7,  /* reserved for future use */
+    PKT_BLOCK_CHANGE    = 7,  /* server → all:    block edit broadcast      */
+    PKT_BLOCK_BREAK     = 8,  /* client → server: request to break a block  */
+    PKT_BLOCK_PLACE     = 9,  /* client → server: request to place a block  */
+    PKT_INVENTORY       = 10, /* server → one:    full inventory snapshot   */
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -81,6 +84,16 @@ static inline float net_read_float(const uint8_t* buf, size_t* off)
     float v;
     memcpy(&v, &bits, 4);
     return v;
+}
+
+static inline void net_write_i32(uint8_t* buf, size_t* off, int32_t v)
+{
+    net_write_u32(buf, off, (uint32_t)v);
+}
+
+static inline int32_t net_read_i32(const uint8_t* buf, size_t* off)
+{
+    return (int32_t)net_read_u32(buf, off);
 }
 
 /* ------------------------------------------------------------------ */
@@ -181,6 +194,141 @@ static inline size_t net_write_world_state(uint8_t* buf,
         net_write_float(buf, &off, players[i].pitch);
     }
     return off;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Block edit packets                                                 */
+/*    BlockBreakPacket  — client → server, 21 wire bytes (8 + 12 + 1) */
+/*    BlockPlacePacket  — client → server, 22 wire bytes (8 + 14)     */
+/*    BlockChangePacket — server → all,    21 wire bytes (8 + 13)     */
+/* ------------------------------------------------------------------ */
+typedef struct {
+    PacketHeader header;
+    int32_t      x, y, z;
+    uint8_t      block;   /* claimed block ID being broken — server checks
+                            * it isn't AIR/WATER/BEDROCK before crediting
+                            * inventory. Server has no world today, so it
+                            * trusts the client on the actual cell content. */
+} BlockBreakPacket;
+
+typedef struct {
+    PacketHeader header;
+    int32_t      x, y, z;
+    uint8_t      face;
+    uint8_t      slot;
+} BlockPlacePacket;
+
+typedef struct {
+    PacketHeader header;
+    int32_t      x, y, z;
+    uint8_t      block;
+} BlockChangePacket;
+
+/* Must match INVENTORY_SLOTS in src/inventory.h. We deliberately don't
+ * #include inventory.h here so net.h stays at the bottom of the dep
+ * tree — keep this constant in sync manually. */
+#define INVENTORY_NET_SLOTS 6
+
+typedef struct {
+    PacketHeader header;
+    uint8_t      slot_count;
+    struct { uint8_t block; uint8_t count; } slots[INVENTORY_NET_SLOTS];
+} InventoryPacket;
+
+static inline size_t net_write_block_break(uint8_t* buf,
+                                            const BlockBreakPacket* p)
+{
+    size_t off = 0;
+    net_write_header(buf, &off, &p->header);
+    net_write_i32(buf, &off, p->x);
+    net_write_i32(buf, &off, p->y);
+    net_write_i32(buf, &off, p->z);
+    net_write_u8(buf, &off, p->block);
+    return off;
+}
+
+static inline void net_read_block_break(const uint8_t* buf,
+                                         BlockBreakPacket* p)
+{
+    size_t off = 0;
+    net_read_header(buf, &off, &p->header);
+    p->x     = net_read_i32(buf, &off);
+    p->y     = net_read_i32(buf, &off);
+    p->z     = net_read_i32(buf, &off);
+    p->block = net_read_u8(buf, &off);
+}
+
+static inline size_t net_write_block_place(uint8_t* buf,
+                                            const BlockPlacePacket* p)
+{
+    size_t off = 0;
+    net_write_header(buf, &off, &p->header);
+    net_write_i32(buf, &off, p->x);
+    net_write_i32(buf, &off, p->y);
+    net_write_i32(buf, &off, p->z);
+    net_write_u8(buf, &off, p->face);
+    net_write_u8(buf, &off, p->slot);
+    return off;
+}
+
+static inline void net_read_block_place(const uint8_t* buf,
+                                         BlockPlacePacket* p)
+{
+    size_t off = 0;
+    net_read_header(buf, &off, &p->header);
+    p->x    = net_read_i32(buf, &off);
+    p->y    = net_read_i32(buf, &off);
+    p->z    = net_read_i32(buf, &off);
+    p->face = net_read_u8(buf, &off);
+    p->slot = net_read_u8(buf, &off);
+}
+
+static inline size_t net_write_block_change(uint8_t* buf,
+                                             const BlockChangePacket* p)
+{
+    size_t off = 0;
+    net_write_header(buf, &off, &p->header);
+    net_write_i32(buf, &off, p->x);
+    net_write_i32(buf, &off, p->y);
+    net_write_i32(buf, &off, p->z);
+    net_write_u8(buf, &off, p->block);
+    return off;
+}
+
+static inline void net_read_block_change(const uint8_t* buf,
+                                          BlockChangePacket* p)
+{
+    size_t off = 0;
+    net_read_header(buf, &off, &p->header);
+    p->x     = net_read_i32(buf, &off);
+    p->y     = net_read_i32(buf, &off);
+    p->z     = net_read_i32(buf, &off);
+    p->block = net_read_u8(buf, &off);
+}
+
+static inline size_t net_write_inventory(uint8_t* buf,
+                                          const InventoryPacket* p)
+{
+    size_t off = 0;
+    net_write_header(buf, &off, &p->header);
+    net_write_u8(buf, &off, p->slot_count);
+    for (uint8_t i = 0; i < p->slot_count; i++) {
+        net_write_u8(buf, &off, p->slots[i].block);
+        net_write_u8(buf, &off, p->slots[i].count);
+    }
+    return off;
+}
+
+static inline void net_read_inventory(const uint8_t* buf, InventoryPacket* p)
+{
+    size_t off = 0;
+    net_read_header(buf, &off, &p->header);
+    p->slot_count = net_read_u8(buf, &off);
+    if (p->slot_count > INVENTORY_NET_SLOTS) p->slot_count = INVENTORY_NET_SLOTS;
+    for (uint8_t i = 0; i < p->slot_count; i++) {
+        p->slots[i].block = net_read_u8(buf, &off);
+        p->slots[i].count = net_read_u8(buf, &off);
+    }
 }
 
 /* ------------------------------------------------------------------ */

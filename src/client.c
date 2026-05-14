@@ -5,6 +5,9 @@
 #include <string.h>
 #include <stdbool.h>
 
+_Static_assert(INVENTORY_SLOTS == INVENTORY_NET_SLOTS,
+    "wire format and inventory model must agree on slot count");
+
 static ClientSnapshotCb g_snap_cb   = NULL;
 static void*             g_snap_user = NULL;
 static ClientLeaveCb     g_leave_cb   = NULL;
@@ -32,6 +35,8 @@ void client_init(Client* c, NetThread* net,
     c->state       = CLIENT_DISCONNECTED;
     c->server_addr = *server_addr;
     reliable_init(&c->reliable);
+    inventory_init(&c->inventory);
+    c->pending_block_change_count = 0;
 }
 
 void client_destroy(Client* c) { (void)c; }
@@ -71,6 +76,43 @@ void client_send_position(Client* c,
     uint8_t buf[32];
     size_t len = net_write_position(buf, &p);
     net_thread_push_outbound(c->net, buf, (int)len, &c->server_addr);
+}
+
+void client_send_break(Client* c, int x, int y, int z, uint8_t block)
+{
+    if (c->state != CLIENT_CONNECTED) return;
+    BlockBreakPacket p = {
+        .header = {
+            .type      = PKT_BLOCK_BREAK,
+            .player_id = c->local_player_id,
+            .seq       = c->tick++,
+        },
+        .x = x, .y = y, .z = z, .block = block,
+    };
+    reliable_fill_ack(&c->reliable, &p.header.ack, &p.header.ack_bits);
+    uint8_t buf[64];
+    size_t  len = net_write_block_break(buf, &p);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr,
+                   buf, (uint16_t)len);
+}
+
+void client_send_place(Client* c, int x, int y, int z,
+                        uint8_t face, uint8_t slot)
+{
+    if (c->state != CLIENT_CONNECTED) return;
+    BlockPlacePacket p = {
+        .header = {
+            .type      = PKT_BLOCK_PLACE,
+            .player_id = c->local_player_id,
+            .seq       = c->tick++,
+        },
+        .x = x, .y = y, .z = z, .face = face, .slot = slot,
+    };
+    reliable_fill_ack(&c->reliable, &p.header.ack, &p.header.ack_bits);
+    uint8_t buf[64];
+    size_t  len = net_write_block_place(buf, &p);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr,
+                   buf, (uint16_t)len);
 }
 
 int client_poll(Client* c)
@@ -137,6 +179,49 @@ int client_poll(Client* c)
                 else {
                     printf("[client] player %d left\n", h.player_id);
                     if (g_leave_cb) g_leave_cb(h.player_id, g_leave_user);
+                }
+            }
+
+        } else if (type == PKT_BLOCK_CHANGE && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0;
+            net_read_header(msg->data, &off, &h);
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new && (size_t)msg->len >= 8 + 13) {
+                BlockChangePacket bp;
+                net_read_block_change(msg->data, &bp);
+                if (c->pending_block_change_count < 256) {
+                    int i = c->pending_block_change_count++;
+                    c->pending_block_changes[i].x     = bp.x;
+                    c->pending_block_changes[i].y     = bp.y;
+                    c->pending_block_changes[i].z     = bp.z;
+                    c->pending_block_changes[i].block = bp.block;
+                } else {
+                    fprintf(stderr, "[client] pending_block_changes full (%d), dropping edit (%d,%d,%d block=%u); world will diverge until reload\n",
+                            c->pending_block_change_count, bp.x, bp.y, bp.z, bp.block);
+                }
+            }
+
+        } else if (type == PKT_INVENTORY && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0;
+            net_read_header(msg->data, &off, &h);
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new && (size_t)msg->len >= 8 + 1) {
+                /* Peek slot_count from the wire and verify total length covers
+                 * the implied body (1B per block + 1B per count per slot). */
+                uint8_t declared_slots = ((const uint8_t*)msg->data)[8];
+                if (declared_slots > INVENTORY_NET_SLOTS) declared_slots = INVENTORY_NET_SLOTS;
+                if ((size_t)msg->len >= (size_t)(8 + 1 + declared_slots * 2)) {
+                    InventoryPacket ip;
+                    net_read_inventory(msg->data, &ip);
+                    int prev_selected = c->inventory.selected;
+                    inventory_init(&c->inventory);
+                    c->inventory.selected = prev_selected;  /* preserve focus */
+                    for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
+                        BlockID b = (BlockID)ip.slots[i].block;
+                        if ((unsigned)b >= BLOCK_COUNT) continue;   /* range-check; ignore garbage IDs */
+                        c->inventory.slots[i].block = b;
+                        c->inventory.slots[i].count = ip.slots[i].count;
+                    }
                 }
             }
 
