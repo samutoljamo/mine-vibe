@@ -394,7 +394,7 @@ bool texture_create_player_skin(Renderer* r)
     return true;
 }
 
-void texture_write_player_skin_descriptors(Renderer* r, VkDescriptorSet sets[2])
+void texture_write_player_skin_descriptors(Renderer* r, VkDescriptorSet* sets)
 {
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         VkDescriptorImageInfo image_info = {

@@ -11,6 +11,9 @@ bool texture_create_atlas(Renderer* r);
 void texture_write_descriptors(Renderer* r);
 
 bool texture_create_player_skin(Renderer* r);
-void texture_write_player_skin_descriptors(Renderer* r, VkDescriptorSet sets[2]);
+/* sets points to MAX_FRAMES_IN_FLIGHT descriptor sets; the function iterates
+ * MAX_FRAMES_IN_FLIGHT times. Declared as a plain pointer so the parameter
+ * type doesn't lie when MAX_FRAMES_IN_FLIGHT changes. */
+void texture_write_player_skin_descriptors(Renderer* r, VkDescriptorSet* sets);
 
 #endif

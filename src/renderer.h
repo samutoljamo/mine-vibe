@@ -16,7 +16,11 @@
 struct Inventory;       /* forward decl, keep includes lean */
 struct RaycastHit;
 
-#define MAX_FRAMES_IN_FLIGHT 2
+/* Frames the CPU may be ahead of the GPU. Set to 1 to keep CPU and GPU
+ * lock-stepped: lower latency, but no CPU/GPU overlap — if either side runs
+ * longer than the frame budget the framerate halves. Raise to 2 to get back
+ * the overlap at the cost of one frame of input lag. */
+#define MAX_FRAMES_IN_FLIGHT 1
 
 typedef struct ChunkMesh ChunkMesh;
 

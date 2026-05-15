@@ -138,10 +138,21 @@ bool swapchain_create(VkPhysicalDevice pd, VkDevice device, VmaAllocator allocat
     VkPresentModeKHR   mode = choose_present_mode(modes, mode_count);
     VkExtent2D         ext  = choose_extent(&caps, width, height);
 
+    const char* mode_name =
+        mode == VK_PRESENT_MODE_IMMEDIATE_KHR    ? "IMMEDIATE (no vsync, tearing)" :
+        mode == VK_PRESENT_MODE_MAILBOX_KHR      ? "MAILBOX (low-latency vsync)" :
+        mode == VK_PRESENT_MODE_FIFO_KHR         ? "FIFO (vsync, queued)" :
+        mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "FIFO_RELAXED" : "UNKNOWN";
+    fprintf(stderr, "swapchain: present mode = %s\n", mode_name);
+
     free(formats);
     free(modes);
 
-    uint32_t img_count = caps.minImageCount + 1;
+    /* Use minImageCount, not minImageCount + 1: the +1 is the standard
+     * recommendation for MAILBOX (avoids stalling the renderer when a frame
+     * is mid-present), but under FIFO it just adds a queued frame of latency.
+     * At 60 Hz that frame is ~16 ms of input lag. */
+    uint32_t img_count = caps.minImageCount;
     if (caps.maxImageCount > 0 && img_count > caps.maxImageCount)
         img_count = caps.maxImageCount;
 
