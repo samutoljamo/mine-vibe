@@ -288,7 +288,7 @@ int main(int argc, char *argv[])
             renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir,
                                 networking ? &client.inventory : NULL,
                                 NULL,
-                                /* underwater */ false,
+                                /* underwater factor */ 0.0f,
                                 false, NULL);
 
             uint32_t pct = (uint32_t)(100.0f * (float)mesh_count
@@ -418,13 +418,28 @@ int main(int argc, char *argv[])
             }
         }
 
-        /* Camera-in-water check: sample the world block at the eye position.
-         * floorf maps world-space to integer block coords (negative-safe). */
-        BlockID eye_block = world_get_block(world,
-                                            (int)floorf(g_player.eye_pos[0]),
-                                            (int)floorf(g_player.eye_pos[1]),
-                                            (int)floorf(g_player.eye_pos[2]));
-        bool underwater = (eye_block == BLOCK_WATER);
+        /* Underwater fade factor: 0 when the eye is at or above the water
+         * surface, ramping linearly to 1 over UNDERWATER_FADE_DEPTH below
+         * the surface. The surface y is found by walking up from the
+         * eye's cell until we hit a non-water cell — handles deep water
+         * columns where the surface isn't just eye_yi + 1. */
+        float underwater = 0.0f;
+        {
+            int ex = (int)floorf(g_player.eye_pos[0]);
+            int ey = (int)floorf(g_player.eye_pos[1]);
+            int ez = (int)floorf(g_player.eye_pos[2]);
+            if (world_get_block(world, ex, ey, ez) == BLOCK_WATER) {
+                int surface_y = ey + 1;
+                while (world_get_block(world, ex, surface_y, ez) == BLOCK_WATER)
+                    surface_y++;
+                float depth = (float)surface_y - g_player.eye_pos[1];
+                const float UNDERWATER_FADE_DEPTH = 0.3f;
+                if (depth > 0.0f) {
+                    underwater = depth / UNDERWATER_FADE_DEPTH;
+                    if (underwater > 1.0f) underwater = 1.0f;
+                }
+            }
+        }
 
         renderer_draw_frame(&renderer, meshes, mesh_count,
                             rcount > 0 ? rp_states : NULL, rcount,

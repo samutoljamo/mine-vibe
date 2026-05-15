@@ -43,9 +43,10 @@ void main() {
     float ao_factor = 0.4 + 0.6 * frag_ao;
     vec3  lit       = tex_color.rgb * sky * ubo.sun_color.rgb * ao_factor;
 
-    if (ubo.underwater > 0.5) {
+    if (ubo.underwater > 0.0) {
         float fog = clamp(frag_view_z / WATER_FOG_RANGE, 0.0, 1.0);
-        lit = mix(lit * WATER_TINT_NEAR, WATER_COLOR_FAR, fog);
+        vec3 uw = mix(lit * WATER_TINT_NEAR, WATER_COLOR_FAR, fog);
+        lit = mix(lit, uw, ubo.underwater);
     }
 
     out_color = vec4(lit, 1.0);

@@ -21,7 +21,7 @@ void renderer_draw_frame(Renderer* r,
                          mat4 view, mat4 proj, vec3 sun_dir,
                          const Inventory* inventory,
                          const RaycastHit* target,
-                         bool underwater,
+                         float underwater,
                          bool dump_frame, const char* dump_path)
 {
     uint32_t fi = r->current_frame;
@@ -69,7 +69,7 @@ void renderer_draw_frame(Renderer* r,
     ubo.sun_color[2] = 1.0f;
     ubo.sun_color[3] = 1.0f;
     ubo.ambient = 0.3f;
-    ubo.underwater = underwater ? 1.0f : 0.0f;
+    ubo.underwater = underwater;
     memcpy(r->ubo_mapped[fi], &ubo, sizeof(ubo));
 
     /* 5. Record command buffer */
@@ -96,14 +96,17 @@ void renderer_draw_frame(Renderer* r,
         .extent = r->swapchain.extent,
     };
 
-    /* Match the far-fog color in block.frag's underwater branch so air
-     * gaps (no geometry written) read as deep water rather than sky-blue.
-     * clearValues[2] (resolve target, MSAA only) has DONT_CARE loadOp so
-     * its value is unused — present for indexing. */
+    /* Lerp clear color between sky and deep-water based on underwater
+     * factor so the seam between geometry-tinted water and the cleared
+     * sky doesn't pop as the eye dips below the surface. clearValues[2]
+     * (resolve target, MSAA only) has DONT_CARE loadOp — present for
+     * indexing. */
+    float t = underwater;
+    float clear_r = 0.53f * (1.0f - t) + 0.06f * t;
+    float clear_g = 0.81f * (1.0f - t) + 0.18f * t;
+    float clear_b = 0.92f * (1.0f - t) + 0.40f * t;
     VkClearValue clear_values[3] = {
-        underwater
-            ? (VkClearValue){ .color = { .float32 = { 0.06f, 0.18f, 0.40f, 1.0f } } }
-            : (VkClearValue){ .color = { .float32 = { 0.53f, 0.81f, 0.92f, 1.0f } } },
+        { .color = { .float32 = { clear_r, clear_g, clear_b, 1.0f } } },
         { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
         { 0 },
     };
