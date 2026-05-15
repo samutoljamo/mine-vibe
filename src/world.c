@@ -917,6 +917,7 @@ bool world_set_block(World* world, int x, int y, int z, BlockID id) {
     if (state < CHUNK_GENERATED) return false;
 
     BlockID old_id = chunk_get_block(chunk, lx, y, lz);
+    if (old_id == id) return true;  /* no-op write; don't dirty chunk */
     chunk_set_block(chunk, lx, y, lz, id);
 
     /* Run inline relight if the chunk has been lit at least once. The
@@ -973,6 +974,7 @@ bool world_set_meta(World* world, int x, int y, int z, uint8_t level) {
     if (state == CHUNK_MESHING) return false;
     if (state < CHUNK_GENERATED) return false;
 
+    if (chunk_get_meta(chunk, lx, y, lz) == level) return true; /* no-op */
     chunk_set_meta(chunk, lx, y, lz, level);
     chunk->needs_remesh = true;
     return true;
