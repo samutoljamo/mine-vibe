@@ -368,6 +368,24 @@ void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
                     compute_face_ao   (chunk, neighbors, x, y, z, face, ao);
                     compute_face_light(chunk, neighbors, x, y, z, face, light);
 
+                    /* Flatten AO *and* light on water so per-corner
+                     * variation doesn't draw visible bands across the
+                     * uniform liquid surface. With AO flat but light
+                     * still per-corner, the quad's two triangles linearly
+                     * interpolate light differently and a visible
+                     * diagonal "fold" shows per cell — at distance these
+                     * folds aggregate into faint horizontal banding. Use
+                     * the brightest corner's light so water near shadows
+                     * isn't artificially dark. */
+                    if (block == BLOCK_WATER) {
+                        ao[0] = ao[1] = ao[2] = ao[3] = 3;
+                        uint8_t lmax = light[0];
+                        if (light[1] > lmax) lmax = light[1];
+                        if (light[2] > lmax) lmax = light[2];
+                        if (light[3] > lmax) lmax = light[3];
+                        light[0] = light[1] = light[2] = light[3] = lmax;
+                    }
+
                     /* UV mapping: v0=(u0,v1) v1=(u1,v1) v2=(u1,v0) v3=(u0,v0) */
                     uv[0][0] = u0; uv[0][1] = v1;
                     uv[1][0] = u1; uv[1][1] = v1;
@@ -395,6 +413,44 @@ void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
                                 x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z];
                             if (wlvl > 0 && wlvl < WATER_SOURCE_LEVEL)
                                 fy_top = fy + (float)wlvl / (float)WATER_SOURCE_LEVEL;
+                            /* Lift water surface by 0.005 above the block top.
+                             * Beach sand at h=SEA_LEVEL has its +Y face at
+                             * exactly the same y as water +Y in adjacent
+                             * columns (y = SEA_LEVEL + 1). At oblique view
+                             * angles the depth test flips between the two
+                             * per-sample under MSAA — producing the
+                             * "see-through to the lake floor" smudge across
+                             * a wide screen-space band. A 5mm lift settles
+                             * the depth test (invisible to the eye, several
+                             * orders of magnitude above 24-bit depth
+                             * precision at lake distances) without creating
+                             * a visible step at the shoreline. */
+                            fy_top += 0.005f;
+                        }
+                        /* Break per-tile moire on water by rotating UVs
+                         * 0/90/180/270° per cell using a position hash.
+                         * The water texture is symmetric enough that
+                         * rotation isn't visually noticeable, but adjacent
+                         * cells no longer share a tiling axis so the
+                         * regular pattern that produces concentric-ring
+                         * moire at oblique angles is broken. */
+                        if (block == BLOCK_WATER) {
+                            uint32_t h = (uint32_t)x * 73856093u
+                                       ^ (uint32_t)z * 19349663u
+                                       ^ (uint32_t)y * 83492791u;
+                            int rot = (int)((h >> 8) & 3u);
+                            if (rot != 0) {
+                                float tmp[4][2];
+                                for (int k = 0; k < 4; k++) {
+                                    int s = (k + rot) & 3;
+                                    tmp[k][0] = uv[s][0];
+                                    tmp[k][1] = uv[s][1];
+                                }
+                                for (int k = 0; k < 4; k++) {
+                                    uv[k][0] = tmp[k][0];
+                                    uv[k][1] = tmp[k][1];
+                                }
+                            }
                         }
                         pos[0][0] = fx;   pos[0][1] = fy_top; pos[0][2] = fz;
                         pos[1][0] = fx+1; pos[1][1] = fy_top; pos[1][2] = fz;
