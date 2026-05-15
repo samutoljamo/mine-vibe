@@ -12,7 +12,7 @@
 #define TERMINAL_VEL     78.4f
 #define WATER_SINK       2.0f
 #define SWIM_UP_VEL      4.0f
-#define DRAG_GROUND      0.85f
+#define DRAG_GROUND      0.65f
 #define DRAG_AIR         0.98f
 #define DRAG_WATER       0.80f
 #define WATER_Y_DRAG     0.80f
