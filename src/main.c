@@ -369,7 +369,21 @@ int main(int argc, char *argv[])
                 if (!world_set_block(world, x, y, z, b)) {
                     fprintf(stderr, "[main] world_set_block failed at (%d,%d,%d) block=%u; chunk unloaded or busy\n",
                             x, y, z, (unsigned)b);
+                    continue;
                 }
+                /* The PKT_BLOCK_CHANGE protocol carries no meta channel, so
+                 * network-placed water arrives with meta=0 — water_tick reads
+                 * level 0, subtracts WATER_DISSIPATION, and removes the block
+                 * on the very next tick. Tag player-placed water as a source
+                 * so it persists and spreads like a bucket-placed block. */
+                if (b == BLOCK_WATER) {
+                    world_set_meta(world, x, y, z, WATER_SOURCE_LEVEL);
+                }
+                /* Wake the gravity/water simulators around the edit. Without
+                 * this, sand placed mid-air just floats and water never flows
+                 * into newly-dug space — the active sets are only seeded at
+                 * chunk-load time (see world_update). */
+                block_physics_notify(&physics, x, y, z);
             }
             client.pending_block_change_count = 0;
         }
