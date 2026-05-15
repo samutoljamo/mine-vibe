@@ -21,6 +21,7 @@ void renderer_draw_frame(Renderer* r,
                          mat4 view, mat4 proj, vec3 sun_dir,
                          const Inventory* inventory,
                          const RaycastHit* target,
+                         bool underwater,
                          bool dump_frame, const char* dump_path)
 {
     uint32_t fi = r->current_frame;
@@ -68,6 +69,7 @@ void renderer_draw_frame(Renderer* r,
     ubo.sun_color[2] = 1.0f;
     ubo.sun_color[3] = 1.0f;
     ubo.ambient = 0.3f;
+    ubo.underwater = underwater ? 1.0f : 0.0f;
     memcpy(r->ubo_mapped[fi], &ubo, sizeof(ubo));
 
     /* 5. Record command buffer */
@@ -94,8 +96,12 @@ void renderer_draw_frame(Renderer* r,
         .extent = r->swapchain.extent,
     };
 
+    /* Match the far-fog color in block.frag's underwater branch so air
+     * gaps (no geometry written) read as deep water rather than sky-blue. */
     VkClearValue clear_values[2] = {
-        { .color = { .float32 = { 0.53f, 0.81f, 0.92f, 1.0f } } },
+        underwater
+            ? (VkClearValue){ .color = { .float32 = { 0.06f, 0.18f, 0.40f, 1.0f } } }
+            : (VkClearValue){ .color = { .float32 = { 0.53f, 0.81f, 0.92f, 1.0f } } },
         { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
     };
 

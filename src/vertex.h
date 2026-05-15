@@ -22,7 +22,8 @@ typedef struct GlobalUBO {
     vec4  sun_direction;
     vec4  sun_color;
     float ambient;
-    float _pad[3];
+    float underwater;   /* 1.0 when camera is inside a water block, else 0.0 */
+    float _pad[2];
 } GlobalUBO;
 
 typedef struct ChunkPushConstants {

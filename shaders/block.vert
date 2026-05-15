@@ -12,6 +12,7 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     vec4 sun_direction;
     vec4 sun_color;
     float ambient;
+    float underwater;
 } ubo;
 
 layout(push_constant) uniform PushConstants {
@@ -21,12 +22,15 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) out vec2  frag_uv;
 layout(location = 1) out float frag_light;
 layout(location = 2) out float frag_ao;
+layout(location = 3) out float frag_view_z;
 
 void main() {
     vec3 world_pos = in_pos + pc.chunk_offset.xyz;
-    gl_Position = ubo.proj * ubo.view * vec4(world_pos, 1.0);
+    vec4 view_pos  = ubo.view * vec4(world_pos, 1.0);
+    gl_Position    = ubo.proj * view_pos;
 
-    frag_uv    = in_uv;
-    frag_light = float(in_light) / 15.0;
-    frag_ao    = float(in_ao) / 3.0;
+    frag_uv     = in_uv;
+    frag_light  = float(in_light) / 15.0;
+    frag_ao     = float(in_ao) / 3.0;
+    frag_view_z = -view_pos.z;   /* positive distance in front of camera */
 }

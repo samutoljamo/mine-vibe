@@ -122,6 +122,7 @@ void renderer_draw_frame(Renderer* r,
                          mat4 view, mat4 proj, vec3 sun_dir,
                          const struct Inventory* inventory,
                          const struct RaycastHit* target,
+                         bool underwater,
                          bool dump_frame, const char* dump_path);
 void renderer_cleanup(Renderer* r);
 bool renderer_dump_frame(Renderer* r, const char *path);

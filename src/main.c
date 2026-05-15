@@ -288,6 +288,7 @@ int main(int argc, char *argv[])
             renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir,
                                 networking ? &client.inventory : NULL,
                                 NULL,
+                                /* underwater */ false,
                                 false, NULL);
 
             uint32_t pct = (uint32_t)(100.0f * (float)mesh_count
@@ -417,11 +418,20 @@ int main(int argc, char *argv[])
             }
         }
 
+        /* Camera-in-water check: sample the world block at the eye position.
+         * floorf maps world-space to integer block coords (negative-safe). */
+        BlockID eye_block = world_get_block(world,
+                                            (int)floorf(g_player.eye_pos[0]),
+                                            (int)floorf(g_player.eye_pos[1]),
+                                            (int)floorf(g_player.eye_pos[2]));
+        bool underwater = (eye_block == BLOCK_WATER);
+
         renderer_draw_frame(&renderer, meshes, mesh_count,
                             rcount > 0 ? rp_states : NULL, rcount,
                             view, proj, sun_dir,
                             networking ? &client.inventory : NULL,
                             &g_target,
+                            underwater,
                             dump_frame, dump_path);
 
         if (agent_mode) {
