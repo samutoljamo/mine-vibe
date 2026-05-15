@@ -321,8 +321,43 @@ static void water_tick(BlockPhysics* bp, World* world, vec3 player_pos)
             spread_side = WATER_SOURCE_LEVEL - 2;
             posset_insert(&next, x, y, z); /* sources stay active forever */
         } else {
-            /* Flowing block: dissipate each tick */
-            int new_level = (int)level - WATER_DISSIPATION;
+            /* Flowing block. Find the strongest neighbor that can feed this
+             * cell. A source above feeds at SOURCE-1; a source on the side
+             * feeds at SOURCE-2; flowing neighbors feed at their_level-1.
+             * If a feeder matches or exceeds our current level we hold
+             * steady — otherwise we dissipate by WATER_DISSIPATION. Without
+             * this, cells adjacent to sources oscillate between feed-level
+             * and feed-level-2 each tick, forcing a chunk remesh at every
+             * tick and producing visible surface flicker. */
+            int max_feed = -1;
+            {
+                /* world_get_block returns BLOCK_AIR for y >= CHUNK_Y, so no
+                 * bound check needed — AIR fails the water test below. */
+                BlockID up = world_get_block(world, x, y + 1, z);
+                if (up == BLOCK_WATER) {
+                    uint8_t upm = world_get_meta(world, x, y + 1, z);
+                    int feed = (upm == WATER_SOURCE_LEVEL)
+                                 ? (WATER_SOURCE_LEVEL - 1) : ((int)upm - 1);
+                    if (feed > max_feed) max_feed = feed;
+                }
+            }
+            for (int d = 0; d < 4; d++) {
+                int nx = x + W_HX[d], nz = z + W_HZ[d];
+                BlockID nb = world_get_block(world, nx, y, nz);
+                if (nb != BLOCK_WATER) continue;
+                uint8_t nm = world_get_meta(world, nx, y, nz);
+                int feed = (nm == WATER_SOURCE_LEVEL)
+                             ? (WATER_SOURCE_LEVEL - 2) : ((int)nm - 1);
+                if (feed > max_feed) max_feed = feed;
+            }
+
+            int new_level;
+            if (max_feed >= (int)level) {
+                new_level = max_feed;          /* held by feeder */
+            } else {
+                new_level = (int)level - WATER_DISSIPATION;
+            }
+
             if (new_level <= 0) {
                 /* Water has dissipated — remove block */
                 world_set_block(world, x, y, z, BLOCK_AIR);
