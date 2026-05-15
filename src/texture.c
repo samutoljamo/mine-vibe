@@ -261,18 +261,35 @@ bool texture_create_atlas(Renderer* r)
         return false;
     }
 
-    /* Create sampler */
+    /* Sampler — magFilter NEAREST keeps the Minecraft chunky pixel look
+     * up close. minFilter LINEAR + MIPMAP_MODE_LINEAR (trilinear) avoids
+     * visible mip-band transitions that otherwise swim across the terrain
+     * as the camera moves. Anisotropy keeps textures sharp at oblique
+     * angles (looking across the ground); enabled only when the device
+     * advertises support — features.samplerAnisotropy was set in
+     * device_create accordingly. */
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(r->physical_device, &props);
+    VkPhysicalDeviceFeatures feats;
+    vkGetPhysicalDeviceFeatures(r->physical_device, &feats);
+    float max_aniso = feats.samplerAnisotropy
+                        ? (props.limits.maxSamplerAnisotropy > 16.0f
+                              ? 16.0f : props.limits.maxSamplerAnisotropy)
+                        : 1.0f;
+
     VkSamplerCreateInfo sampler_ci = {
-        .sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter    = VK_FILTER_NEAREST,
-        .minFilter    = VK_FILTER_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-        .mipLodBias   = 0.0f,
-        .minLod       = 0.0f,
-        .maxLod       = (float)(ATLAS_MIP_LEVELS - 1),
+        .sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter        = VK_FILTER_NEAREST,
+        .minFilter        = VK_FILTER_LINEAR,
+        .addressModeU     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .anisotropyEnable = feats.samplerAnisotropy ? VK_TRUE : VK_FALSE,
+        .maxAnisotropy    = max_aniso,
+        .mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .mipLodBias       = 0.0f,
+        .minLod           = 0.0f,
+        .maxLod           = (float)(ATLAS_MIP_LEVELS - 1),
     };
 
     if (vkCreateSampler(r->device, &sampler_ci, NULL, &r->atlas_sampler) != VK_SUCCESS) {

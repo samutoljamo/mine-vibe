@@ -204,7 +204,13 @@ static bool create_logical_device(Renderer* r)
 
     const char* device_exts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
+    /* Enable samplerAnisotropy if the physical device supports it — the
+     * atlas sampler uses it to keep textures crisp at oblique view angles,
+     * which is the difference between "moiré soup at distance" and clean. */
+    VkPhysicalDeviceFeatures supported;
+    vkGetPhysicalDeviceFeatures(r->physical_device, &supported);
     VkPhysicalDeviceFeatures features = { 0 };
+    features.samplerAnisotropy = supported.samplerAnisotropy;
 
     VkDeviceCreateInfo ci = {
         .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
