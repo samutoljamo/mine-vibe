@@ -100,11 +100,16 @@ def draw_leaves(size=16):
     return img
 
 def draw_water(size=16):
-    img = Image.new('RGBA', (size, size))
-    for y in range(size):
-        for x in range(size):
-            ripple = 8 if (x + y * 2) % 5 == 0 else 0
-            img.putpixel((x, y), (28 + ripple, 82 + ripple, 185 + ripple, 200))
+    # Uniform blue + fully opaque (alpha 255). Any directional pixel pattern
+    # in the tile reads as banding once perspective compresses tiles to a
+    # few screen pixels — and the per-cell UV rotation in the mesher can't
+    # hide directional content because it just rotates the same pattern.
+    # Alpha 255 leaves headroom against anisotropic-filter bleeding into
+    # adjacent empty atlas cells (alpha=0); the previous alpha=200 left the
+    # averaged sample on the wrong side of the discard threshold at oblique
+    # angles, producing whole-fragment kills that read as "see through" the
+    # water surface.
+    img = Image.new('RGBA', (size, size), (28, 82, 185, 255))
     return img
 
 def draw_bedrock(size=16):
