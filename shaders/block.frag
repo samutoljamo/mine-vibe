@@ -29,7 +29,15 @@ const float WATER_FOG_RANGE = 32.0;
 
 void main() {
     vec4 tex_color = texture(tex_atlas, frag_uv);
-    if (tex_color.a < 0.5) discard;
+    /* Threshold 0.1 (not 0.5): anisotropic filtering at oblique view
+     * angles averages many samples along the projected pixel footprint;
+     * at high LODs those samples can cross atlas tile boundaries into
+     * empty cells (alpha 0) and collapse the averaged alpha. The old
+     * 0.5 cutoff then discarded whole fragments of opaque blocks like
+     * water, producing visible "see-through" gaps. The lower threshold
+     * still cleanly cuts leaves and other intentionally-transparent
+     * tiles (transparent texels have alpha 0). */
+    if (tex_color.a < 0.1) discard;
 
     float sky       = max(frag_light, MIN_BRIGHT);
     float ao_factor = 0.4 + 0.6 * frag_ao;
