@@ -18,6 +18,15 @@
 #define WATER_Y_DRAG     0.80f
 #define DOUBLETAP_WINDOW 0.3f
 
+/* Snapshot of held keys for one frame. Sampled once per frame in
+ * player_update() and applied to every physics tick that frame, so input is
+ * not lost on frames where the accumulator fires zero ticks (and not
+ * double-counted as "fresh" when it fires two). */
+typedef struct KeyInput {
+    bool w, s, a, d;
+    bool space, shift, ctrl;
+} KeyInput;
+
 void player_init(Player* player, vec3 start_pos)
 {
     camera_init(&player->camera);
@@ -44,7 +53,7 @@ void player_init(Player* player, vec3 start_pos)
 /*  Free mode tick                                                     */
 /* ------------------------------------------------------------------ */
 
-static void tick_free(Player* player, GLFWwindow* window, World* world)
+static void tick_free(Player* player, const KeyInput* in, World* world)
 {
     vec3 front;
     camera_get_front(&player->camera, front);
@@ -83,27 +92,27 @@ static void tick_free(Player* player, GLFWwindow* window, World* world)
         analog_scale = fwd_abs > rgt_abs ? fwd_abs : rgt_abs;
         if (player->agent_jump || analog_scale > 1.0f) analog_scale = 1.0f;
     } else {
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+        if (in->w) {
             dir[0] += front[0]; dir[1] += front[1]; dir[2] += front[2];
             has_input = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+        if (in->s) {
             dir[0] -= front[0]; dir[1] -= front[1]; dir[2] -= front[2];
             has_input = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+        if (in->a) {
             dir[0] -= right[0]; dir[2] -= right[2];
             has_input = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+        if (in->d) {
             dir[0] += right[0]; dir[2] += right[2];
             has_input = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+        if (in->space) {
             dir[1] += 1.0f;
             has_input = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
+        if (in->shift) {
             dir[1] -= 1.0f;
             has_input = true;
         }
@@ -133,7 +142,7 @@ static void tick_free(Player* player, GLFWwindow* window, World* world)
 /*  Walking mode tick                                                  */
 /* ------------------------------------------------------------------ */
 
-static void tick_walking(Player* player, GLFWwindow* window, World* world)
+static void tick_walking(Player* player, const KeyInput* in, World* world)
 {
     /* 1. Compute desired movement direction on XZ plane */
     vec3 front;
@@ -172,27 +181,25 @@ static void tick_walking(Player* player, GLFWwindow* window, World* world)
         analog_scale = fwd_abs > rgt_abs ? fwd_abs : rgt_abs;
         if (analog_scale > 1.0f) analog_scale = 1.0f;
     } else {
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+        if (in->w) {
             dir[0] += forward[0]; dir[2] += forward[2];
             has_input = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+        if (in->s) {
             dir[0] -= forward[0]; dir[2] -= forward[2];
             has_input = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+        if (in->a) {
             dir[0] -= right[0]; dir[2] -= right[2];
             has_input = true;
         }
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+        if (in->d) {
             dir[0] += right[0]; dir[2] += right[2];
             has_input = true;
         }
 
         /* 2. Sprint check */
-        player->sprinting = has_input
-            && (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
-            && (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS);
+        player->sprinting = has_input && in->ctrl && in->w;
     }
 
     /* Normalize direction */
@@ -220,9 +227,7 @@ static void tick_walking(Player* player, GLFWwindow* window, World* world)
         /* Damp vertical velocity (prevents carrying fall speed into water) */
         player->velocity[1] *= WATER_Y_DRAG;
         player->velocity[1] -= WATER_SINK * PHYSICS_DT;
-        bool swim_up = player->agent_mode
-                       ? player->agent_jump
-                       : (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS);
+        bool swim_up = player->agent_mode ? player->agent_jump : in->space;
         if (swim_up)
             player->velocity[1] = SWIM_UP_VEL;
     }
@@ -232,9 +237,7 @@ static void tick_walking(Player* player, GLFWwindow* window, World* world)
         player->velocity[1] = -TERMINAL_VEL;
 
     /* 5. Jump */
-    bool do_jump = player->agent_mode
-                   ? player->agent_jump
-                   : (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS);
+    bool do_jump = player->agent_mode ? player->agent_jump : in->space;
     if (do_jump && player->on_ground && !player->in_water) {
         player->velocity[1] = JUMP_VEL;
     }
@@ -297,6 +300,21 @@ void player_update(Player* player, GLFWwindow* window, World* world, float dt)
             player->noclip = !player->noclip;
     }
 
+    /* Sample keyboard input once per frame. Reading glfwGetKey inside the
+     * physics tick would couple input to tick rate, which at 60 fps aliases
+     * with PHYSICS_DT and produces frames that fire 0 or 2 ticks — felt as
+     * mushy/stuttery WASD. The snapshot is applied to every tick this frame. */
+    KeyInput in = {0};
+    if (!player->agent_mode) {
+        in.w     = glfwGetKey(window, GLFW_KEY_W)            == GLFW_PRESS;
+        in.s     = glfwGetKey(window, GLFW_KEY_S)            == GLFW_PRESS;
+        in.a     = glfwGetKey(window, GLFW_KEY_A)            == GLFW_PRESS;
+        in.d     = glfwGetKey(window, GLFW_KEY_D)            == GLFW_PRESS;
+        in.space = glfwGetKey(window, GLFW_KEY_SPACE)        == GLFW_PRESS;
+        in.shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT)   == GLFW_PRESS;
+        in.ctrl  = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
+    }
+
     /* Fixed timestep physics */
     player->accumulator += dt;
     if (player->accumulator > 0.05f)
@@ -304,9 +322,9 @@ void player_update(Player* player, GLFWwindow* window, World* world, float dt)
 
     while (player->accumulator >= PHYSICS_DT) {
         if (player->mode == MODE_FREE)
-            tick_free(player, window, world);
+            tick_free(player, &in, world);
         else
-            tick_walking(player, window, world);
+            tick_walking(player, &in, world);
         player->accumulator -= PHYSICS_DT;
     }
 
