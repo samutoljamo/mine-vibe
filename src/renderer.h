@@ -41,6 +41,12 @@ typedef struct Renderer {
     /* Memory allocator */
     VmaAllocator                allocator;
 
+    /* MSAA sample count. Picked once at init from physical-device caps —
+     * 4 if supported, else 1. Shared between render pass, swapchain (depth
+     * + MSAA color images), and all pipelines that draw into the world
+     * render pass. The UI pass remains single-sampled. */
+    VkSampleCountFlagBits       sample_count;
+
     /* Swapchain */
     Swapchain                   swapchain;
 

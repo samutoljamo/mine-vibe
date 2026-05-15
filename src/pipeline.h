@@ -8,12 +8,14 @@
 
 bool pipeline_create(VkDevice device, VkRenderPass render_pass,
                      VkDescriptorSetLayout desc_layout,
+                     VkSampleCountFlagBits samples,
                      const uint8_t* vert_spv, size_t vert_size,
                      const uint8_t* frag_spv, size_t frag_size,
                      VkPipelineLayout* out_layout, VkPipeline* out_pipeline);
 
 bool player_pipeline_create(VkDevice device, VkRenderPass render_pass,
                              VkDescriptorSetLayout desc_layout,
+                             VkSampleCountFlagBits samples,
                              const uint8_t* vert_spv, size_t vert_size,
                              const uint8_t* frag_spv, size_t frag_size,
                              VkPipelineLayout* out_layout, VkPipeline* out_pipeline);

@@ -105,6 +105,7 @@ bool pipeline_create_descriptor_layout(VkDevice device, VkDescriptorSetLayout* o
 
 bool pipeline_create(VkDevice device, VkRenderPass render_pass,
                      VkDescriptorSetLayout desc_layout,
+                     VkSampleCountFlagBits samples,
                      const uint8_t* vert_spv, size_t vert_size,
                      const uint8_t* frag_spv, size_t frag_size,
                      VkPipelineLayout* out_layout, VkPipeline* out_pipeline)
@@ -176,7 +177,7 @@ bool pipeline_create(VkDevice device, VkRenderPass render_pass,
     /* Multisampling */
     VkPipelineMultisampleStateCreateInfo multisampling = {
         .sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .rasterizationSamples = samples,
         .sampleShadingEnable  = VK_FALSE,
     };
 
@@ -279,6 +280,7 @@ bool pipeline_create(VkDevice device, VkRenderPass render_pass,
 
 bool player_pipeline_create(VkDevice device, VkRenderPass render_pass,
                              VkDescriptorSetLayout desc_layout,
+                             VkSampleCountFlagBits samples,
                              const uint8_t* vert_spv, size_t vert_size,
                              const uint8_t* frag_spv, size_t frag_size,
                              VkPipelineLayout* out_layout, VkPipeline* out_pipeline)
@@ -342,7 +344,7 @@ bool player_pipeline_create(VkDevice device, VkRenderPass render_pass,
     /* Multisampling */
     VkPipelineMultisampleStateCreateInfo multisampling = {
         .sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .rasterizationSamples = samples,
         .sampleShadingEnable  = VK_FALSE,
     };
 

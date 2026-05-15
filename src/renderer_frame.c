@@ -97,13 +97,17 @@ void renderer_draw_frame(Renderer* r,
     };
 
     /* Match the far-fog color in block.frag's underwater branch so air
-     * gaps (no geometry written) read as deep water rather than sky-blue. */
-    VkClearValue clear_values[2] = {
+     * gaps (no geometry written) read as deep water rather than sky-blue.
+     * clearValues[2] (resolve target, MSAA only) has DONT_CARE loadOp so
+     * its value is unused — present for indexing. */
+    VkClearValue clear_values[3] = {
         underwater
             ? (VkClearValue){ .color = { .float32 = { 0.06f, 0.18f, 0.40f, 1.0f } } }
             : (VkClearValue){ .color = { .float32 = { 0.53f, 0.81f, 0.92f, 1.0f } } },
         { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
+        { 0 },
     };
+    bool msaa = (r->sample_count != VK_SAMPLE_COUNT_1_BIT);
 
     VkRenderPassBeginInfo rp_info = {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -113,7 +117,7 @@ void renderer_draw_frame(Renderer* r,
             .offset = { 0, 0 },
             .extent = r->swapchain.extent,
         },
-        .clearValueCount = 2,
+        .clearValueCount = msaa ? 3u : 2u,
         .pClearValues    = clear_values,
     };
 

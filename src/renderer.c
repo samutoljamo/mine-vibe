@@ -293,20 +293,27 @@ static bool create_allocator(Renderer* r)
 
 static bool create_render_pass(Renderer* r)
 {
+    bool msaa = (r->sample_count != VK_SAMPLE_COUNT_1_BIT);
+
+    /* Attachment 0: color. Multisampled when MSAA; otherwise this *is* the
+     * swapchain image and gets STOREd. With MSAA we DONT_CARE the store
+     * because the contents are resolved into attachment 2. */
     VkAttachmentDescription color_att = {
         .format         = r->swapchain.image_format,
-        .samples        = VK_SAMPLE_COUNT_1_BIT,
+        .samples        = r->sample_count,
         .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+        .storeOp        = msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+                                : VK_ATTACHMENT_STORE_OP_STORE,
         .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
         .finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
+    /* Attachment 1: depth. Multisampled to match the color samples. */
     VkAttachmentDescription depth_att = {
         .format         = r->swapchain.depth_format,
-        .samples        = VK_SAMPLE_COUNT_1_BIT,
+        .samples        = r->sample_count,
         .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -315,16 +322,43 @@ static bool create_render_pass(Renderer* r)
         .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
-    VkAttachmentDescription attachments[] = { color_att, depth_att };
+    /* Attachment 2 (MSAA only): single-sample resolve target. This is the
+     * swapchain image — receives the multisample-averaged result. */
+    VkAttachmentDescription resolve_att = {
+        .format         = r->swapchain.image_format,
+        .samples        = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    VkAttachmentDescription attachments[3];
+    uint32_t att_count;
+    if (msaa) {
+        attachments[0] = color_att;
+        attachments[1] = depth_att;
+        attachments[2] = resolve_att;
+        att_count = 3;
+    } else {
+        attachments[0] = color_att;
+        attachments[1] = depth_att;
+        att_count = 2;
+    }
 
     VkAttachmentReference color_ref = {
         .attachment = 0,
         .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
-
     VkAttachmentReference depth_ref = {
         .attachment = 1,
         .layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+    VkAttachmentReference resolve_ref = {
+        .attachment = 2,
+        .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
     VkSubpassDescription subpass = {
@@ -332,6 +366,7 @@ static bool create_render_pass(Renderer* r)
         .colorAttachmentCount    = 1,
         .pColorAttachments       = &color_ref,
         .pDepthStencilAttachment = &depth_ref,
+        .pResolveAttachments     = msaa ? &resolve_ref : NULL,
     };
 
     VkSubpassDependency dep = {
@@ -348,7 +383,7 @@ static bool create_render_pass(Renderer* r)
 
     VkRenderPassCreateInfo ci = {
         .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 2,
+        .attachmentCount = att_count,
         .pAttachments    = attachments,
         .subpassCount    = 1,
         .pSubpasses      = &subpass,
@@ -520,7 +555,7 @@ static bool create_outline_pipeline(Renderer* r)
 
     VkPipelineMultisampleStateCreateInfo ms = {
         .sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .rasterizationSamples = r->sample_count,
     };
 
     VkPipelineDepthStencilStateCreateInfo ds = {
@@ -751,6 +786,22 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
     if (!pick_physical_device(r))
         return false;
 
+    /* Pick MSAA sample count. 4x is the sweet spot for cost/quality; fall
+     * back to 1 if the device doesn't support 4x on both color and depth
+     * attachments. Higher counts (8x/16x) cost noticeably more VRAM and
+     * fillrate for diminishing returns. */
+    {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(r->physical_device, &props);
+        VkSampleCountFlags caps = props.limits.framebufferColorSampleCounts &
+                                  props.limits.framebufferDepthSampleCounts;
+        r->sample_count = (caps & VK_SAMPLE_COUNT_4_BIT)
+                            ? VK_SAMPLE_COUNT_4_BIT
+                            : VK_SAMPLE_COUNT_1_BIT;
+        fprintf(stderr, "renderer: MSAA samples = %dx\n",
+                (int)r->sample_count);
+    }
+
     /* --- Logical device --- */
     if (!create_logical_device(r))
         return false;
@@ -768,7 +819,8 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
         Swapchain temp_sc;
         if (!swapchain_create(r->physical_device, r->device, r->allocator,
                               r->surface, r->graphics_family, r->present_family,
-                              VK_NULL_HANDLE, w, h, VK_NULL_HANDLE, &temp_sc))
+                              VK_NULL_HANDLE, r->sample_count,
+                              w, h, VK_NULL_HANDLE, &temp_sc))
         {
             fprintf(stderr, "Failed to create initial swapchain\n");
             return false;
@@ -791,7 +843,8 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
         /* Recreate swapchain WITH render pass for framebuffers */
         if (!swapchain_create(r->physical_device, r->device, r->allocator,
                               r->surface, r->graphics_family, r->present_family,
-                              r->render_pass, w, h, VK_NULL_HANDLE, &r->swapchain))
+                              r->render_pass, r->sample_count,
+                              w, h, VK_NULL_HANDLE, &r->swapchain))
         {
             fprintf(stderr, "Failed to create swapchain with framebuffers\n");
             /* old_sc was already destroyed inside swapchain_destroy above */
@@ -814,6 +867,7 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
 
     /* --- Graphics pipeline --- */
     if (!pipeline_create(r->device, r->render_pass, r->descriptor_set_layout,
+                         r->sample_count,
                          g_block_vert_spv, g_block_vert_spv_size,
                          g_block_frag_spv, g_block_frag_spv_size,
                          &r->pipeline_layout, &r->pipeline))
@@ -937,6 +991,7 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
 
     /* --- Player pipeline --- */
     if (!player_pipeline_create(r->device, r->render_pass, r->descriptor_set_layout,
+                                r->sample_count,
                                 g_player_vert_spv, g_player_vert_spv_size,
                                 g_player_frag_spv, g_player_frag_spv_size,
                                 &r->player_pipeline_layout, &r->player_pipeline))
@@ -985,7 +1040,8 @@ void renderer_recreate_swapchain(Renderer* r)
     Swapchain new_sc;
     if (!swapchain_create(r->physical_device, r->device, r->allocator,
                           r->surface, r->graphics_family, r->present_family,
-                          r->render_pass, w, h, old.swapchain, &new_sc))
+                          r->render_pass, r->sample_count,
+                          w, h, old.swapchain, &new_sc))
     {
         fprintf(stderr, "Failed to recreate swapchain\n");
         return;
@@ -1002,6 +1058,10 @@ void renderer_recreate_swapchain(Renderer* r)
             vkDestroyImageView(r->device, old.image_views[i], NULL);
         free(old.image_views);
     }
+    if (old.msaa_color_view)
+        vkDestroyImageView(r->device, old.msaa_color_view, NULL);
+    if (old.msaa_color_image)
+        vmaDestroyImage(r->allocator, old.msaa_color_image, old.msaa_color_alloc);
     if (old.depth_view)
         vkDestroyImageView(r->device, old.depth_view, NULL);
     if (old.depth_image)

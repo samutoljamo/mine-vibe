@@ -66,7 +66,7 @@ static bool create_depth(VkDevice device, VmaAllocator allocator,
         .extent      = { extent.width, extent.height, 1 },
         .mipLevels   = 1,
         .arrayLayers = 1,
-        .samples     = VK_SAMPLE_COUNT_1_BIT,
+        .samples     = sc->sample_count,
         .tiling      = VK_IMAGE_TILING_OPTIMAL,
         .usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -105,6 +105,61 @@ static bool create_depth(VkDevice device, VmaAllocator allocator,
     return true;
 }
 
+/* MSAA color image — the multisampled render target that the world pass
+ * draws into, then resolves to the swapchain image. Only allocated when
+ * sample_count > 1; otherwise the swapchain image is the direct target. */
+static bool create_msaa_color(VkDevice device, VmaAllocator allocator,
+                              VkExtent2D extent, Swapchain* sc)
+{
+    if (sc->sample_count == VK_SAMPLE_COUNT_1_BIT) return true;
+
+    VkImageCreateInfo img_ci = {
+        .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType   = VK_IMAGE_TYPE_2D,
+        .format      = sc->image_format,
+        .extent      = { extent.width, extent.height, 1 },
+        .mipLevels   = 1,
+        .arrayLayers = 1,
+        .samples     = sc->sample_count,
+        .tiling      = VK_IMAGE_TILING_OPTIMAL,
+        .usage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                       VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    VmaAllocationCreateInfo alloc_ci = {
+        .usage = VMA_MEMORY_USAGE_GPU_ONLY,
+    };
+
+    if (vmaCreateImage(allocator, &img_ci, &alloc_ci,
+                       &sc->msaa_color_image, &sc->msaa_color_alloc, NULL) != VK_SUCCESS)
+    {
+        fprintf(stderr, "Failed to create MSAA color image\n");
+        return false;
+    }
+
+    VkImageViewCreateInfo view_ci = {
+        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image    = sc->msaa_color_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format   = sc->image_format,
+        .subresourceRange = {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = 1,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        },
+    };
+
+    if (vkCreateImageView(device, &view_ci, NULL, &sc->msaa_color_view) != VK_SUCCESS) {
+        fprintf(stderr, "Failed to create MSAA color view\n");
+        return false;
+    }
+
+    return true;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Public API                                                        */
 /* ------------------------------------------------------------------ */
@@ -112,10 +167,12 @@ static bool create_depth(VkDevice device, VmaAllocator allocator,
 bool swapchain_create(VkPhysicalDevice pd, VkDevice device, VmaAllocator allocator,
                       VkSurfaceKHR surface, uint32_t graphics_family,
                       uint32_t present_family, VkRenderPass render_pass,
+                      VkSampleCountFlagBits sample_count,
                       int width, int height, VkSwapchainKHR old_swapchain,
                       Swapchain* out)
 {
     memset(out, 0, sizeof(*out));
+    out->sample_count = sample_count;
 
     /* Query surface capabilities */
     VkSurfaceCapabilitiesKHR caps;
@@ -221,20 +278,33 @@ bool swapchain_create(VkPhysicalDevice pd, VkDevice device, VmaAllocator allocat
         }
     }
 
-    /* Create depth buffer */
+    /* Create depth buffer (multisampled when sample_count > 1) */
     if (!create_depth(device, allocator, ext, out))
         return false;
 
-    /* Create framebuffers (only if render pass is provided) */
+    /* Create MSAA color image (no-op when sample_count == 1) */
+    if (!create_msaa_color(device, allocator, ext, out))
+        return false;
+
+    /* Create framebuffers (only if render pass is provided).
+     * Layout depends on MSAA: with MSAA the world pass renders into the
+     * multisample color image and resolves into the swapchain image;
+     * without MSAA the swapchain image is the direct target. */
     if (render_pass != VK_NULL_HANDLE) {
         out->framebuffers = malloc(out->image_count * sizeof(VkFramebuffer));
         for (uint32_t i = 0; i < out->image_count; i++) {
-            VkImageView attachments[] = { out->image_views[i], out->depth_view };
+            VkImageView att_msaa[3] = {
+                out->msaa_color_view, out->depth_view, out->image_views[i],
+            };
+            VkImageView att_plain[2] = {
+                out->image_views[i], out->depth_view,
+            };
+            bool msaa = (out->sample_count != VK_SAMPLE_COUNT_1_BIT);
             VkFramebufferCreateInfo fb_ci = {
                 .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                 .renderPass      = render_pass,
-                .attachmentCount = 2,
-                .pAttachments    = attachments,
+                .attachmentCount = msaa ? 3 : 2,
+                .pAttachments    = msaa ? att_msaa : att_plain,
                 .width           = ext.width,
                 .height          = ext.height,
                 .layers          = 1,
@@ -259,6 +329,11 @@ void swapchain_destroy(VkDevice device, VmaAllocator allocator, Swapchain* sc)
             vkDestroyFramebuffer(device, sc->framebuffers[i], NULL);
         free(sc->framebuffers);
     }
+
+    if (sc->msaa_color_view)
+        vkDestroyImageView(device, sc->msaa_color_view, NULL);
+    if (sc->msaa_color_image)
+        vmaDestroyImage(allocator, sc->msaa_color_image, sc->msaa_color_alloc);
 
     if (sc->depth_view)
         vkDestroyImageView(device, sc->depth_view, NULL);
