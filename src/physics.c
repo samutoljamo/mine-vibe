@@ -100,14 +100,23 @@ PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
 {
     PhysicsResult result = { false, false };
 
-    /* Y first (ground detection), then X, then Z */
+    /* Whether the AABB was sitting on a supporting block at the START of
+     * this tick. We can't use the Y-sweep's on_ground for this: when the
+     * player is stably standing, vel[1] is 0, the Y-sweep is a no-op, and
+     * result.on_ground stays false — even though the player is on the
+     * ground. (Gravity is gated on player->on_ground, which is the prior
+     * tick's result; on a flat surface vel[1] oscillates 0 / -gravity*dt
+     * every other tick.) Probing the floor directly is reliable. */
+    bool was_supported = aabb_supported(pos, half_w, world);
+
+    /* Y first (sets on_ground from collisions), then X, then Z */
     sweep_axis_substepped(pos, vel, half_w, height, 1, vel[1] * dt, world, &result.on_ground);
 
-    /* Edge protection: when crouching AND on ground, refuse any horizontal
-     * sweep whose result would leave the player unsupported (i.e. stepping
-     * off a block edge). Applied per-axis so the player can still slide
-     * along an edge as long as one axis keeps them supported. */
-    bool edge_protect = crouching && result.on_ground;
+    /* Edge protection: when crouching and started supported, refuse any
+     * horizontal sweep whose result would leave the player unsupported.
+     * Applied per-axis so the player can still slide along an edge as long
+     * as one axis keeps them on the supporting block. */
+    bool edge_protect = crouching && was_supported;
 
     float prev_x = pos[0];
     sweep_axis_substepped(pos, vel, half_w, height, 0, vel[0] * dt, world, &result.on_ground);
@@ -122,6 +131,14 @@ PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
         pos[2] = prev_z;
         vel[2] = 0.0f;
     }
+
+    /* Final on_ground: true if the AABB is currently sitting on a
+     * supporting block. The Y-sweep's collision-snap already updates
+     * result.on_ground when the player lands this tick; this final probe
+     * fills in the "stably standing, vel[1]=0" case where Y-sweep was a
+     * no-op so the prior-tick on_ground field doesn't oscillate. */
+    if (!result.on_ground)
+        result.on_ground = aabb_supported(pos, half_w, world);
 
     result.in_water = physics_check_water(pos, half_w, height, world);
     return result;
