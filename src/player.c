@@ -134,7 +134,7 @@ static void tick_free(Player* player, const KeyInput* in, World* world)
         player->position[2] += player->velocity[2] * PHYSICS_DT;
     } else {
         physics_move(player->position, player->velocity,
-                     PLAYER_HALF_W, PLAYER_HEIGHT, PHYSICS_DT, world);
+                     PLAYER_HALF_W, PLAYER_HEIGHT, PHYSICS_DT, false, world);
     }
 }
 
@@ -176,6 +176,7 @@ static void tick_walking(Player* player, const KeyInput* in, World* world)
             has_input = true;
         }
         player->sprinting = has_input && player->agent_sprint;
+        player->crouching = player->agent_crouch;
         float fwd_abs = fabsf(fwd);
         float rgt_abs = fabsf(rgt);
         analog_scale = fwd_abs > rgt_abs ? fwd_abs : rgt_abs;
@@ -198,8 +199,9 @@ static void tick_walking(Player* player, const KeyInput* in, World* world)
             has_input = true;
         }
 
-        /* 2. Sprint check */
-        player->sprinting = has_input && in->ctrl && in->w;
+        /* 2. Sprint and crouch check. Shift = crouch; can't sprint while crouching. */
+        player->crouching = in->shift;
+        player->sprinting = has_input && in->ctrl && in->w && !player->crouching;
     }
 
     /* Normalize direction */
@@ -211,6 +213,7 @@ static void tick_walking(Player* player, const KeyInput* in, World* world)
 
     float speed = WALK_SPEED;
     if (player->sprinting) speed = PLAYER_SPRINT_SPEED;
+    if (player->crouching) speed = PLAYER_SNEAK_SPEED;   /* sneak overrides sprint */
     if (player->in_water)  speed = SWIM_SPEED;
 
     /* Snap-to-speed: set horizontal velocity directly */
@@ -245,7 +248,7 @@ static void tick_walking(Player* player, const KeyInput* in, World* world)
     /* 6. Collision */
     PhysicsResult result = physics_move(player->position, player->velocity,
                                         PLAYER_HALF_W, PLAYER_HEIGHT,
-                                        PHYSICS_DT, world);
+                                        PHYSICS_DT, player->crouching, world);
     player->on_ground = result.on_ground;
     player->in_water  = result.in_water;
 
@@ -328,7 +331,10 @@ void player_update(Player* player, GLFWwindow* window, World* world, float dt)
         player->accumulator -= PHYSICS_DT;
     }
 
-    /* Update eye position */
+    /* Update eye position. Crouching dips the eye by a fixed offset.
+     * (Snapped, not animated — MC interpolates over a few ticks; can add
+     * later if the snap reads as jarring.) */
     glm_vec3_copy(player->position, player->eye_pos);
     player->eye_pos[1] += PLAYER_EYE_H;
+    if (player->crouching) player->eye_pos[1] -= PLAYER_SNEAK_EYE_DIP;
 }

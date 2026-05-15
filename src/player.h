@@ -11,6 +11,8 @@ typedef struct World World;
 /* Physics constants — shared with server-side simulation */
 #define PHYSICS_DT          (1.0f / 60.0f)
 #define PLAYER_SPRINT_SPEED 5.6f
+#define PLAYER_SNEAK_SPEED  1.3f
+#define PLAYER_SNEAK_EYE_DIP 0.3f   /* world units; matches MC's ~5/16 dip */
 
 typedef enum PlayerMode {
     MODE_FREE,
@@ -26,6 +28,8 @@ typedef struct Player {
     bool        on_ground;
     bool        in_water;
     bool        sprinting;
+    bool        crouching;      /* walking mode: shift held — slows movement,
+                                   dips eye, and prevents stepping off block edges */
     bool        noclip;         /* free mode: collision toggle */
     bool        prev_space;     /* edge detection */
     bool        prev_v;         /* edge detection */
@@ -37,6 +41,7 @@ typedef struct Player {
     float       agent_right;    /* [-1, 1]; nonzero = key held */
     bool        agent_jump;     /* edge-triggered: set true for one frame */
     bool        agent_sprint;
+    bool        agent_crouch;
 } Player;
 
 void player_init(Player* player, vec3 start_pos);

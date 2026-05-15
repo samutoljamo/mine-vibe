@@ -13,15 +13,19 @@ typedef struct PhysicsResult {
 
 /*
  * Move player AABB through world, resolving collisions axis-by-axis.
- *   pos:    feet position (modified in place)
- *   vel:    velocity (components zeroed on collision)
- *   half_w: half-width of hitbox (0.3)
- *   height: hitbox height (1.8)
- *   dt:     time delta for this tick
- *   world:  world pointer for block queries
+ *   pos:       feet position (modified in place)
+ *   vel:       velocity (components zeroed on collision)
+ *   half_w:    half-width of hitbox (0.3)
+ *   height:    hitbox height (1.8)
+ *   dt:        time delta for this tick
+ *   crouching: enable edge protection — if true and the player would step
+ *              off the edge of a supporting block, the horizontal axis is
+ *              reverted instead. Only applies when on_ground before the
+ *              horizontal sweep.
+ *   world:     world pointer for block queries
  */
 PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
-                           float dt, World* world);
+                           float dt, bool crouching, World* world);
 
 bool physics_check_water(vec3 pos, float half_w, float height, World* world);
 

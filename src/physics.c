@@ -77,15 +77,51 @@ static void sweep_axis_substepped(vec3 pos, vec3 vel, float half_w, float height
     }
 }
 
+/* Is there a solid block under the player's footprint? Probes the slice
+ * one texel below feet across the AABB column; any solid block keeps the
+ * player supported. Used by crouch edge protection. */
+static bool aabb_supported(vec3 pos, float half_w, World* world)
+{
+    int by = (int)floorf(pos[1] - 0.001f);
+    int bx0 = (int)floorf(pos[0] - half_w);
+    int bx1 = (int)floorf(pos[0] + half_w);
+    int bz0 = (int)floorf(pos[2] - half_w);
+    int bz1 = (int)floorf(pos[2] + half_w);
+    for (int bx = bx0; bx <= bx1; bx++)
+    for (int bz = bz0; bz <= bz1; bz++) {
+        if (block_is_solid(world_get_block(world, bx, by, bz)))
+            return true;
+    }
+    return false;
+}
+
 PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
-                           float dt, World* world)
+                           float dt, bool crouching, World* world)
 {
     PhysicsResult result = { false, false };
 
     /* Y first (ground detection), then X, then Z */
     sweep_axis_substepped(pos, vel, half_w, height, 1, vel[1] * dt, world, &result.on_ground);
+
+    /* Edge protection: when crouching AND on ground, refuse any horizontal
+     * sweep whose result would leave the player unsupported (i.e. stepping
+     * off a block edge). Applied per-axis so the player can still slide
+     * along an edge as long as one axis keeps them supported. */
+    bool edge_protect = crouching && result.on_ground;
+
+    float prev_x = pos[0];
     sweep_axis_substepped(pos, vel, half_w, height, 0, vel[0] * dt, world, &result.on_ground);
+    if (edge_protect && !aabb_supported(pos, half_w, world)) {
+        pos[0] = prev_x;
+        vel[0] = 0.0f;
+    }
+
+    float prev_z = pos[2];
     sweep_axis_substepped(pos, vel, half_w, height, 2, vel[2] * dt, world, &result.on_ground);
+    if (edge_protect && !aabb_supported(pos, half_w, world)) {
+        pos[2] = prev_z;
+        vel[2] = 0.0f;
+    }
 
     result.in_water = physics_check_water(pos, half_w, height, world);
     return result;
