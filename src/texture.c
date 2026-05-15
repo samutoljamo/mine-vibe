@@ -289,7 +289,13 @@ bool texture_create_atlas(Renderer* r)
         .mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR,
         .mipLodBias       = 0.0f,
         .minLod           = 0.0f,
-        .maxLod           = (float)(ATLAS_MIP_LEVELS - 1),
+        /* Cap below the smallest mip: tiles are 16x16, so mip 2 already
+         * has each tile down to 4x4 and mip 3 to 2x2 — at those sizes the
+         * bilinear sampler unavoidably blends with adjacent atlas tiles
+         * (the "tan specks on distant water" symptom). Capping at mip 2.0
+         * means anisotropic still picks finer mips for oblique footprints
+         * but the worst-bleeding mip is never sampled. */
+        .maxLod           = 2.0f,
     };
 
     if (vkCreateSampler(r->device, &sampler_ci, NULL, &r->atlas_sampler) != VK_SUCCESS) {

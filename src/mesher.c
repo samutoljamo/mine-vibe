@@ -7,7 +7,12 @@
 
 /* Atlas: 16 tiles per row in 256x256 texture */
 #define TILE_UV     (1.0f / 16.0f)
-#define HALF_TEXEL  (0.5f / 256.0f)  /* inset UVs to avoid sampling adjacent tiles */
+/* Inset UVs by 1.5 mip-0 texels so the bilinear footprint stays inside the
+ * tile at mip 0 and mip 1 (where 1 mip-1 texel = 2 mip-0 texels). Mip 2+
+ * still bleed at the edge — that's mitigated by capping maxLod in the
+ * sampler. Without this larger inset, atlas neighbors (stone, bedrock,
+ * empty padding) bleed into water at distance and read as colored specks. */
+#define HALF_TEXEL  (1.5f / 256.0f)
 
 void mesh_data_init(MeshData* md)
 {
