@@ -36,6 +36,7 @@
 static Player  g_player;
 static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
 static RaycastHit g_target;       /* refreshed each frame for outline + click */
+static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none */
 
 static void scroll_callback(GLFWwindow* w, double xoff, double yoff) {
     (void)w; (void)xoff;
@@ -56,12 +57,16 @@ static void mouse_button_callback(GLFWwindow* w, int button, int action, int mod
     (void)w; (void)mods;
     if (action != GLFW_PRESS) return;
     if (!g_client) return;
-    if (!g_target.hit) return;
+    if (!g_target.hit && !g_target_mob) return;
 
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        client_send_break(g_client,
-                          g_target.x, g_target.y, g_target.z,
-                          (uint8_t)g_target.block);
+        if (g_target_mob) {
+            client_send_mob_attack(g_client, g_target_mob);
+        } else if (g_target.hit) {
+            client_send_break(g_client,
+                              g_target.x, g_target.y, g_target.z,
+                              (uint8_t)g_target.block);
+        }
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         client_send_place(g_client,
                           g_target.x, g_target.y, g_target.z,
@@ -365,6 +370,23 @@ int main(int argc, char *argv[])
             vec3 dir;
             camera_get_front(&g_player.camera, dir);
             g_target = raycast_voxel(world, g_player.eye_pos, dir, MAX_REACH);
+        }
+
+        /* Raycast mobs and prefer a mob nearer than the targeted block. */
+        g_target_mob = 0;
+        if (g_mobs) {
+            float mt = 0.0f;
+            vec3 mdir; camera_get_front(&g_player.camera, mdir);
+            uint16_t mid = mob_ray_hit(g_mobs, g_player.eye_pos, mdir, MAX_REACH, &mt);
+            if (mid) {
+                /* Prefer the mob if it's nearer than the targeted block. */
+                bool block_blocks = g_target.hit;
+                float block_d = block_blocks
+                    ? glm_vec3_distance(g_player.eye_pos,
+                        (vec3){ g_target.x + 0.5f, g_target.y + 0.5f, g_target.z + 0.5f })
+                    : 1e30f;
+                if (mt <= block_d) g_target_mob = mid;
+            }
         }
 
         /* Networking tick */

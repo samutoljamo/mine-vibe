@@ -72,6 +72,9 @@ void client_send_break(Client* c, int x, int y, int z, uint8_t block);
 void client_send_place(Client* c, int x, int y, int z,
                         uint8_t face, uint8_t slot);
 
+/* Send a reliable mob attack request for the given mob id. */
+void client_send_mob_attack(Client* c, uint16_t mob_id);
+
 /* Process all inbound messages from the net thread.
  * Returns number of PKT_WORLD_STATE packets processed. */
 int client_poll(Client* c);

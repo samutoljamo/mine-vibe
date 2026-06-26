@@ -96,4 +96,9 @@ void client_mob_set_apply(ClientMobSet* s, const ClientMobSnapshot* snaps,
                           int count, double recv_time);
 void client_mob_interpolate(ClientMob* m, float dt, vec3 out_pos, float* out_yaw);
 
+/* Ray vs all active client mobs. Returns nearest mob id (0 = none) whose
+ * AABB is hit within max_dist. *out_t is set to the entry distance. */
+uint16_t mob_ray_hit(const ClientMobSet* s, vec3 origin, vec3 dir,
+                     float max_dist, float* out_t);
+
 #endif /* MOB_H */

@@ -109,6 +109,26 @@ static void test_client_interpolate_midpoint(void) {
     printf("PASS: client_interpolate_midpoint\n");
 }
 
+static void test_mob_ray_hit(void) {
+    ClientMobSet s; client_mob_set_init(&s);
+    /* Place an active, render-ready mob at feet (5,0,0). */
+    ClientMobSnapshot a[1] = {{ .id = 3, .x = 5, .y = 0, .z = 0, .yaw = 0, .health = 20 }};
+    client_mob_set_apply(&s, a, 1, 0.0);
+    client_mob_set_apply(&s, a, 1, 1.0);   /* 2 snapshots so it's render-ready */
+    for (int i = 0; i < MOB_MAX; i++) if (s.mobs[i].id == 3) s.mobs[i].render_time = 1.0;
+
+    float t = 0.0f;
+    /* Ray from origin (0, 1, 0) pointing +X at chest height hits the mob. */
+    uint16_t id = mob_ray_hit(&s, (vec3){0,1,0}, (vec3){1,0,0}, 10.0f, &t);
+    assert(id == 3);
+    assert(t > 4.0f && t < 5.2f);   /* AABB front face near x≈4.7 */
+
+    /* Ray pointing away misses. */
+    id = mob_ray_hit(&s, (vec3){0,1,0}, (vec3){-1,0,0}, 10.0f, &t);
+    assert(id == 0);
+    printf("PASS: mob_ray_hit\n");
+}
+
 int main(void) {
     test_spawn_assigns_unique_ids();
     test_acquire_target_nearest_in_range();
@@ -118,6 +138,7 @@ int main(void) {
     test_combat_apply_and_death();
     test_client_apply_and_deactivate();
     test_client_interpolate_midpoint();
+    test_mob_ray_hit();
     printf("All mob tests passed.\n");
     return 0;
 }

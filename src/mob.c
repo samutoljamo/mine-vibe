@@ -82,6 +82,47 @@ bool mob_combat_apply(int16_t* health, int dmg) {
     return was_alive && (*health <= 0);
 }
 
+/* ---- Ray-AABB helpers ---- */
+
+/* Slab ray-AABB; returns entry t>=0 or -1 on miss. dir need not be normalized
+ * (t is in units of |dir|; callers pass a unit dir so t is world distance). */
+static float ray_aabb(vec3 o, vec3 d, vec3 lo, vec3 hi) {
+    float tmin = 0.0f, tmax = 1e30f;
+    for (int a = 0; a < 3; a++) {
+        if (fabsf(d[a]) < 1e-8f) {
+            if (o[a] < lo[a] || o[a] > hi[a]) return -1.0f;
+        } else {
+            float inv = 1.0f / d[a];
+            float t1 = (lo[a] - o[a]) * inv;
+            float t2 = (hi[a] - o[a]) * inv;
+            if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+            if (t1 > tmin) tmin = t1;
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax) return -1.0f;
+        }
+    }
+    return tmin;
+}
+
+uint16_t mob_ray_hit(const ClientMobSet* s, vec3 origin, vec3 dir,
+                     float max_dist, float* out_t) {
+    uint16_t best = 0;
+    float best_t = max_dist;
+    for (int i = 0; i < MOB_MAX; i++) {
+        const ClientMob* m = &s->mobs[i];
+        if (!m->active || m->snapshot_count < 2) continue;
+        /* Use the latest snapshot position as the AABB anchor (feet). */
+        vec3 lo = { m->positions[1][0] - MOB_HALF_W, m->positions[1][1],
+                    m->positions[1][2] - MOB_HALF_W };
+        vec3 hi = { m->positions[1][0] + MOB_HALF_W, m->positions[1][1] + MOB_HEIGHT,
+                    m->positions[1][2] + MOB_HALF_W };
+        float t = ray_aabb(origin, dir, lo, hi);
+        if (t >= 0.0f && t < best_t) { best_t = t; best = m->id; }
+    }
+    if (best && out_t) *out_t = best_t;
+    return best;
+}
+
 /* ---- Client-side interpolated mob ---- */
 
 #define MOB_TWO_PI_F 6.28318530f

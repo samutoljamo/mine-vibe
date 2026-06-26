@@ -133,6 +133,16 @@ void client_send_place(Client* c, int x, int y, int z,
                    buf, (uint16_t)len);
 }
 
+void client_send_mob_attack(Client* c, uint16_t mob_id) {
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_MOB_ATTACK, .player_id = c->local_player_id,
+                       .seq = c->tick++ };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[16];
+    size_t len = net_write_mob_attack(buf, &h, mob_id);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
+}
+
 int client_poll(Client* c)
 {
     int state_packets = 0;

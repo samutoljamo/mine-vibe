@@ -297,6 +297,33 @@ static void handle_block_place(Server* s, ServerClient* c,
     server_send_inventory(s, c);
 }
 
+static void handle_mob_attack(Server* s, ServerClient* c,
+                              const uint8_t* data, size_t len) {
+    if (len < 10) return;
+    PacketHeader h; uint16_t mob_id;
+    net_read_mob_attack(data, &h, &mob_id);
+    bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+    if (!is_new) return;
+    c->last_recv_time = net_time();
+    if (!c->position_received || !s->world) return;
+
+    /* Rate-limit. */
+    double now = net_time();
+    if (now - c->last_attack_time < PLAYER_ATTACK_COOLDOWN) return;
+
+    Mob* m = mob_set_get(&s->mobs, mob_id);
+    if (!m) return;
+
+    /* Range check from the attacker's eye to the mob centre. */
+    float cx = m->position[0], cy = m->position[1] + MOB_HEIGHT * 0.5f, cz = m->position[2];
+    float dx = cx - c->x, dy = cy - (c->y + PLAYER_EYE_H), dz = cz - c->z;
+    if (dx*dx + dy*dy + dz*dz > (MAX_REACH + 1.0f) * (MAX_REACH + 1.0f)) return;
+
+    c->last_attack_time = now;
+    if (mob_combat_apply(&m->health, PLAYER_ATTACK_DAMAGE))
+        mob_set_remove(&s->mobs, mob_id);   /* dead → vanishes next broadcast */
+}
+
 /* ------------------------------------------------------------------ */
 /*  World anchor                                                       */
 /* ------------------------------------------------------------------ */
@@ -476,6 +503,7 @@ static void server_tick(Server* s, int tick_num)
             else if (type == PKT_DISCONNECT)   disconnect_client(s, c);
             else if (type == PKT_BLOCK_BREAK)  handle_block_break(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_BLOCK_PLACE)  handle_block_place(s, c, msg->data, (size_t)msg->len);
+            else if (type == PKT_MOB_ATTACK)   handle_mob_attack(s, c, msg->data, (size_t)msg->len);
         }
         free(msg);
     }
