@@ -290,6 +290,21 @@ static void handle_block_place(Server* s, ServerClient* c,
 }
 
 /* ------------------------------------------------------------------ */
+/*  World anchor                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Anchor = first active client's position; (0,0,0) until someone connects. */
+static void server_anchor(Server* s, vec3 out) {
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        if (s->clients[i].active && s->clients[i].position_received) {
+            out[0] = s->clients[i].x; out[1] = s->clients[i].y; out[2] = s->clients[i].z;
+            return;
+        }
+    }
+    out[0] = 0.0f; out[1] = 0.0f; out[2] = 0.0f;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Server tick                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -317,6 +332,16 @@ static void server_tick(Server* s, int tick_num)
 
     /* Only remaining steps at 20 Hz */
     if (tick_num % 1 != 0) return; /* always true — placeholder for future rate div */
+
+    /* Compute once per tick; shared by terrain streaming (here) and mob
+     * simulation/spawning (Task 5). */
+    vec3 anchor;
+    server_anchor(s, anchor);
+
+    /* Stream terrain around the anchor so mobs have ground to walk on. */
+    if (s->world) {
+        world_update(s->world, /*bp=*/NULL, anchor);
+    }
 
     /* 2. Timeout detection */
     for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
@@ -361,7 +386,7 @@ static void server_tick(Server* s, int tick_num)
 /*  Entry point                                                        */
 /* ------------------------------------------------------------------ */
 
-void server_run(uint16_t port, int max_clients)
+void server_run(uint16_t port, int max_clients, int seed)
 {
     int fd = net_socket_server(port);
     if (fd < 0) { fprintf(stderr, "[server] bind failed on port %d\n", port); return; }
@@ -378,6 +403,9 @@ void server_run(uint16_t port, int max_clients)
     s.max_clients = max_clients > SERVER_MAX_CLIENTS
                   ? SERVER_MAX_CLIENTS : max_clients;
     s.running     = true;
+
+    s.seed  = seed;
+    s.world = world_create_headless(seed, 8 /* SERVER_MOB_RENDER_DIST */);
 
     printf("[server] listening on port %d (max %d clients)\n", port, s.max_clients);
 
@@ -400,6 +428,7 @@ void server_run(uint16_t port, int max_clients)
         pt_sleep_ms(1);
     }
 
+    if (s.world) world_destroy(s.world);
     net_thread_stop(&nt);
     net_socket_close(fd);
 }

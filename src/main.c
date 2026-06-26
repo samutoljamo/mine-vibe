@@ -145,11 +145,11 @@ static void on_player_leave(uint8_t pid, void* user)
         remote_player_remove(g_remote_players, pid);
 }
 
-typedef struct { uint16_t port; int max; } ServerArgs;
+typedef struct { uint16_t port; int max; int seed; } ServerArgs;
 static void* server_thread_func(void* arg)
 {
     ServerArgs* a = (ServerArgs*)arg;
-    server_run(a->port, a->max);
+    server_run(a->port, a->max, a->seed);
     free(a);
     return NULL;
 }
@@ -181,7 +181,7 @@ int main(int argc, char *argv[])
         host_mode = true;
 
     if (server_mode) {
-        server_run(port, SERVER_MAX_CLIENTS);
+        server_run(port, SERVER_MAX_CLIENTS, WORLD_SEED);
         return 0;
     }
 
@@ -213,6 +213,7 @@ int main(int argc, char *argv[])
         ServerArgs* sargs = malloc(sizeof(ServerArgs));
         sargs->port = port;
         sargs->max  = SERVER_MAX_CLIENTS;
+        sargs->seed = WORLD_SEED;
         pt_thread_create(&server_thread, server_thread_func, sargs);
         /* Give server 200ms to bind before client tries to connect */
         pt_sleep_ms(200);
