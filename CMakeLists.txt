@@ -146,6 +146,7 @@ add_executable(minecraft
     src/server.c
     src/client.c
     src/remote_player.c
+    src/mob.c
     src/inventory.c
     src/raycast.c
     src/assets_generated.c
@@ -249,6 +250,17 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME remote_player COMMAND test_remote_player)
 
+add_executable(test_mob
+    tests/test_mob.c
+    src/mob.c
+)
+target_include_directories(test_mob PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_mob PRIVATE cglm)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mob PRIVATE m)
+endif()
+add_test(NAME mob COMMAND test_mob)
+
 add_executable(test_mesher
     tests/test_mesher.c
     src/mesher.c
@@ -320,7 +332,7 @@ endif()
 add_test(NAME raycast COMMAND test_raycast)
 
 foreach(t minecraft test_block_physics test_agent test_net test_ui
-          test_remote_player test_mesher test_lighting test_client
+          test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_raycast)
     msvc_enable_c11_atomics(${t})
 endforeach()
