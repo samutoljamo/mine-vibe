@@ -20,6 +20,9 @@ typedef enum {
     PKT_BLOCK_BREAK     = 8,  /* client → server: request to break a block  */
     PKT_BLOCK_PLACE     = 9,  /* client → server: request to place a block  */
     PKT_INVENTORY       = 10, /* server → one:    full inventory snapshot   */
+    PKT_MOB_STATE       = 11, /* server → all:  mob snapshot broadcast        */
+    PKT_MOB_ATTACK      = 12, /* client → server: melee a mob by id           */
+    PKT_PLAYER_HEALTH   = 13, /* server → one:  authoritative health + death  */
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -329,6 +332,88 @@ static inline void net_read_inventory(const uint8_t* buf, InventoryPacket* p)
         p->slots[i].block = net_read_u8(buf, &off);
         p->slots[i].count = net_read_u8(buf, &off);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Mob + health packets                                               */
+/*    PKT_MOB_STATE    — [header 8][count u16][ count × 20 ]           */
+/*       entry: id u16 | type u8 | x f32 | y f32 | z f32 | yaw f32 | health u8
+ *    PKT_MOB_ATTACK   — [header 8][mob_id u16]            = 10 bytes  */
+/*    PKT_PLAYER_HEALTH— [header 8][health u8][flags u8]   = 10 bytes  */
+/* ------------------------------------------------------------------ */
+#define MOB_STATE_ENTRY_SIZE 20
+#define MOB_HEALTH_FLAG_DIED 0x01
+
+typedef struct {
+    uint16_t id;
+    uint8_t  type;
+    float    x, y, z, yaw;
+    uint8_t  health;
+} NetMobState;
+
+static inline size_t net_write_mob_state(uint8_t* buf, const PacketHeader* hdr,
+                                         const NetMobState* mobs, uint16_t count) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u16(buf, &off, count);
+    for (uint16_t i = 0; i < count; i++) {
+        net_write_u16  (buf, &off, mobs[i].id);
+        net_write_u8   (buf, &off, mobs[i].type);
+        net_write_float(buf, &off, mobs[i].x);
+        net_write_float(buf, &off, mobs[i].y);
+        net_write_float(buf, &off, mobs[i].z);
+        net_write_float(buf, &off, mobs[i].yaw);
+        net_write_u8   (buf, &off, mobs[i].health);
+    }
+    return off;
+}
+
+static inline void net_read_mob_state_header(const uint8_t* buf, size_t* off,
+                                             uint16_t* out_count) {
+    *out_count = net_read_u16(buf, off);
+}
+
+static inline void net_read_mob_state_entry(const uint8_t* buf, size_t* off,
+                                            NetMobState* m) {
+    m->id     = net_read_u16(buf, off);
+    m->type   = net_read_u8(buf, off);
+    m->x      = net_read_float(buf, off);
+    m->y      = net_read_float(buf, off);
+    m->z      = net_read_float(buf, off);
+    m->yaw    = net_read_float(buf, off);
+    m->health = net_read_u8(buf, off);
+}
+
+static inline size_t net_write_mob_attack(uint8_t* buf, const PacketHeader* hdr,
+                                          uint16_t mob_id) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u16(buf, &off, mob_id);
+    return off;
+}
+
+static inline void net_read_mob_attack(const uint8_t* buf, PacketHeader* hdr,
+                                       uint16_t* mob_id) {
+    size_t off = 0;
+    net_read_header(buf, &off, hdr);
+    *mob_id = net_read_u16(buf, &off);
+}
+
+static inline size_t net_write_player_health(uint8_t* buf, const PacketHeader* hdr,
+                                             uint8_t health, uint8_t flags) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u8(buf, &off, health);
+    net_write_u8(buf, &off, flags);
+    return off;
+}
+
+static inline void net_read_player_health(const uint8_t* buf, PacketHeader* hdr,
+                                          uint8_t* health, uint8_t* flags) {
+    size_t off = 0;
+    net_read_header(buf, &off, hdr);
+    *health = net_read_u8(buf, &off);
+    *flags  = net_read_u8(buf, &off);
 }
 
 /* ------------------------------------------------------------------ */
