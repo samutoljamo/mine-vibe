@@ -221,8 +221,20 @@ void player_model_draw(Renderer* r, VkCommandBuffer cmd,
         glm_translate(model, pos);
         glm_rotate(model, (float)GLM_PI_2 - states[i].yaw, (vec3){0.0f, 1.0f, 0.0f});
 
+        /* 80-byte push block: mat4 model (64) then vec4 tint (16), laid out as a
+         * flat float array so there is no struct-alignment padding between them
+         * (cglm may over-align mat4, which would bloat a struct past the 80-byte
+         * push range and corrupt the tint). */
+        float pc[20];
+        memcpy(pc, model, sizeof(model));   /* 64 bytes: the model matrix */
+        pc[16] = states[i].tint[0];
+        pc[17] = states[i].tint[1];
+        pc[18] = states[i].tint[2];
+        pc[19] = states[i].tint[3];
+
         vkCmdPushConstants(cmd, r->player_pipeline_layout,
-                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4), model);
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(pc), pc);
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &m->vertex_buffer, &offset);

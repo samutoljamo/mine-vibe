@@ -464,6 +464,10 @@ int main(int argc, char *argv[])
                 rp_states[rcount].pos[1] = pos[1];
                 rp_states[rcount].pos[2] = pos[2];
                 rp_states[rcount].yaw    = yaw;
+                rp_states[rcount].tint[0] = 0.0f;   /* a=0 → unmodified player skin */
+                rp_states[rcount].tint[1] = 0.0f;
+                rp_states[rcount].tint[2] = 0.0f;
+                rp_states[rcount].tint[3] = 0.0f;
                 rcount++;
             }
             for (int i = 0; i < MOB_MAX && rcount < REMOTE_PLAYER_MAX + MOB_MAX; i++) {
@@ -475,6 +479,10 @@ int main(int argc, char *argv[])
                 rp_states[rcount].pos[1] = pos[1];
                 rp_states[rcount].pos[2] = pos[2];
                 rp_states[rcount].yaw    = yaw;
+                rp_states[rcount].tint[0] = 0.0f;  /* rgb unused for mobs; */
+                rp_states[rcount].tint[1] = 0.0f;  /* a=1 flags "this is a mob" so the */
+                rp_states[rcount].tint[2] = 0.0f;  /* shader applies the zombie palette */
+                rp_states[rcount].tint[3] = 1.0f;
                 rcount++;
             }
         }
