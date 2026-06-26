@@ -30,7 +30,6 @@ typedef struct {
     ReliableChannel    reliable;
     Inventory          inventory;
     int16_t            health;
-    bool               dead_pending;        /* send death flag once, then refill */
     double             last_attack_time;    /* rate-limit player→mob attacks (Task 8) */
 } ServerClient;
 
