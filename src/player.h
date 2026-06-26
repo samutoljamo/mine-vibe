@@ -13,6 +13,9 @@ typedef struct World World;
 #define PLAYER_SPRINT_SPEED 5.6f
 #define PLAYER_SNEAK_SPEED  1.3f
 #define PLAYER_SNEAK_EYE_DIP 0.3f   /* world units; matches MC's ~5/16 dip */
+#define GRAVITY             25.2f   /* m/s^2, applied per tick as v -= GRAVITY*dt */
+#define JUMP_VEL            7.95f   /* upward impulse; peak ≈ v^2/2g ≈ 1.25 blocks */
+#define TERMINAL_VEL        78.4f   /* fall-speed clamp */
 
 typedef enum PlayerMode {
     MODE_FREE,
