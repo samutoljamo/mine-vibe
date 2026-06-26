@@ -128,6 +128,13 @@ static bool apply_agent_command(const AgentCommand *cmd, Player *player,
 }
 
 static RemotePlayerSet* g_remote_players = NULL;
+static ClientMobSet*    g_mobs           = NULL;
+
+static void on_mobs(const ClientMobSnapshot* mobs, int count, double recv_time, void* user)
+{
+    (void)user;
+    if (g_mobs) client_mob_set_apply(g_mobs, mobs, count, recv_time);
+}
 
 static void on_snapshot(const ClientPlayerSnapshot* s, void* user)
 {
@@ -223,6 +230,7 @@ int main(int argc, char *argv[])
     NetThread net_thread;
     Client client;
     RemotePlayerSet remote_players;
+    ClientMobSet mob_set;
     bool networking = host_mode || client_mode;
 
     if (networking) {
@@ -236,11 +244,14 @@ int main(int argc, char *argv[])
 
         client_init(&client, &net_thread, &srv_addr);
         remote_player_set_init(&remote_players);
+        client_mob_set_init(&mob_set);
 
         g_remote_players = &remote_players;
         g_client         = &client;
+        g_mobs           = &mob_set;
         client_set_snapshot_cb(&client, on_snapshot, NULL);
         client_set_leave_cb(&client, on_player_leave, NULL);
+        client_set_mobs_cb(&client, on_mobs, NULL);
         client_connect(&client);
     }
 
@@ -403,7 +414,7 @@ int main(int argc, char *argv[])
         camera_get_proj(&g_player.camera, aspect, proj);
 
         /* Collect remote player states for rendering */
-        PlayerRenderState rp_states[REMOTE_PLAYER_MAX];
+        PlayerRenderState rp_states[REMOTE_PLAYER_MAX + MOB_MAX];
         uint32_t rcount = 0;
         if (networking) {
             for (int i = 0; i < REMOTE_PLAYER_MAX; i++) {
@@ -411,6 +422,17 @@ int main(int argc, char *argv[])
                 if (!rp->active || rp->snapshot_count < 2) continue;
                 vec3 pos; float yaw, pitch;
                 remote_player_interpolate(rp, dt, pos, &yaw, &pitch);
+                rp_states[rcount].pos[0] = pos[0];
+                rp_states[rcount].pos[1] = pos[1];
+                rp_states[rcount].pos[2] = pos[2];
+                rp_states[rcount].yaw    = yaw;
+                rcount++;
+            }
+            for (int i = 0; i < MOB_MAX && rcount < REMOTE_PLAYER_MAX + MOB_MAX; i++) {
+                ClientMob* m = &mob_set.mobs[i];
+                if (!m->active || m->snapshot_count < 2) continue;
+                vec3 pos; float yaw;
+                client_mob_interpolate(m, dt, pos, &yaw);
                 rp_states[rcount].pos[0] = pos[0];
                 rp_states[rcount].pos[1] = pos[1];
                 rp_states[rcount].pos[2] = pos[2];
@@ -492,6 +514,7 @@ int main(int argc, char *argv[])
          * any callback firing during glfwDestroyWindow can't dereference a
          * client whose socket has already been closed. */
         g_client = NULL;
+        g_mobs   = NULL;
         glfwSetMouseButtonCallback(window, NULL);
         glfwSetScrollCallback(window, NULL);
         client_disconnect(&client);

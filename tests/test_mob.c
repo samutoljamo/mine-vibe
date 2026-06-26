@@ -78,6 +78,37 @@ static void test_combat_apply_and_death(void) {
     printf("PASS: combat_apply_and_death\n");
 }
 
+static void test_client_apply_and_deactivate(void) {
+    ClientMobSet s; client_mob_set_init(&s);
+    ClientMobSnapshot a[1] = {{ .id = 5, .type = 0, .x = 0, .y = 64, .z = 0, .yaw = 0, .health = 20 }};
+    client_mob_set_apply(&s, a, 1, 100.0);
+    /* present again, moved */
+    ClientMobSnapshot b[1] = {{ .id = 5, .type = 0, .x = 10, .y = 64, .z = 0, .yaw = 0, .health = 20 }};
+    client_mob_set_apply(&s, b, 1, 100.05);
+    int found = -1;
+    for (int i = 0; i < MOB_MAX; i++) if (s.mobs[i].active && s.mobs[i].id == 5) found = i;
+    assert(found >= 0 && s.mobs[found].snapshot_count == 2);
+    /* absent → deactivated */
+    client_mob_set_apply(&s, NULL, 0, 100.10);
+    for (int i = 0; i < MOB_MAX; i++) if (s.mobs[i].id == 5) assert(!s.mobs[i].active);
+    printf("PASS: client_apply_and_deactivate\n");
+}
+
+static void test_client_interpolate_midpoint(void) {
+    ClientMobSet s; client_mob_set_init(&s);
+    ClientMobSnapshot a[1] = {{ .id = 1, .x = 0,  .y = 0, .z = 0, .yaw = 0, .health = 20 }};
+    ClientMobSnapshot b[1] = {{ .id = 1, .x = 10, .y = 0, .z = 0, .yaw = 0, .health = 20 }};
+    client_mob_set_apply(&s, a, 1, 0.0);
+    client_mob_set_apply(&s, b, 1, 1.0);
+    ClientMob* m = NULL;
+    for (int i = 0; i < MOB_MAX; i++) if (s.mobs[i].active && s.mobs[i].id == 1) m = &s.mobs[i];
+    assert(m); m->render_time = 0.5;
+    vec3 pos; float yaw;
+    client_mob_interpolate(m, 0.0f, pos, &yaw);
+    assert(feq(pos[0], 5.0f));
+    printf("PASS: client_interpolate_midpoint\n");
+}
+
 int main(void) {
     test_spawn_assigns_unique_ids();
     test_acquire_target_nearest_in_range();
@@ -85,6 +116,8 @@ int main(void) {
     test_acquire_target_hysteresis();
     test_steer_points_at_target();
     test_combat_apply_and_death();
+    test_client_apply_and_deactivate();
+    test_client_interpolate_midpoint();
     printf("All mob tests passed.\n");
     return 0;
 }

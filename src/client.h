@@ -14,6 +14,7 @@
 #include "reliable.h"
 #include "net_thread.h"
 #include "inventory.h"
+#include "mob.h"
 
 typedef enum {
     CLIENT_DISCONNECTED,
@@ -86,6 +87,10 @@ void client_set_snapshot_cb(Client* c, ClientSnapshotCb cb, void* user);
 
 typedef void (*ClientLeaveCb)(uint8_t player_id, void* user);
 void client_set_leave_cb(Client* c, ClientLeaveCb cb, void* user);
+
+typedef void (*ClientMobsCb)(const ClientMobSnapshot* mobs, int count,
+                             double recv_time, void* user);
+void client_set_mobs_cb(Client* c, ClientMobsCb cb, void* user);
 
 void client_disconnect(Client* c);
 

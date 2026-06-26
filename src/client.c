@@ -12,6 +12,8 @@ static ClientSnapshotCb g_snap_cb   = NULL;
 static void*             g_snap_user = NULL;
 static ClientLeaveCb     g_leave_cb   = NULL;
 static void*             g_leave_user = NULL;
+static ClientMobsCb      g_mobs_cb   = NULL;
+static void*             g_mobs_user = NULL;
 
 void client_set_snapshot_cb(Client* c, ClientSnapshotCb cb, void* user)
 {
@@ -25,6 +27,13 @@ void client_set_leave_cb(Client* c, ClientLeaveCb cb, void* user)
     (void)c;
     g_leave_cb   = cb;
     g_leave_user = user;
+}
+
+void client_set_mobs_cb(Client* c, ClientMobsCb cb, void* user)
+{
+    (void)c;
+    g_mobs_cb   = cb;
+    g_mobs_user = user;
 }
 
 void client_init(Client* c, NetThread* net,
@@ -168,6 +177,20 @@ int client_poll(Client* c)
                 }
             }
             state_packets++;
+
+        } else if (type == PKT_MOB_STATE && c->state == CLIENT_CONNECTED) {
+            size_t off = 0; PacketHeader hdr; net_read_header(msg->data, &off, &hdr);
+            uint16_t count; net_read_mob_state_header(msg->data, &off, &count);
+            int required = (int)off + (int)count * MOB_STATE_ENTRY_SIZE;
+            if (count > MOB_MAX || required > msg->len) { free(msg); continue; }
+            ClientMobSnapshot snaps[MOB_MAX];
+            for (uint16_t i = 0; i < count; i++) {
+                NetMobState m; net_read_mob_state_entry(msg->data, &off, &m);
+                snaps[i].id = m.id; snaps[i].type = m.type;
+                snaps[i].x = m.x; snaps[i].y = m.y; snaps[i].z = m.z;
+                snaps[i].yaw = m.yaw; snaps[i].health = m.health;
+            }
+            if (g_mobs_cb) g_mobs_cb(snaps, (int)count, msg->recv_time, g_mobs_user);
 
         } else if (type == PKT_PLAYER_JOIN || type == PKT_PLAYER_LEAVE) {
             PacketHeader h; size_t off = 0;

@@ -66,4 +66,34 @@ void mob_steer(const Mob* m, vec3 target_pos,
 /* Pure: subtract dmg, returns true if this hit dropped health to <= 0. */
 bool mob_combat_apply(int16_t* health, int dmg);
 
+/* ---- Client-side interpolated mob ---- */
+#define MOB_INTERP_DELAY 0.025   /* seconds, matches remote players */
+
+typedef struct {
+    uint16_t id;
+    uint8_t  type;
+    float    x, y, z, yaw;
+    uint8_t  health;
+} ClientMobSnapshot;
+
+typedef struct {
+    uint16_t id;
+    bool     active;
+    uint8_t  type;
+    uint8_t  health;
+    vec3     positions[2];
+    float    yaws[2];
+    double   snapshot_times[2];
+    uint8_t  snapshot_count;
+    double   render_time;
+} ClientMob;
+
+typedef struct { ClientMob mobs[MOB_MAX]; } ClientMobSet;
+
+void client_mob_set_init(ClientMobSet* s);
+/* Full authoritative list: pushes snapshots for present ids, deactivates absent ones. */
+void client_mob_set_apply(ClientMobSet* s, const ClientMobSnapshot* snaps,
+                          int count, double recv_time);
+void client_mob_interpolate(ClientMob* m, float dt, vec3 out_pos, float* out_yaw);
+
 #endif /* MOB_H */
