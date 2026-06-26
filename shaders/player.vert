@@ -14,6 +14,7 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
+    vec4 tint;   // rgb = override colour, a = blend strength (0 = unmodified skin)
 } pc;
 
 layout(location = 0) out vec2  frag_uv;

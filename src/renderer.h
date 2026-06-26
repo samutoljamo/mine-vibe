@@ -127,6 +127,7 @@ void renderer_draw_frame(Renderer* r,
                          const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir,
                          const struct Inventory* inventory,
+                         int player_health,            /* <0 = no hearts */
                          const struct RaycastHit* target,
                          float underwater,  /* 0..1 fade factor */
                          bool dump_frame, const char* dump_path);

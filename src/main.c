@@ -36,6 +36,7 @@
 static Player  g_player;
 static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
 static RaycastHit g_target;       /* refreshed each frame for outline + click */
+static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none */
 
 static void scroll_callback(GLFWwindow* w, double xoff, double yoff) {
     (void)w; (void)xoff;
@@ -56,12 +57,16 @@ static void mouse_button_callback(GLFWwindow* w, int button, int action, int mod
     (void)w; (void)mods;
     if (action != GLFW_PRESS) return;
     if (!g_client) return;
-    if (!g_target.hit) return;
+    if (!g_target.hit && !g_target_mob) return;
 
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        client_send_break(g_client,
-                          g_target.x, g_target.y, g_target.z,
-                          (uint8_t)g_target.block);
+        if (g_target_mob) {
+            client_send_mob_attack(g_client, g_target_mob);
+        } else if (g_target.hit) {
+            client_send_break(g_client,
+                              g_target.x, g_target.y, g_target.z,
+                              (uint8_t)g_target.block);
+        }
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         client_send_place(g_client,
                           g_target.x, g_target.y, g_target.z,
@@ -128,6 +133,24 @@ static bool apply_agent_command(const AgentCommand *cmd, Player *player,
 }
 
 static RemotePlayerSet* g_remote_players = NULL;
+static ClientMobSet*    g_mobs           = NULL;
+static Player*          g_player_ptr     = NULL;
+static vec3             g_spawn_pos      = {0, 0, 0};
+
+static void on_death(void* user) {
+    (void)user;
+    if (g_player_ptr) {
+        glm_vec3_copy(g_spawn_pos, g_player_ptr->position);
+        glm_vec3_zero(g_player_ptr->velocity);
+        g_player_ptr->on_ground = false;
+    }
+}
+
+static void on_mobs(const ClientMobSnapshot* mobs, int count, double recv_time, void* user)
+{
+    (void)user;
+    if (g_mobs) client_mob_set_apply(g_mobs, mobs, count, recv_time);
+}
 
 static void on_snapshot(const ClientPlayerSnapshot* s, void* user)
 {
@@ -145,11 +168,11 @@ static void on_player_leave(uint8_t pid, void* user)
         remote_player_remove(g_remote_players, pid);
 }
 
-typedef struct { uint16_t port; int max; } ServerArgs;
+typedef struct { uint16_t port; int max; int seed; } ServerArgs;
 static void* server_thread_func(void* arg)
 {
     ServerArgs* a = (ServerArgs*)arg;
-    server_run(a->port, a->max);
+    server_run(a->port, a->max, a->seed);
     free(a);
     return NULL;
 }
@@ -181,7 +204,7 @@ int main(int argc, char *argv[])
         host_mode = true;
 
     if (server_mode) {
-        server_run(port, SERVER_MAX_CLIENTS);
+        server_run(port, SERVER_MAX_CLIENTS, WORLD_SEED);
         return 0;
     }
 
@@ -213,6 +236,7 @@ int main(int argc, char *argv[])
         ServerArgs* sargs = malloc(sizeof(ServerArgs));
         sargs->port = port;
         sargs->max  = SERVER_MAX_CLIENTS;
+        sargs->seed = WORLD_SEED;
         pt_thread_create(&server_thread, server_thread_func, sargs);
         /* Give server 200ms to bind before client tries to connect */
         pt_sleep_ms(200);
@@ -222,6 +246,7 @@ int main(int argc, char *argv[])
     NetThread net_thread;
     Client client;
     RemotePlayerSet remote_players;
+    ClientMobSet mob_set;
     bool networking = host_mode || client_mode;
 
     if (networking) {
@@ -235,16 +260,23 @@ int main(int argc, char *argv[])
 
         client_init(&client, &net_thread, &srv_addr);
         remote_player_set_init(&remote_players);
+        client_mob_set_init(&mob_set);
 
         g_remote_players = &remote_players;
         g_client         = &client;
+        g_mobs           = &mob_set;
         client_set_snapshot_cb(&client, on_snapshot, NULL);
         client_set_leave_cb(&client, on_player_leave, NULL);
+        client_set_mobs_cb(&client, on_mobs, NULL);
+        client_set_death_cb(&client, on_death, NULL);
         client_connect(&client);
     }
 
     int spawn_y = worldgen_get_height(0, 0, WORLD_SEED) + 4;
-    player_init(&g_player, (vec3){0, (float)spawn_y, 0});
+    vec3 g_spawn = { 0, (float)spawn_y, 0 };
+    player_init(&g_player, g_spawn);
+    g_player_ptr = &g_player;
+    glm_vec3_copy(g_spawn, g_spawn_pos);
     g_player.agent_mode = agent_mode;
     World* world = world_create(&renderer, WORLD_SEED, 32);
 
@@ -287,6 +319,7 @@ int main(int argc, char *argv[])
 
             renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir,
                                 networking ? &client.inventory : NULL,
+                                -1,
                                 NULL,
                                 /* underwater factor */ 0.0f,
                                 false, NULL);
@@ -337,6 +370,23 @@ int main(int argc, char *argv[])
             vec3 dir;
             camera_get_front(&g_player.camera, dir);
             g_target = raycast_voxel(world, g_player.eye_pos, dir, MAX_REACH);
+        }
+
+        /* Raycast mobs and prefer a mob nearer than the targeted block. */
+        g_target_mob = 0;
+        if (g_mobs) {
+            float mt = 0.0f;
+            vec3 mdir; camera_get_front(&g_player.camera, mdir);
+            uint16_t mid = mob_ray_hit(g_mobs, g_player.eye_pos, mdir, MAX_REACH, &mt);
+            if (mid) {
+                /* Prefer the mob if it's nearer than the targeted block. */
+                bool block_blocks = g_target.hit;
+                float block_d = block_blocks
+                    ? glm_vec3_distance(g_player.eye_pos,
+                        (vec3){ g_target.x + 0.5f, g_target.y + 0.5f, g_target.z + 0.5f })
+                    : 1e30f;
+                if (mt <= block_d) g_target_mob = mid;
+            }
         }
 
         /* Networking tick */
@@ -402,7 +452,7 @@ int main(int argc, char *argv[])
         camera_get_proj(&g_player.camera, aspect, proj);
 
         /* Collect remote player states for rendering */
-        PlayerRenderState rp_states[REMOTE_PLAYER_MAX];
+        PlayerRenderState rp_states[REMOTE_PLAYER_MAX + MOB_MAX];
         uint32_t rcount = 0;
         if (networking) {
             for (int i = 0; i < REMOTE_PLAYER_MAX; i++) {
@@ -414,6 +464,25 @@ int main(int argc, char *argv[])
                 rp_states[rcount].pos[1] = pos[1];
                 rp_states[rcount].pos[2] = pos[2];
                 rp_states[rcount].yaw    = yaw;
+                rp_states[rcount].tint[0] = 0.0f;   /* a=0 → unmodified player skin */
+                rp_states[rcount].tint[1] = 0.0f;
+                rp_states[rcount].tint[2] = 0.0f;
+                rp_states[rcount].tint[3] = 0.0f;
+                rcount++;
+            }
+            for (int i = 0; i < MOB_MAX && rcount < REMOTE_PLAYER_MAX + MOB_MAX; i++) {
+                ClientMob* m = &mob_set.mobs[i];
+                if (!m->active || m->snapshot_count < 2) continue;
+                vec3 pos; float yaw;
+                client_mob_interpolate(m, dt, pos, &yaw);
+                rp_states[rcount].pos[0] = pos[0];
+                rp_states[rcount].pos[1] = pos[1];
+                rp_states[rcount].pos[2] = pos[2];
+                rp_states[rcount].yaw    = yaw;
+                rp_states[rcount].tint[0] = 0.0f;  /* rgb unused for mobs; */
+                rp_states[rcount].tint[1] = 0.0f;  /* a=1 flags "this is a mob" so the */
+                rp_states[rcount].tint[2] = 0.0f;  /* shader applies the zombie palette */
+                rp_states[rcount].tint[3] = 1.0f;
                 rcount++;
             }
         }
@@ -445,6 +514,7 @@ int main(int argc, char *argv[])
                             rcount > 0 ? rp_states : NULL, rcount,
                             view, proj, sun_dir,
                             networking ? &client.inventory : NULL,
+                            networking ? client.health : -1,
                             &g_target,
                             underwater,
                             dump_frame, dump_path);
@@ -491,6 +561,7 @@ int main(int argc, char *argv[])
          * any callback firing during glfwDestroyWindow can't dereference a
          * client whose socket has already been closed. */
         g_client = NULL;
+        g_mobs   = NULL;
         glfwSetMouseButtonCallback(window, NULL);
         glfwSetScrollCallback(window, NULL);
         client_disconnect(&client);

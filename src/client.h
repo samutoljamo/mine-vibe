@@ -14,6 +14,7 @@
 #include "reliable.h"
 #include "net_thread.h"
 #include "inventory.h"
+#include "mob.h"
 
 typedef enum {
     CLIENT_DISCONNECTED,
@@ -35,6 +36,8 @@ typedef struct {
     int   connect_attempts;  /* incremented on each retry; 0 = first send */
 
     Inventory inventory;
+
+    int16_t health;   /* last server-reported; PLAYER_MAX_HEALTH at init */
 
     /* Block-change events received from the server, drained by main.c each
      * frame to call world_set_block + remesh on the main thread.
@@ -69,6 +72,9 @@ void client_send_break(Client* c, int x, int y, int z, uint8_t block);
 void client_send_place(Client* c, int x, int y, int z,
                         uint8_t face, uint8_t slot);
 
+/* Send a reliable mob attack request for the given mob id. */
+void client_send_mob_attack(Client* c, uint16_t mob_id);
+
 /* Process all inbound messages from the net thread.
  * Returns number of PKT_WORLD_STATE packets processed. */
 int client_poll(Client* c);
@@ -86,6 +92,13 @@ void client_set_snapshot_cb(Client* c, ClientSnapshotCb cb, void* user);
 
 typedef void (*ClientLeaveCb)(uint8_t player_id, void* user);
 void client_set_leave_cb(Client* c, ClientLeaveCb cb, void* user);
+
+typedef void (*ClientMobsCb)(const ClientMobSnapshot* mobs, int count,
+                             double recv_time, void* user);
+void client_set_mobs_cb(Client* c, ClientMobsCb cb, void* user);
+
+typedef void (*ClientDeathCb)(void* user);
+void client_set_death_cb(Client* c, ClientDeathCb cb, void* user);
 
 void client_disconnect(Client* c);
 

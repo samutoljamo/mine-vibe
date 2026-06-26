@@ -7,9 +7,6 @@
 #define FLY_SPEED        20.0f
 #define WALK_SPEED       4.3f
 #define SWIM_SPEED       2.0f
-#define GRAVITY          25.2f
-#define JUMP_VEL         7.95f
-#define TERMINAL_VEL     78.4f
 #define WATER_SINK       2.0f
 #define SWIM_UP_VEL      4.0f
 #define DRAG_GROUND      0.65f

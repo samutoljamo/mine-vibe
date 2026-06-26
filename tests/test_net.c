@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,10 +55,57 @@ static void test_reliable_ack(void)
     printf("test_reliable_ack: PASS\n");
 }
 
+static void test_mob_state_roundtrip(void) {
+    uint8_t buf[512];
+    PacketHeader hdr = { .type = PKT_MOB_STATE, .player_id = 0 };
+    NetMobState in[2] = {
+        { .id = 7, .type = 0, .x = 1.5f, .y = 64.0f, .z = -3.25f, .yaw = 1.0f, .health = 20 },
+        { .id = 9, .type = 0, .x = 9.0f, .y = 65.0f, .z =  2.00f, .yaw = -2.0f, .health = 5 },
+    };
+    size_t len = net_write_mob_state(buf, &hdr, in, 2);
+    assert(len == 8 + 2 + 2 * 20);
+
+    PacketHeader h; size_t off = 0; net_read_header(buf, &off, &h);
+    assert(h.type == PKT_MOB_STATE);
+    uint16_t count; net_read_mob_state_header(buf, &off, &count);
+    assert(count == 2);
+    for (int i = 0; i < 2; i++) {
+        NetMobState m; net_read_mob_state_entry(buf, &off, &m);
+        assert(m.id == in[i].id && m.health == in[i].health);
+        assert(m.x == in[i].x && m.y == in[i].y && m.z == in[i].z && m.yaw == in[i].yaw);
+    }
+    printf("PASS: mob_state_roundtrip\n");
+}
+
+static void test_mob_attack_roundtrip(void) {
+    uint8_t buf[64];
+    PacketHeader hdr = { .type = PKT_MOB_ATTACK, .player_id = 3 };
+    size_t len = net_write_mob_attack(buf, &hdr, 42);
+    assert(len == 10);
+    PacketHeader h; uint16_t id;
+    net_read_mob_attack(buf, &h, &id);
+    assert(h.type == PKT_MOB_ATTACK && h.player_id == 3 && id == 42);
+    printf("PASS: mob_attack_roundtrip\n");
+}
+
+static void test_player_health_roundtrip(void) {
+    uint8_t buf[64];
+    PacketHeader hdr = { .type = PKT_PLAYER_HEALTH, .player_id = 0 };
+    size_t len = net_write_player_health(buf, &hdr, 12, MOB_HEALTH_FLAG_DIED);
+    assert(len == 10);
+    PacketHeader h; uint8_t hp, fl;
+    net_read_player_health(buf, &h, &hp, &fl);
+    assert(h.type == PKT_PLAYER_HEALTH && hp == 12 && fl == MOB_HEALTH_FLAG_DIED);
+    printf("PASS: player_health_roundtrip\n");
+}
+
 int main(void)
 {
     test_serialize_position();
     test_reliable_ack();
+    test_mob_state_roundtrip();
+    test_mob_attack_roundtrip();
+    test_player_health_roundtrip();
     printf("All net tests passed.\n");
     return 0;
 }

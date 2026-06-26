@@ -20,6 +20,7 @@ _Static_assert(sizeof(PlayerVertex) == 24, "PlayerVertex must be 24 bytes");
 typedef struct {
     float pos[3];   /* feet position in world space */
     float yaw;      /* rotation in radians around Y axis */
+    float tint[4];  /* rgb override colour + a blend strength; {0,0,0,0} = skin as-is */
 } PlayerRenderState;
 
 typedef struct {

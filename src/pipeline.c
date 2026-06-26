@@ -384,11 +384,12 @@ bool player_pipeline_create(VkDevice device, VkRenderPass render_pass,
         .pDynamicStates    = dynamic_states,
     };
 
-    /* Push constant: mat4 model = 64 bytes */
+    /* Push constant: mat4 model (64) + vec4 tint (16) = 80 bytes.
+     * tint is read in the fragment stage, so the range spans both stages. */
     VkPushConstantRange push_range = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset     = 0,
-        .size       = 64,  /* sizeof(mat4) */
+        .size       = 80,
     };
 
     /* Pipeline layout */

@@ -16,7 +16,7 @@ _Static_assert(HUD_SLOT_COUNT == INVENTORY_SLOTS,
 /* hud_build — accepts a NULL `inv`. The crosshair is always drawn (e.g., in
  * single-player / pre-connect runs before the first PKT_INVENTORY arrives);
  * the hotbar slots are only drawn when `inv` is non-NULL. */
-void hud_build(const Inventory* inv, float sw, float sh)
+void hud_build(const Inventory* inv, int player_health, float sw, float sh)
 {
     /* Crosshair — always rendered, even with no inventory yet. */
     vec4 white = {1, 1, 1, 0.9f};
@@ -60,6 +60,26 @@ void hud_build(const Inventory* inv, float sw, float sh)
             ui_text(sx + SLOT_SIZE - tw - 3, hy + SLOT_SIZE - 14,
                     12.0f, buf, text_white);
         }
+    }
+
+    /* Health hearts — 10 hearts = 20 hp, drawn above the hotbar. */
+    if (player_health >= 0) {
+        const float HSZ = 16.0f, HGAP = 2.0f;
+        int hearts = 10;
+        float total = hearts * HSZ + (hearts - 1) * HGAP;
+        float hx0 = (sw - total) * 0.5f;
+        float hy0 = sh - SLOT_SIZE - 12.0f - HSZ - 8.0f;
+        vec4 full  = {0.85f, 0.10f, 0.10f, 1.0f};
+        vec4 half  = {0.85f, 0.10f, 0.10f, 1.0f};
+        vec4 empty = {0.20f, 0.20f, 0.20f, 0.6f};
+        for (int i = 0; i < hearts; i++) {
+            float x = hx0 + i * (HSZ + HGAP);
+            int hp_here = player_health - i * 2;   /* 2 hp per heart */
+            ui_rect(x, hy0, HSZ, HSZ, empty);
+            if (hp_here >= 2)      ui_rect(x, hy0, HSZ, HSZ, full);
+            else if (hp_here == 1) ui_rect(x, hy0, HSZ * 0.5f, HSZ, half);
+        }
+        (void)half;
     }
 }
 

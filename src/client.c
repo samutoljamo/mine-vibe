@@ -1,5 +1,6 @@
 #include "client.h"
 #include "net_thread.h"
+#include "gameplay.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +13,10 @@ static ClientSnapshotCb g_snap_cb   = NULL;
 static void*             g_snap_user = NULL;
 static ClientLeaveCb     g_leave_cb   = NULL;
 static void*             g_leave_user = NULL;
+static ClientMobsCb      g_mobs_cb   = NULL;
+static void*             g_mobs_user = NULL;
+static ClientDeathCb     g_death_cb  = NULL;
+static void*             g_death_user = NULL;
 
 void client_set_snapshot_cb(Client* c, ClientSnapshotCb cb, void* user)
 {
@@ -27,6 +32,18 @@ void client_set_leave_cb(Client* c, ClientLeaveCb cb, void* user)
     g_leave_user = user;
 }
 
+void client_set_mobs_cb(Client* c, ClientMobsCb cb, void* user)
+{
+    (void)c;
+    g_mobs_cb   = cb;
+    g_mobs_user = user;
+}
+
+void client_set_death_cb(Client* c, ClientDeathCb cb, void* user)
+{
+    (void)c; g_death_cb = cb; g_death_user = user;
+}
+
 void client_init(Client* c, NetThread* net,
                   const struct sockaddr_in* server_addr)
 {
@@ -36,6 +53,7 @@ void client_init(Client* c, NetThread* net,
     c->server_addr = *server_addr;
     reliable_init(&c->reliable);
     inventory_init(&c->inventory);
+    c->health = PLAYER_MAX_HEALTH;
     c->pending_block_change_count = 0;
 }
 
@@ -115,6 +133,16 @@ void client_send_place(Client* c, int x, int y, int z,
                    buf, (uint16_t)len);
 }
 
+void client_send_mob_attack(Client* c, uint16_t mob_id) {
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_MOB_ATTACK, .player_id = c->local_player_id,
+                       .seq = c->tick++ };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[16];
+    size_t len = net_write_mob_attack(buf, &h, mob_id);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
+}
+
 int client_poll(Client* c)
 {
     int state_packets = 0;
@@ -169,6 +197,20 @@ int client_poll(Client* c)
             }
             state_packets++;
 
+        } else if (type == PKT_MOB_STATE && c->state == CLIENT_CONNECTED) {
+            size_t off = 0; PacketHeader hdr; net_read_header(msg->data, &off, &hdr);
+            uint16_t count; net_read_mob_state_header(msg->data, &off, &count);
+            int required = (int)off + (int)count * MOB_STATE_ENTRY_SIZE;
+            if (count > MOB_MAX || required > msg->len) { free(msg); continue; }
+            ClientMobSnapshot snaps[MOB_MAX];
+            for (uint16_t i = 0; i < count; i++) {
+                NetMobState m; net_read_mob_state_entry(msg->data, &off, &m);
+                snaps[i].id = m.id; snaps[i].type = m.type;
+                snaps[i].x = m.x; snaps[i].y = m.y; snaps[i].z = m.z;
+                snaps[i].yaw = m.yaw; snaps[i].health = m.health;
+            }
+            if (g_mobs_cb) g_mobs_cb(snaps, (int)count, msg->recv_time, g_mobs_user);
+
         } else if (type == PKT_PLAYER_JOIN || type == PKT_PLAYER_LEAVE) {
             PacketHeader h; size_t off = 0;
             net_read_header(msg->data, &off, &h);
@@ -222,6 +264,18 @@ int client_poll(Client* c)
                         c->inventory.slots[i].block = b;
                         c->inventory.slots[i].count = ip.slots[i].count;
                     }
+                }
+            }
+
+        } else if (type == PKT_PLAYER_HEALTH && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new && (size_t)msg->len >= 10) {
+                uint8_t hp, fl; net_read_player_health(msg->data, &h, &hp, &fl);
+                c->health = (int16_t)hp;
+                if ((fl & MOB_HEALTH_FLAG_DIED) && g_death_cb) {
+                    c->health = PLAYER_MAX_HEALTH;
+                    g_death_cb(g_death_user);
                 }
             }
 
