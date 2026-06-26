@@ -39,6 +39,7 @@ typedef struct {
     World*       world;          /* headless; mob terrain + collision      */
     int          seed;
     MobSet       mobs;           /* (added/used in Task 5)                  */
+    float        mob_spawn_timer; /* accumulates time toward MOB_SPAWN_INTERVAL */
 } Server;
 
 /* Blocking server loop — call from a dedicated thread or main().

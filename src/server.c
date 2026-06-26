@@ -5,6 +5,13 @@
 #include "inventory.h"
 #include "raycast.h"   /* for block_face_offset / FACE_PZ */
 #include "gameplay.h"  /* for MAX_REACH */
+#include "mob.h"
+#include "physics.h"
+#include "player.h"      /* GRAVITY, TERMINAL_VEL */
+#include "block.h"       /* block_is_solid */
+#include "chunk.h"       /* CHUNK_Y */
+#include "world.h"
+#include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -305,6 +312,128 @@ static void server_anchor(Server* s, vec3 out) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Mob spawning + simulation                                          */
+/* ------------------------------------------------------------------ */
+
+/* Find the surface y at (x,z): topmost solid with two air blocks above.
+ * Returns -1 if none (ungenerated/air column). */
+static int server_surface_y(World* w, int x, int z) {
+    for (int y = CHUNK_Y - 3; y >= 1; y--) {
+        if (block_is_solid(world_get_block(w, x, y, z))
+            && world_get_block(w, x, y + 1, z) == BLOCK_AIR
+            && world_get_block(w, x, y + 2, z) == BLOCK_AIR)
+            return y;
+    }
+    return -1;
+}
+
+static void server_try_spawn(Server* s, vec3 anchor) {
+    int live = 0;
+    for (int i = 0; i < MOB_MAX; i++) if (s->mobs.mobs[i].active) live++;
+    if (live >= MOB_CAP) return;
+
+    /* Random point in the spawn ring. rand() is fine server-side. */
+    float ang = (float)rand() / (float)RAND_MAX * 6.2831853f;
+    float rad = MOB_SPAWN_MIN + (float)rand() / (float)RAND_MAX * (MOB_SPAWN_MAX - MOB_SPAWN_MIN);
+    int x = (int)floorf(anchor[0] + cosf(ang) * rad);
+    int z = (int)floorf(anchor[2] + sinf(ang) * rad);
+    int y = server_surface_y(s->world, x, z);
+    if (y < 0) return;  /* terrain not ready / no valid column — try again next interval */
+    Mob* m = mob_set_spawn(&s->mobs, MOB_ZOMBIE, (vec3){ (float)x + 0.5f, (float)(y + 1), (float)z + 0.5f });
+    if (m) fprintf(stderr, "[server] spawned mob %u at (%d,%d)\n", m->id, x, z);
+}
+
+static void server_simulate_mobs(Server* s, float dt) {
+    if (!s->world) return;
+
+    /* Snapshot connected players for targeting. */
+    MobTargetInfo players[SERVER_MAX_CLIENTS];
+    int pcount = 0;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        ServerClient* c = &s->clients[i];
+        if (!c->active || !c->position_received) continue;
+        players[pcount].player_id = c->player_id;
+        players[pcount].position[0] = c->x;
+        players[pcount].position[1] = c->y;
+        players[pcount].position[2] = c->z;
+        pcount++;
+    }
+
+    for (int i = 0; i < MOB_MAX; i++) {
+        Mob* m = &s->mobs.mobs[i];
+        if (!m->active) continue;
+
+        if (m->attack_cooldown > 0.0f) m->attack_cooldown -= dt;
+
+        /* 1. Target + intent */
+        m->target_player = mob_acquire_target(m, players, pcount);
+        float vx = 0.0f, vz = 0.0f;
+        const MobTargetInfo* tgt = NULL;
+        if (m->target_player != 0) {
+            for (int p = 0; p < pcount; p++)
+                if (players[p].player_id == m->target_player) { tgt = &players[p]; break; }
+        }
+        if (tgt) {
+            mob_steer(m, (float*)tgt->position, &vx, &vz, &m->yaw);
+        } else {
+            /* Idle wander: pick a slow heading periodically. */
+            m->wander_timer -= dt;
+            if (m->wander_timer <= 0.0f) {
+                m->wander_timer = MOB_WANDER_INTERVAL;
+                m->yaw = (float)rand() / (float)RAND_MAX * 6.2831853f;
+            }
+            vx = cosf(m->yaw) * (MOB_SPEED * 0.3f);
+            vz = sinf(m->yaw) * (MOB_SPEED * 0.3f);
+        }
+        m->velocity[0] = vx;
+        m->velocity[2] = vz;
+
+        /* 2. Jump over a 1-block step in the heading direction. */
+        if (m->on_ground) {
+            float hn = sqrtf(vx*vx + vz*vz);
+            if (hn > 1e-3f) {
+                int ax = (int)floorf(m->position[0] + (vx / hn) * (MOB_HALF_W + 0.3f));
+                int az = (int)floorf(m->position[2] + (vz / hn) * (MOB_HALF_W + 0.3f));
+                int fy = (int)floorf(m->position[1]);
+                bool blocked = block_is_solid(world_get_block(s->world, ax, fy, az));
+                bool clear   = world_get_block(s->world, ax, fy + 1, az) == BLOCK_AIR
+                            && world_get_block(s->world, ax, fy + 2, az) == BLOCK_AIR;
+                if (blocked && clear) m->velocity[1] = MOB_JUMP_SPEED;
+            }
+        }
+
+        /* 3. Gravity + move (physics_move substeps collision internally). */
+        m->velocity[1] -= GRAVITY * dt;
+        if (m->velocity[1] < -TERMINAL_VEL) m->velocity[1] = -TERMINAL_VEL;
+        PhysicsResult pr = physics_move(m->position, m->velocity,
+                                        MOB_HALF_W, MOB_HEIGHT, dt,
+                                        /*crouch=*/false, s->world);
+        m->on_ground = pr.on_ground;
+
+        /* 4. Contact damage to the target. */
+        if (tgt && m->attack_cooldown <= 0.0f) {
+            float d = glm_vec3_distance((float*)tgt->position, m->position);
+            if (d <= MOB_ATTACK_RANGE) {
+                for (int c = 0; c < SERVER_MAX_CLIENTS; c++) {
+                    if (s->clients[c].active && s->clients[c].player_id == m->target_player) {
+                        /* contact-damage to the player is wired in Task 7 (server_damage_player) */
+                        break;
+                    }
+                }
+                m->attack_cooldown = MOB_ATTACK_INTERVAL;
+            }
+        }
+
+        /* 5. Despawn if far from every player. */
+        bool near = false;
+        for (int p = 0; p < pcount; p++)
+            if (glm_vec3_distance((float*)players[p].position, m->position) <= MOB_DESPAWN_RANGE)
+                { near = true; break; }
+        if (pcount > 0 && !near) m->active = false;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Server tick                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -341,6 +470,16 @@ static void server_tick(Server* s, int tick_num)
     /* Stream terrain around the anchor so mobs have ground to walk on. */
     if (s->world) {
         world_update(s->world, /*bp=*/NULL, anchor);
+    }
+
+    if (s->world) {
+        server_simulate_mobs(s, 1.0f / SERVER_TICK_RATE);
+
+        s->mob_spawn_timer += 1.0f / SERVER_TICK_RATE;
+        if (s->mob_spawn_timer >= MOB_SPAWN_INTERVAL) {
+            s->mob_spawn_timer = 0.0f;
+            server_try_spawn(s, anchor);
+        }
     }
 
     /* 2. Timeout detection */
@@ -380,6 +519,30 @@ static void server_tick(Server* s, int tick_num)
         if (!s->clients[i].active) continue;
         net_thread_push_outbound(s->net, buf, (int)len, &s->clients[i].addr);
     }
+
+    {
+        NetMobState mobs_wire[MOB_STATE_MAX_WIRE];
+        uint16_t mc = 0;
+        for (int i = 0; i < MOB_MAX && mc < MOB_STATE_MAX_WIRE; i++) {
+            Mob* m = &s->mobs.mobs[i];
+            if (!m->active) continue;
+            mobs_wire[mc].id     = m->id;
+            mobs_wire[mc].type   = (uint8_t)m->type;
+            mobs_wire[mc].x      = m->position[0];
+            mobs_wire[mc].y      = m->position[1];
+            mobs_wire[mc].z      = m->position[2];
+            mobs_wire[mc].yaw    = m->yaw;
+            mobs_wire[mc].health = (uint8_t)(m->health < 0 ? 0 : m->health);
+            mc++;
+        }
+        uint8_t mbuf[NET_MAX_PACKET];
+        PacketHeader mhdr = { .type = PKT_MOB_STATE, .player_id = 0 };
+        size_t mlen = net_write_mob_state(mbuf, &mhdr, mobs_wire, mc);
+        for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+            if (!s->clients[i].active) continue;
+            net_thread_push_outbound(s->net, mbuf, (int)mlen, &s->clients[i].addr);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -406,6 +569,7 @@ void server_run(uint16_t port, int max_clients, int seed)
 
     s.seed  = seed;
     s.world = world_create_headless(seed, 8 /* SERVER_MOB_RENDER_DIST */);
+    mob_set_init(&s.mobs);
 
     printf("[server] listening on port %d (max %d clients)\n", port, s.max_clients);
 
