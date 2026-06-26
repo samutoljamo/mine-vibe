@@ -9,7 +9,7 @@
 /* Forward declarations to avoid circular includes. */
 struct Inventory;
 
-void    hud_build(const struct Inventory* inv, float sw, float sh);
+void    hud_build(const struct Inventory* inv, int player_health, float sw, float sh);
 BlockID hud_selected_block(const struct Inventory* inv);
 
 #endif

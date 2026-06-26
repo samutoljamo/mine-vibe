@@ -129,6 +129,17 @@ static bool apply_agent_command(const AgentCommand *cmd, Player *player,
 
 static RemotePlayerSet* g_remote_players = NULL;
 static ClientMobSet*    g_mobs           = NULL;
+static Player*          g_player_ptr     = NULL;
+static vec3             g_spawn_pos      = {0, 0, 0};
+
+static void on_death(void* user) {
+    (void)user;
+    if (g_player_ptr) {
+        glm_vec3_copy(g_spawn_pos, g_player_ptr->position);
+        glm_vec3_zero(g_player_ptr->velocity);
+        g_player_ptr->on_ground = false;
+    }
+}
 
 static void on_mobs(const ClientMobSnapshot* mobs, int count, double recv_time, void* user)
 {
@@ -252,11 +263,15 @@ int main(int argc, char *argv[])
         client_set_snapshot_cb(&client, on_snapshot, NULL);
         client_set_leave_cb(&client, on_player_leave, NULL);
         client_set_mobs_cb(&client, on_mobs, NULL);
+        client_set_death_cb(&client, on_death, NULL);
         client_connect(&client);
     }
 
     int spawn_y = worldgen_get_height(0, 0, WORLD_SEED) + 4;
-    player_init(&g_player, (vec3){0, (float)spawn_y, 0});
+    vec3 g_spawn = { 0, (float)spawn_y, 0 };
+    player_init(&g_player, g_spawn);
+    g_player_ptr = &g_player;
+    glm_vec3_copy(g_spawn, g_spawn_pos);
     g_player.agent_mode = agent_mode;
     World* world = world_create(&renderer, WORLD_SEED, 32);
 
@@ -299,6 +314,7 @@ int main(int argc, char *argv[])
 
             renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir,
                                 networking ? &client.inventory : NULL,
+                                -1,
                                 NULL,
                                 /* underwater factor */ 0.0f,
                                 false, NULL);
@@ -468,6 +484,7 @@ int main(int argc, char *argv[])
                             rcount > 0 ? rp_states : NULL, rcount,
                             view, proj, sun_dir,
                             networking ? &client.inventory : NULL,
+                            networking ? client.health : -1,
                             &g_target,
                             underwater,
                             dump_frame, dump_path);

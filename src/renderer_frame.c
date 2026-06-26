@@ -20,6 +20,7 @@ void renderer_draw_frame(Renderer* r,
                          const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir,
                          const Inventory* inventory,
+                         int player_health,
                          const RaycastHit* target,
                          float underwater,
                          bool dump_frame, const char* dump_path)
@@ -203,7 +204,7 @@ void renderer_draw_frame(Renderer* r,
     float sw = (float)r->swapchain.extent.width;
     float sh = (float)r->swapchain.extent.height;
     ui_frame_begin(cmd, image_index, r->current_frame, sw, sh);
-    hud_build(inventory, sw, sh);   /* hud_build draws crosshair unconditionally; hotbar only if inv non-null */
+    hud_build(inventory, player_health, sw, sh);   /* hud_build draws crosshair unconditionally; hotbar only if inv non-null */
     /* World-space block outline emission is handled at the top of this
      * function via renderer_outline_emit_block; the draw command is recorded
      * inside the world renderpass above. */

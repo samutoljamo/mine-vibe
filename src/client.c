@@ -1,5 +1,6 @@
 #include "client.h"
 #include "net_thread.h"
+#include "gameplay.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +15,8 @@ static ClientLeaveCb     g_leave_cb   = NULL;
 static void*             g_leave_user = NULL;
 static ClientMobsCb      g_mobs_cb   = NULL;
 static void*             g_mobs_user = NULL;
+static ClientDeathCb     g_death_cb  = NULL;
+static void*             g_death_user = NULL;
 
 void client_set_snapshot_cb(Client* c, ClientSnapshotCb cb, void* user)
 {
@@ -36,6 +39,11 @@ void client_set_mobs_cb(Client* c, ClientMobsCb cb, void* user)
     g_mobs_user = user;
 }
 
+void client_set_death_cb(Client* c, ClientDeathCb cb, void* user)
+{
+    (void)c; g_death_cb = cb; g_death_user = user;
+}
+
 void client_init(Client* c, NetThread* net,
                   const struct sockaddr_in* server_addr)
 {
@@ -45,6 +53,7 @@ void client_init(Client* c, NetThread* net,
     c->server_addr = *server_addr;
     reliable_init(&c->reliable);
     inventory_init(&c->inventory);
+    c->health = PLAYER_MAX_HEALTH;
     c->pending_block_change_count = 0;
 }
 
@@ -245,6 +254,18 @@ int client_poll(Client* c)
                         c->inventory.slots[i].block = b;
                         c->inventory.slots[i].count = ip.slots[i].count;
                     }
+                }
+            }
+
+        } else if (type == PKT_PLAYER_HEALTH && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new && (size_t)msg->len >= 10) {
+                uint8_t hp, fl; net_read_player_health(msg->data, &h, &hp, &fl);
+                c->health = (int16_t)hp;
+                if ((fl & MOB_HEALTH_FLAG_DIED) && g_death_cb) {
+                    c->health = PLAYER_MAX_HEALTH;
+                    g_death_cb(g_death_user);
                 }
             }
 

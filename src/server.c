@@ -66,6 +66,7 @@ static ServerClient* alloc_client(Server* s, const struct sockaddr_in* addr)
         c->last_recv_time = net_time();
         reliable_init(&c->reliable);
         inventory_init(&c->inventory);
+        c->health = PLAYER_MAX_HEALTH;
         return c;
     }
     return NULL;
@@ -343,6 +344,26 @@ static void server_try_spawn(Server* s, vec3 anchor) {
     if (m) fprintf(stderr, "[server] spawned mob %u at (%d,%d)\n", m->id, x, z);
 }
 
+static void server_send_health(Server* s, ServerClient* c, uint8_t flags) {
+    uint8_t buf[16];
+    PacketHeader h = { .type = PKT_PLAYER_HEALTH, .player_id = 0 };
+    uint8_t hp = (uint8_t)(c->health < 0 ? 0 : c->health);
+    size_t len = net_write_player_health(buf, &h, hp, flags);
+    send_reliable(s, c, buf, (uint16_t)len);
+}
+
+void server_damage_player(Server* s, ServerClient* c, int dmg) {
+    if (c->health <= 0) return;
+    c->health = (int16_t)(c->health - dmg);
+    if (c->health <= 0) {
+        c->health = 0;
+        server_send_health(s, c, MOB_HEALTH_FLAG_DIED);
+        c->health = PLAYER_MAX_HEALTH;   /* respawn refill (client teleports) */
+    } else {
+        server_send_health(s, c, 0);
+    }
+}
+
 static void server_simulate_mobs(Server* s, float dt) {
     if (!s->world) return;
 
@@ -416,7 +437,7 @@ static void server_simulate_mobs(Server* s, float dt) {
             if (d <= MOB_ATTACK_RANGE) {
                 for (int c = 0; c < SERVER_MAX_CLIENTS; c++) {
                     if (s->clients[c].active && s->clients[c].player_id == m->target_player) {
-                        /* contact-damage to the player is wired in Task 7 (server_damage_player) */
+                        server_damage_player(s, &s->clients[c], MOB_ATTACK_DAMAGE);
                         break;
                     }
                 }

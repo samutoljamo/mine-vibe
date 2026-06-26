@@ -29,6 +29,9 @@ typedef struct {
     bool               position_received;   /* set true on first PKT_POSITION; gates break/place */
     ReliableChannel    reliable;
     Inventory          inventory;
+    int16_t            health;
+    bool               dead_pending;        /* send death flag once, then refill */
+    double             last_attack_time;    /* rate-limit player→mob attacks (Task 8) */
 } ServerClient;
 
 typedef struct {

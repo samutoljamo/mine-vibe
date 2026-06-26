@@ -37,6 +37,8 @@ typedef struct {
 
     Inventory inventory;
 
+    int16_t health;   /* last server-reported; PLAYER_MAX_HEALTH at init */
+
     /* Block-change events received from the server, drained by main.c each
      * frame to call world_set_block + remesh on the main thread.
      * (Network thread cannot remesh — meshing is not thread-safe with the
@@ -91,6 +93,9 @@ void client_set_leave_cb(Client* c, ClientLeaveCb cb, void* user);
 typedef void (*ClientMobsCb)(const ClientMobSnapshot* mobs, int count,
                              double recv_time, void* user);
 void client_set_mobs_cb(Client* c, ClientMobsCb cb, void* user);
+
+typedef void (*ClientDeathCb)(void* user);
+void client_set_death_cb(Client* c, ClientDeathCb cb, void* user);
 
 void client_disconnect(Client* c);
 

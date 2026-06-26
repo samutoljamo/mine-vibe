@@ -9,4 +9,8 @@
 #define PLAYER_HEIGHT  1.8f
 #define PLAYER_EYE_H   1.62f
 
+#define PLAYER_MAX_HEALTH      20
+#define PLAYER_ATTACK_DAMAGE   5
+#define PLAYER_ATTACK_COOLDOWN 0.25   /* seconds between accepted player hits */
+
 #endif
