@@ -70,4 +70,8 @@ typedef struct {
  * Runs until server.running is set false (or fatal error). */
 void server_run(uint16_t port, int max_clients, int seed);
 
+/* Signal the running server loop (on its own thread in host mode) to exit, so
+ * the main thread can join it cleanly on shutdown. Thread-safe. */
+void server_request_stop(void);
+
 #endif /* SERVER_H */

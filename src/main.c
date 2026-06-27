@@ -824,8 +824,10 @@ int main(int argc, char *argv[])
         net_thread_stop(&net_thread);
         net_socket_close(net_fd);
     }
-    if (host_mode)
+    if (host_mode) {
+        server_request_stop();         /* break the server loop so the join returns */
         pt_thread_join(server_thread); /* takes PT_Thread by value */
+    }
 
     world_destroy(world);
     block_physics_destroy(&physics);

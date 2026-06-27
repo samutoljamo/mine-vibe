@@ -16,6 +16,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
+
+/* Cross-thread shutdown signal. The integrated server runs server_run() on its
+ * own thread (host mode); the main thread calls server_request_stop() before
+ * joining so the loop terminates instead of hanging the join forever. */
+static atomic_bool g_server_stop = false;
+
+void server_request_stop(void) { atomic_store(&g_server_stop, true); }
 
 /* server.c is the first translation unit that pulls in both the inventory
  * model and the inventory wire format, so this is where we assert the
@@ -967,6 +975,7 @@ void server_run(uint16_t port, int max_clients, int seed)
     s.max_clients = max_clients > SERVER_MAX_CLIENTS
                   ? SERVER_MAX_CLIENTS : max_clients;
     s.running     = true;
+    atomic_store(&g_server_stop, false);   /* reset for a clean (re)start */
 
     s.seed  = seed;
 
@@ -1005,7 +1014,7 @@ void server_run(uint16_t port, int max_clients, int seed)
     double accum = 0.0;
     int tick_num = 0;
 
-    while (s.running) {
+    while (s.running && !atomic_load(&g_server_stop)) {
         double now = net_time();
         accum += now - last;
         last   = now;
