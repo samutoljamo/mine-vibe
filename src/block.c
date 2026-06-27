@@ -22,6 +22,10 @@ static const BlockDef block_defs[BLOCK_COUNT] = {
     [BLOCK_COBBLE]  = { "cobble", true, false, false, 15, 0, 13, 13, 13, HARDNESS_HARD },
     [BLOCK_GLASS]   = { "glass",  true, true,  false, 2,  0, 14, 14, 14, HARDNESS_LOW },
     [BLOCK_PATH]    = { "path",   true, false, false, 15, 0, 15, 15, 15, HARDNESS_SOFT },
+    /* Torch: a full-cube emissive block (v1 keeps the mesher generic). Solid
+     * and opaque so it occludes like any block, but seeds block light 14 that
+     * propagates into surrounding air. */
+    [BLOCK_TORCH]   = { "torch",  true, false, false, 15, 14, 18, 18, 18, HARDNESS_INSTANT },
 };
 
 const BlockDef* block_get_def(BlockID id) {
@@ -57,6 +61,7 @@ void block_representative_color(BlockID id, uint8_t* r, uint8_t* g, uint8_t* b) 
         case BLOCK_COBBLE:  *r = 110; *g = 110; *b = 110; break;
         case BLOCK_GLASS:   *r = 198; *g = 226; *b = 232; break;
         case BLOCK_PATH:    *r = 120; *g = 105; *b =  84; break;
+        case BLOCK_TORCH:   *r = 240; *g = 180; *b =  60; break;
         default:            *r = 255; *g =   0; *b = 255; break;   /* magenta = bug */
     }
 }

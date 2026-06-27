@@ -217,9 +217,16 @@ static uint8_t light_byte_at(const Chunk* c, const ChunkNeighbors* nb, int x, in
     }
 }
 
+/* Combined per-cell light used by the renderer: max(sky, block). Sky lives in
+ * the low nibble, emissive block light in the high nibble. Taking the max means
+ * torch-lit areas stay bright at night / underground while daylight still wins
+ * outdoors. */
 static inline uint8_t sky_at(const Chunk* c, const ChunkNeighbors* nb, int x, int y, int z)
 {
-    return light_byte_at(c, nb, x, y, z) & 0x0F;
+    uint8_t packed = light_byte_at(c, nb, x, y, z);
+    uint8_t sky    = packed & 0x0F;
+    uint8_t block  = (packed >> 4) & 0x0F;
+    return sky > block ? sky : block;
 }
 
 /* Smooth corner light: average non-zero sky values from up to 4 cells
