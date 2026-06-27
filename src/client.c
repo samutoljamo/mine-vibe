@@ -2,6 +2,7 @@
 #include "net_thread.h"
 #include "gameplay.h"
 #include "daynight.h"   /* DAY_LENGTH_TICKS for noon init */
+#include "ui/hud.h"     /* hud_set_survival — latch food/air for the HUD */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -55,6 +56,8 @@ void client_init(Client* c, NetThread* net,
     reliable_init(&c->reliable);
     inventory_init(&c->inventory);
     c->health = PLAYER_MAX_HEALTH;
+    c->food   = NET_MAX_FOOD;
+    c->air    = NET_MAX_AIR;
     c->pending_block_change_count = 0;
     /* Start at noon so the sky is daylit before the first PKT_WORLD_STATE. */
     c->world_ticks = DAY_LENGTH_TICKS / 4;
@@ -301,10 +304,18 @@ int client_poll(Client* c)
             PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
             if (is_new && (size_t)msg->len >= 10) {
-                uint8_t hp, fl; net_read_player_health(msg->data, &h, &hp, &fl);
+                uint8_t hp, fl, food, air;
+                net_read_player_health(msg->data, (size_t)msg->len,
+                                       &h, &hp, &fl, &food, &air);
                 c->health = (int16_t)hp;
+                c->food   = food;
+                c->air    = air;
+                hud_set_survival(food, air);
                 if ((fl & MOB_HEALTH_FLAG_DIED) && g_death_cb) {
                     c->health = PLAYER_MAX_HEALTH;
+                    c->food   = NET_MAX_FOOD;
+                    c->air    = NET_MAX_AIR;
+                    hud_set_survival(NET_MAX_FOOD, NET_MAX_AIR);
                     g_death_cb(g_death_user);
                 }
             }

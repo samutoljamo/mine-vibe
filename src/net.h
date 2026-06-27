@@ -34,7 +34,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 2
+#define NET_PROTOCOL_VERSION 3
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -360,6 +360,11 @@ static inline void net_read_inventory(const uint8_t* buf, InventoryPacket* p)
 /* ------------------------------------------------------------------ */
 #define MOB_STATE_ENTRY_SIZE 20
 #define MOB_HEALTH_FLAG_DIED 0x01
+/* PKT_PLAYER_HEALTH v3 appends [food u8][air u8] after [health u8][flags u8].
+ * food: 0..20 hunger drumsticks. air: 0..20 oxygen bubbles. Older 10-byte
+ * readers still parse health+flags; the new fields sit past their length. */
+#define NET_MAX_FOOD         20
+#define NET_MAX_AIR          20
 
 typedef struct {
     uint16_t id;
@@ -417,20 +422,34 @@ static inline void net_read_mob_attack(const uint8_t* buf, PacketHeader* hdr,
 }
 
 static inline size_t net_write_player_health(uint8_t* buf, const PacketHeader* hdr,
-                                             uint8_t health, uint8_t flags) {
+                                             uint8_t health, uint8_t flags,
+                                             uint8_t food, uint8_t air) {
     size_t off = 0;
     net_write_header(buf, &off, hdr);
     net_write_u8(buf, &off, health);
     net_write_u8(buf, &off, flags);
+    net_write_u8(buf, &off, food);
+    net_write_u8(buf, &off, air);
     return off;
 }
 
-static inline void net_read_player_health(const uint8_t* buf, PacketHeader* hdr,
-                                          uint8_t* health, uint8_t* flags) {
+/* Tolerates legacy 10-byte packets: food/air default to NET_MAX_* when absent.
+ * `len` is the full wire length so the reader knows whether v3 fields exist. */
+static inline void net_read_player_health(const uint8_t* buf, size_t len,
+                                          PacketHeader* hdr,
+                                          uint8_t* health, uint8_t* flags,
+                                          uint8_t* food, uint8_t* air) {
     size_t off = 0;
     net_read_header(buf, &off, hdr);
     *health = net_read_u8(buf, &off);
     *flags  = net_read_u8(buf, &off);
+    if (len >= HEADER_WIRE_SIZE + 4) {
+        *food = net_read_u8(buf, &off);
+        *air  = net_read_u8(buf, &off);
+    } else {
+        *food = NET_MAX_FOOD;
+        *air  = NET_MAX_AIR;
+    }
 }
 
 /* ------------------------------------------------------------------ */

@@ -14,6 +14,7 @@
 #include "world.h"
 #include "world_persist.h"
 #include "mob.h"
+#include "survival.h"
 
 #define SERVER_MAX_CLIENTS  32
 #define SERVER_TICK_RATE    20     /* Hz */
@@ -34,6 +35,15 @@ typedef struct {
     Inventory          inventory;
     int16_t            health;
     double             last_attack_time;    /* rate-limit player→mob attacks (Task 8) */
+
+    /* --- Survival mechanics (hunger, environment, death/respawn) --- */
+    SurvivalState      survival;
+    bool               prev_pos_valid;      /* have a previous position to diff */
+    float              prev_x, prev_y, prev_z;
+    float              fall_start_y;        /* y where the current fall began    */
+    bool               falling;             /* tracking a descent for fall dmg   */
+    float              respawn_grace;       /* seconds of post-respawn invuln     */
+    bool               needs_health_sync;   /* hunger/health changed; push packet */
 } ServerClient;
 
 typedef struct {

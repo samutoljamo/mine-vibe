@@ -13,6 +13,19 @@
 _Static_assert(HUD_SLOT_COUNT == INVENTORY_SLOTS,
     "HUD slot count must match Inventory slot count");
 
+/* Latest server-reported survival stats. Latched by hud_set_survival because
+ * hud_build's signature is owned by the (non-editable) renderer caller and
+ * can't grow new parameters. Default to full so the bars look right before the
+ * first PKT_PLAYER_HEALTH arrives. */
+static int g_hud_food = 20;
+static int g_hud_air  = 20;
+
+void hud_set_survival(int food, int air)
+{
+    g_hud_food = food;
+    g_hud_air  = air;
+}
+
 /* hud_build — accepts a NULL `inv`. The crosshair is always drawn (e.g., in
  * single-player / pre-connect runs before the first PKT_INVENTORY arrives);
  * the hotbar slots are only drawn when `inv` is non-NULL. */
@@ -80,6 +93,44 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
             else if (hp_here == 1) ui_rect(x, hy0, HSZ * 0.5f, HSZ, half);
         }
         (void)half;
+
+        /* Hunger bar — 10 drumsticks = 20 food, mirrored on the right edge of
+         * the heart row, filling from the right inward (vanilla layout). */
+        {
+            int drum = 10;
+            float total_d = drum * HSZ + (drum - 1) * HGAP;
+            float dx0 = (sw + total) * 0.5f - total_d;   /* right of centre */
+            if (dx0 < hx0 + total + HGAP) dx0 = hx0 + total + HGAP;
+            vec4 dfull  = {0.55f, 0.35f, 0.10f, 1.0f};   /* drumstick brown */
+            vec4 dhalf  = {0.55f, 0.35f, 0.10f, 1.0f};
+            vec4 dempty = {0.20f, 0.20f, 0.20f, 0.6f};
+            for (int i = 0; i < drum; i++) {
+                /* Fill from the right: rightmost drumstick = first food. */
+                float x = dx0 + (drum - 1 - i) * (HSZ + HGAP);
+                int f_here = g_hud_food - i * 2;
+                ui_rect(x, hy0, HSZ, HSZ, dempty);
+                if (f_here >= 2)      ui_rect(x, hy0, HSZ, HSZ, dfull);
+                else if (f_here == 1) ui_rect(x + HSZ * 0.5f, hy0, HSZ * 0.5f, HSZ, dhalf);
+            }
+            (void)dhalf;
+        }
+
+        /* Oxygen bubbles — only while underwater (air < full). 10 bubbles = 20.
+         * Drawn one row above the hunger bar, filling from the right. */
+        if (g_hud_air < 20) {
+            int bub = 10;
+            float total_b = bub * HSZ + (bub - 1) * HGAP;
+            float bx0 = (sw + total) * 0.5f - total_b;
+            float by0 = hy0 - HSZ - 4.0f;
+            vec4 bfull = {0.30f, 0.55f, 0.95f, 1.0f};
+            for (int i = 0; i < bub; i++) {
+                int a_here = g_hud_air - i * 2;
+                if (a_here >= 1) {
+                    float x = bx0 + (bub - 1 - i) * (HSZ + HGAP);
+                    ui_rect(x, by0, HSZ, HSZ, bfull);
+                }
+            }
+        }
     }
 }
 

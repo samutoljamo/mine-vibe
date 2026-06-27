@@ -38,6 +38,8 @@ typedef struct {
     Inventory inventory;
 
     int16_t health;   /* last server-reported; PLAYER_MAX_HEALTH at init */
+    uint8_t food;     /* 0..20 hunger, last server-reported (v3 health pkt) */
+    uint8_t air;      /* 0..20 oxygen bubbles, last server-reported         */
 
     /* Day/night clock, server-authoritative. world_ticks is the last value
      * received in a PKT_WORLD_STATE; world_ticks_recv_time is when (monotonic

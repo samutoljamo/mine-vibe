@@ -91,11 +91,17 @@ static void test_mob_attack_roundtrip(void) {
 static void test_player_health_roundtrip(void) {
     uint8_t buf[64];
     PacketHeader hdr = { .type = PKT_PLAYER_HEALTH, .player_id = 0 };
-    size_t len = net_write_player_health(buf, &hdr, 12, MOB_HEALTH_FLAG_DIED);
-    assert(len == 10);
-    PacketHeader h; uint8_t hp, fl;
-    net_read_player_health(buf, &h, &hp, &fl);
+    size_t len = net_write_player_health(buf, &hdr, 12, MOB_HEALTH_FLAG_DIED, 17, 8);
+    assert(len == 12);
+    PacketHeader h; uint8_t hp, fl, food, air;
+    net_read_player_health(buf, len, &h, &hp, &fl, &food, &air);
     assert(h.type == PKT_PLAYER_HEALTH && hp == 12 && fl == MOB_HEALTH_FLAG_DIED);
+    assert(food == 17 && air == 8);
+
+    /* Legacy 10-byte packet: food/air default to full. */
+    PacketHeader h2; uint8_t hp2, fl2, food2, air2;
+    net_read_player_health(buf, 10, &h2, &hp2, &fl2, &food2, &air2);
+    assert(hp2 == 12 && food2 == NET_MAX_FOOD && air2 == NET_MAX_AIR);
     printf("PASS: player_health_roundtrip\n");
 }
 
