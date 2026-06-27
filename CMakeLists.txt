@@ -143,6 +143,7 @@ add_executable(minecraft
     src/chunk_map.c
     src/worldgen.c
     src/ore.c
+    src/biome.c
     src/daynight.c
     src/village.c
     src/mesher.c
@@ -355,6 +356,22 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME ore COMMAND test_ore)
 
+# Biome classification (pure, no Vulkan/GLFW required). Pulls in FastNoiseLite
+# (header-only) for its noise fields, hence the include dir.
+add_executable(test_biome tests/test_biome.c src/biome.c src/block.c)
+target_include_directories(test_biome PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${fastnoiselite_SOURCE_DIR}/C
+)
+# This test links biome.c without worldgen.c, so it must generate the
+# FastNoiseLite implementation itself. In the main build worldgen.c provides
+# FNL_IMPL, hence biome.c never defines it there (avoids duplicate symbols).
+target_compile_definitions(test_biome PRIVATE FNL_IMPL)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_biome PRIVATE m)
+endif()
+add_test(NAME biome COMMAND test_biome)
+
 # Day/night cycle math (pure, no Vulkan/GLFW required)
 add_executable(test_daynight tests/test_daynight.c src/daynight.c)
 target_include_directories(test_daynight PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -371,6 +388,7 @@ add_executable(test_village
     src/village.c
     src/worldgen.c
     src/ore.c
+    src/biome.c
     src/chunk.c
     src/block.c
 )
@@ -410,7 +428,7 @@ add_test(NAME world_persist COMMAND test_world_persist)
 
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
-          test_inventory test_raycast test_ore test_daynight test_village
+          test_inventory test_raycast test_ore test_biome test_daynight test_village
           test_world_persist)
     msvc_enable_c11_atomics(${t})
 endforeach()

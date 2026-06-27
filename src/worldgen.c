@@ -5,6 +5,7 @@
 #include "chunk.h"
 #include "ore.h"
 #include "village.h"
+#include "biome.h"
 #include <stdlib.h>
 #include <math.h>
 
@@ -184,13 +185,21 @@ void worldgen_generate(Chunk* chunk, int seed)
     int base_x = chunk->cx * CHUNK_X;
     int base_z = chunk->cz * CHUNK_Z;
 
-    /* Compute height map using 3-layer noise */
+    /* Compute height map using 3-layer noise, then nudge each column by its
+     * biome's height bias (mountains rise, deserts dip). Biome is a pure
+     * function of (wx, wz, seed) so the result is stable across chunk seams. */
     int height_map[CHUNK_X][CHUNK_Z];
+    Biome biome_map[CHUNK_X][CHUNK_Z];
     for (int x = 0; x < CHUNK_X; x++) {
         for (int z = 0; z < CHUNK_Z; z++) {
             float wx = (float)(base_x + x);
             float wz = (float)(base_z + z);
-            height_map[x][z] = compute_height(&terrain, wx, wz);
+            Biome b = biome_at(base_x + x, base_z + z, seed);
+            biome_map[x][z] = b;
+            int h = compute_height(&terrain, wx, wz) + biome_height_bias(b);
+            if (h < 1) h = 1;
+            if (h >= CHUNK_Y) h = CHUNK_Y - 1;
+            height_map[x][z] = h;
         }
     }
 
@@ -199,6 +208,10 @@ void worldgen_generate(Chunk* chunk, int seed)
         for (int z = 0; z < CHUNK_Z; z++) {
             int h = height_map[x][z];
             bool is_beach = (h <= SEA_LEVEL + 1 && h >= SEA_LEVEL - 2);
+            /* Biome surface skin (grass / sand / stone-or-snow). Beaches keep
+             * their sand shoreline regardless of biome. */
+            BlockID surf = biome_surface_block(biome_map[x][z], h);
+            BlockID subsurf = (surf == BLOCK_GRASS) ? BLOCK_DIRT : surf;
 
             for (int y = 0; y < CHUNK_Y; y++) {
                 BlockID block = BLOCK_AIR;
@@ -212,9 +225,9 @@ void worldgen_generate(Chunk* chunk, int seed)
                 } else if (y < h - 3) {
                     block = BLOCK_STONE;
                 } else if (y < h) {
-                    block = is_beach ? BLOCK_SAND : BLOCK_DIRT;
+                    block = is_beach ? BLOCK_SAND : subsurf;
                 } else if (y == h) {
-                    block = is_beach ? BLOCK_SAND : BLOCK_GRASS;
+                    block = is_beach ? BLOCK_SAND : surf;
                 } else if (y <= SEA_LEVEL && y > h) {
                     block = BLOCK_WATER;
                 }
@@ -247,15 +260,19 @@ void worldgen_generate(Chunk* chunk, int seed)
         }
     }
 
-    /* Place trees: ~2% chance on grass blocks, constrained to [2..13] local X/Z */
+    /* Place trees: per-biome density on grass blocks, constrained to [2..13]
+     * local X/Z. Desert/mountain biomes report density 0 (and lack grass), so
+     * they stay bare; forest is dense, plains sparse. */
     for (int x = 2; x <= 13; x++) {
         for (int z = 2; z <= 13; z++) {
             int h = height_map[x][z];
             if (h < SEA_LEVEL) continue;
             if (chunk_get_block(chunk, x, h, z) != BLOCK_GRASS) continue;
 
+            int tree_chance = (int)(biome_tree_density(biome_map[x][z]) * 100.0f);
+            if (tree_chance <= 0) continue;
             int r = hash_pos(base_x + x, base_z + z, seed + 9999);
-            if ((r % 100) >= 2) continue; /* ~2% chance */
+            if ((r % 100) >= tree_chance) continue;
 
             /* Tree trunk height 4-6 */
             int trunk_h = 4 + (hash_pos(base_x + x, base_z + z, seed + 77) % 3);
