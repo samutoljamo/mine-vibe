@@ -689,6 +689,72 @@ void ui_set_input(float mx, float my, bool pressed, bool released)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Mouse input handler / hit-testing                                  */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int        id;
+    float      x, y, w, h;
+    UiClickFn  on_click;
+    void*      user;
+} UiElement;
+
+static UiElement g_elements[UI_MAX_ELEMENTS];
+static int       g_element_count = 0;
+static int       g_hovered = UI_ELEMENT_NONE;
+static int       g_clicked = UI_ELEMENT_NONE;
+
+void ui_input_begin(void)
+{
+    g_element_count = 0;
+    g_hovered = UI_ELEMENT_NONE;
+    g_clicked = UI_ELEMENT_NONE;
+}
+
+void ui_add_element_cb(int id, float x, float y, float w, float h,
+                       UiClickFn on_click, void* user)
+{
+    if (g_element_count >= UI_MAX_ELEMENTS) return;
+    g_elements[g_element_count++] = (UiElement){
+        .id = id, .x = x, .y = y, .w = w, .h = h,
+        .on_click = on_click, .user = user,
+    };
+}
+
+void ui_add_element(int id, float x, float y, float w, float h)
+{
+    ui_add_element_cb(id, x, y, w, h, NULL, NULL);
+}
+
+void ui_handle_mouse(float x, float y, bool clicked)
+{
+    g_hovered = UI_ELEMENT_NONE;
+    g_clicked = UI_ELEMENT_NONE;
+
+    /* Iterate back-to-front: last-added element is topmost on overlap. */
+    int hit = -1;
+    for (int i = g_element_count - 1; i >= 0; i--) {
+        const UiElement* e = &g_elements[i];
+        if (x >= e->x && x < e->x + e->w &&
+            y >= e->y && y < e->y + e->h) {
+            hit = i;
+            break;
+        }
+    }
+    if (hit < 0) return;
+
+    const UiElement* e = &g_elements[hit];
+    g_hovered = e->id;
+    if (clicked) {
+        g_clicked = e->id;
+        if (e->on_click) e->on_click(e->id, e->user);
+    }
+}
+
+int ui_hovered_element(void) { return g_hovered; }
+int ui_clicked_element(void) { return g_clicked; }
+
+/* ------------------------------------------------------------------ */
 /*  Draw primitives                                                    */
 /* ------------------------------------------------------------------ */
 
