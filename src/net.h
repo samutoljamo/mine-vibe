@@ -29,6 +29,19 @@ typedef enum {
 #define NET_DEFAULT_PORT 25565
 #define NET_MAX_PACKET   1400  /* safe below typical MTU */
 
+/* Wire protocol version. Bump whenever any on-the-wire packet format changes
+ * so mismatched client/server builds are rejected at connect time instead of
+ * silently misparsing each other's bytes. A client that sends a different
+ * version (or none — legacy header-only connect, read as 0) is refused with
+ * NET_DISCONNECT_VERSION_MISMATCH. */
+#define NET_PROTOCOL_VERSION 1
+
+typedef enum {
+    NET_DISCONNECT_NORMAL           = 0,
+    NET_DISCONNECT_VERSION_MISMATCH = 1,
+    NET_DISCONNECT_SERVER_FULL      = 2,
+} NetDisconnectReason;
+
 /* ------------------------------------------------------------------ */
 /*  Wire serialization helpers — write/read little-endian             */
 /* ------------------------------------------------------------------ */
@@ -423,6 +436,39 @@ static inline void net_read_player_health(const uint8_t* buf, PacketHeader* hdr,
 /* ------------------------------------------------------------------ */
 /* PKT_CONNECT_ACCEPT carries assigned player_id in header.player_id  */
 /* PKT_PLAYER_JOIN/LEAVE carry the affected player_id in player_id    */
+
+/* PKT_CONNECT_REQUEST carries a u16 protocol version after the header so the
+ * server can reject incompatible clients. PKT_DISCONNECT carries a u8 reason
+ * (NetDisconnectReason). Both readers tolerate legacy header-only packets:
+ * a missing version reads as 0 (refused), a missing reason as NORMAL. */
+
+static inline void net_write_connect_request(uint8_t* buf, size_t* off,
+                                             const PacketHeader* h)
+{
+    net_write_header(buf, off, h);
+    net_write_u16(buf, off, (uint16_t)NET_PROTOCOL_VERSION);
+}
+
+static inline uint16_t net_read_connect_version(const uint8_t* buf, size_t len)
+{
+    if (len < HEADER_WIRE_SIZE + 2) return 0;  /* legacy / malformed */
+    size_t off = HEADER_WIRE_SIZE;
+    return net_read_u16(buf, &off);
+}
+
+static inline void net_write_disconnect(uint8_t* buf, size_t* off,
+                                        const PacketHeader* h, uint8_t reason)
+{
+    net_write_header(buf, off, h);
+    net_write_u8(buf, off, reason);
+}
+
+static inline uint8_t net_read_disconnect_reason(const uint8_t* buf, size_t len)
+{
+    if (len < HEADER_WIRE_SIZE + 1) return NET_DISCONNECT_NORMAL;
+    size_t off = HEADER_WIRE_SIZE;
+    return net_read_u8(buf, &off);
+}
 
 /* ------------------------------------------------------------------ */
 /*  UDP socket helpers                                                 */

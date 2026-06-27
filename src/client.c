@@ -61,11 +61,11 @@ void client_destroy(Client* c) { (void)c; }
 
 void client_connect(Client* c)
 {
-    uint8_t buf[HEADER_WIRE_SIZE];
+    uint8_t buf[HEADER_WIRE_SIZE + 2];
     size_t off = 0;
     PacketHeader h = { .type = PKT_CONNECT_REQUEST, .player_id = 0 };
     reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
-    net_write_header(buf, &off, &h);
+    net_write_connect_request(buf, &off, &h);
     reliable_send(&c->reliable, c->net->fd, &c->server_addr,
                    buf, (uint16_t)off);
     c->state            = CLIENT_CONNECTING;
@@ -280,7 +280,20 @@ int client_poll(Client* c)
             }
 
         } else if (type == PKT_DISCONNECT) {
-            printf("[client] disconnected by server\n");
+            uint8_t reason = net_read_disconnect_reason(msg->data, (size_t)msg->len);
+            switch (reason) {
+                case NET_DISCONNECT_VERSION_MISMATCH:
+                    fprintf(stderr, "[client] rejected: protocol version mismatch "
+                                    "(client v%d). Update client/server to match.\n",
+                            NET_PROTOCOL_VERSION);
+                    break;
+                case NET_DISCONNECT_SERVER_FULL:
+                    fprintf(stderr, "[client] rejected: server full\n");
+                    break;
+                default:
+                    printf("[client] disconnected by server\n");
+                    break;
+            }
             c->state = CLIENT_DISCONNECTED;
         }
         free(msg);

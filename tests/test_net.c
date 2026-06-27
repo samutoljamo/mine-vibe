@@ -99,6 +99,43 @@ static void test_player_health_roundtrip(void) {
     printf("PASS: player_health_roundtrip\n");
 }
 
+static void test_connect_request_carries_version(void) {
+    uint8_t buf[64];
+    size_t off = 0;
+    PacketHeader hdr = { .type = PKT_CONNECT_REQUEST, .player_id = 0 };
+    net_write_connect_request(buf, &off, &hdr);
+    assert(off == HEADER_WIRE_SIZE + 2);
+
+    PacketHeader h; size_t roff = 0; net_read_header(buf, &roff, &h);
+    assert(h.type == PKT_CONNECT_REQUEST);
+    assert(net_read_connect_version(buf, off) == NET_PROTOCOL_VERSION);
+    printf("PASS: connect_request_carries_version\n");
+}
+
+static void test_legacy_connect_request_reads_version_zero(void) {
+    /* An old header-only connect request (no version field) must read as
+     * version 0 so the server can reject it rather than misparse. */
+    uint8_t buf[HEADER_WIRE_SIZE];
+    size_t off = 0;
+    PacketHeader hdr = { .type = PKT_CONNECT_REQUEST };
+    net_write_header(buf, &off, &hdr);
+    assert(net_read_connect_version(buf, off) == 0);
+    printf("PASS: legacy_connect_request_reads_version_zero\n");
+}
+
+static void test_disconnect_reason_roundtrip(void) {
+    uint8_t buf[64];
+    size_t off = 0;
+    PacketHeader hdr = { .type = PKT_DISCONNECT, .player_id = 0 };
+    net_write_disconnect(buf, &off, &hdr, NET_DISCONNECT_VERSION_MISMATCH);
+    assert(off == HEADER_WIRE_SIZE + 1);
+    assert(net_read_disconnect_reason(buf, off) == NET_DISCONNECT_VERSION_MISMATCH);
+    /* Legacy header-only disconnect reads as NORMAL. */
+    size_t loff = 0; net_write_header(buf, &loff, &hdr);
+    assert(net_read_disconnect_reason(buf, loff) == NET_DISCONNECT_NORMAL);
+    printf("PASS: disconnect_reason_roundtrip\n");
+}
+
 int main(void)
 {
     test_serialize_position();
@@ -106,6 +143,9 @@ int main(void)
     test_mob_state_roundtrip();
     test_mob_attack_roundtrip();
     test_player_health_roundtrip();
+    test_connect_request_carries_version();
+    test_legacy_connect_request_reads_version_zero();
+    test_disconnect_reason_roundtrip();
     printf("All net tests passed.\n");
     return 0;
 }

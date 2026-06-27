@@ -132,16 +132,38 @@ static void disconnect_client(Server* s, ServerClient* c)
 /*  Packet handling                                                    */
 /* ------------------------------------------------------------------ */
 
-static void handle_connect_request(Server* s, const struct sockaddr_in* addr)
+/* Best-effort unreliable disconnect to an address we have no client for yet
+ * (used to reject a connect before allocating a slot). */
+static void reject_connect(Server* s, const struct sockaddr_in* addr,
+                           uint8_t reason)
+{
+    uint8_t buf[HEADER_WIRE_SIZE + 1];
+    size_t off = 0;
+    PacketHeader h = { .type = PKT_DISCONNECT, .player_id = 0 };
+    net_write_disconnect(buf, &off, &h, reason);
+    net_send(s->net->fd, buf, (int)off, addr);
+}
+
+static void handle_connect_request(Server* s, const struct sockaddr_in* addr,
+                                   const uint8_t* data, int len)
 {
     if (find_client_by_addr(s, addr)) return;
+
+    uint16_t version = net_read_connect_version(data, (size_t)len);
+    if (version != NET_PROTOCOL_VERSION) {
+        printf("[server] connection refused: protocol v%u != server v%d\n",
+               version, NET_PROTOCOL_VERSION);
+        reject_connect(s, addr, NET_DISCONNECT_VERSION_MISMATCH);
+        return;
+    }
 
     ServerClient* c = alloc_client(s, addr);
     if (!c) {
         printf("[server] connection refused: server full\n");
+        reject_connect(s, addr, NET_DISCONNECT_SERVER_FULL);
         return;
     }
-    printf("[server] player %d connected\n", c->player_id);
+    printf("[server] player %d connected (protocol v%u)\n", c->player_id, version);
 
     uint8_t buf[HEADER_WIRE_SIZE];
     size_t off = 0;
@@ -497,7 +519,7 @@ static void server_tick(Server* s, int tick_num)
         ServerClient* c = find_client_by_addr(s, &msg->addr);
 
         if (type == PKT_CONNECT_REQUEST) {
-            handle_connect_request(s, &msg->addr);
+            handle_connect_request(s, &msg->addr, msg->data, msg->len);
         } else if (c) {
             if      (type == PKT_POSITION)     handle_position(s, c, msg->data, msg->len);
             else if (type == PKT_DISCONNECT)   disconnect_client(s, c);
