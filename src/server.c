@@ -177,6 +177,19 @@ static void handle_position(Server* s, ServerClient* c,
 /*  Block edit helpers                                                 */
 /* ------------------------------------------------------------------ */
 
+/* Persist a block edit: record it in the overlay (so it survives restarts and
+ * is replayed onto newly generated chunks) and apply it to the live headless
+ * world (so mob terrain/collision stays consistent). */
+static void server_persist_edit(Server* s, int x, int y, int z, BlockID b)
+{
+    if (s->overlay_active) {
+        overlay_record(&s->overlay, x, y, z, b);
+        s->overlay_dirty = true;
+    }
+    if (s->world)
+        world_set_block(s->world, x, y, z, b);
+}
+
 static void server_broadcast_block_change(Server* s, int x, int y, int z, BlockID b)
 {
     BlockChangePacket p = {
@@ -242,6 +255,7 @@ static void handle_block_break(Server* s, ServerClient* c,
         /* No room — refuse the break. Don't broadcast, don't send inventory. */
         return;
     }
+    server_persist_edit(s, p.x, p.y, p.z, BLOCK_AIR);
     server_broadcast_block_change(s, p.x, p.y, p.z, BLOCK_AIR);
     server_send_inventory(s, c);
 }
@@ -293,6 +307,7 @@ static void handle_block_place(Server* s, ServerClient* c,
     BlockID b = c->inventory.slots[p.slot].block;
     if (b == BLOCK_AIR || b >= BLOCK_COUNT) return;   /* should be impossible, but don't broadcast garbage */
     inventory_consume(&c->inventory, p.slot);
+    server_persist_edit(s, tx, ty, tz, b);
     server_broadcast_block_change(s, tx, ty, tz, b);
     server_send_inventory(s, c);
 }
@@ -482,6 +497,27 @@ static void server_simulate_mobs(Server* s, float dt) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Persistence flush                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Write the overlay to disk if there are unsaved edits. overlay_save
+ * snapshots under the overlay's lock then does the file write outside it,
+ * so this is safe to call from the tick loop. */
+static void server_flush_world(Server* s, bool force)
+{
+    if (!s->overlay_active) return;
+    if (!force && !s->overlay_dirty) return;
+    if (overlay_save(&s->overlay, s->save_path)) {
+        s->overlay_dirty = false;
+        fprintf(stderr, "[server] world saved (%zu edits) -> %s\n",
+                overlay_count(&s->overlay), s->save_path);
+    } else {
+        fprintf(stderr, "[server] WARNING: failed to save world to %s\n",
+                s->save_path);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Server tick                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -529,6 +565,13 @@ static void server_tick(Server* s, int tick_num)
             s->mob_spawn_timer = 0.0f;
             server_try_spawn(s, anchor);
         }
+    }
+
+    /* Periodic world flush. */
+    s->save_timer += 1.0f / SERVER_TICK_RATE;
+    if (s->save_timer >= SERVER_SAVE_INTERVAL) {
+        s->save_timer = 0.0f;
+        server_flush_world(s, /*force=*/false);
     }
 
     /* 2. Timeout detection */
@@ -617,7 +660,29 @@ void server_run(uint16_t port, int max_clients, int seed)
     s.running     = true;
 
     s.seed  = seed;
+
+    /* ---- World persistence: load (or start) the block-delta overlay ---- */
+    snprintf(s.save_path, sizeof(s.save_path), "%s", SERVER_SAVE_FILE);
+    s.overlay_active = true;
+    if (overlay_load(&s.overlay, s.save_path)) {
+        if (overlay_seed(&s.overlay) != seed) {
+            /* Saved world is for a different seed — keep the saved edits but
+             * warn; replaying deltas from another seed is still well-defined
+             * (they overwrite by coordinate), just possibly surprising. */
+            fprintf(stderr, "[server] WARNING: %s seed %d != requested seed %d; "
+                            "using saved edits anyway\n",
+                    s.save_path, overlay_seed(&s.overlay), seed);
+        }
+        fprintf(stderr, "[server] loaded world: %zu persisted edits from %s\n",
+                overlay_count(&s.overlay), s.save_path);
+    } else {
+        overlay_init(&s.overlay, seed);
+        fprintf(stderr, "[server] no saved world at %s; starting fresh\n",
+                s.save_path);
+    }
+
     s.world = world_create_headless(seed, 8 /* SERVER_MOB_RENDER_DIST */);
+    world_set_overlay(s.world, &s.overlay);
     mob_set_init(&s.mobs);
 
     printf("[server] listening on port %d (max %d clients)\n", port, s.max_clients);
@@ -641,7 +706,14 @@ void server_run(uint16_t port, int max_clients, int seed)
         pt_sleep_ms(1);
     }
 
-    if (s.world) world_destroy(s.world);
+    /* Final save before teardown. Detach the overlay from the world first so
+     * no worker can read it while we free it (workers stop in world_destroy). */
+    server_flush_world(&s, /*force=*/true);
+    if (s.world) {
+        world_set_overlay(s.world, NULL);
+        world_destroy(s.world);
+    }
+    if (s.overlay_active) overlay_free(&s.overlay);
     net_thread_stop(&nt);
     net_socket_close(fd);
 }
