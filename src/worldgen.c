@@ -4,6 +4,7 @@
 #include "worldgen.h"
 #include "chunk.h"
 #include "ore.h"
+#include "village.h"
 #include <stdlib.h>
 #include <math.h>
 
@@ -284,6 +285,10 @@ void worldgen_generate(Chunk* chunk, int seed)
             }
         }
     }
+
+    /* Procedural villages: emit the slice of any village intersecting this
+     * chunk (pure of seed, so cross-chunk seams line up). See src/village.c. */
+    village_generate(chunk, seed, height_map);
 
     atomic_store(&chunk->state, CHUNK_GENERATED);
 }
