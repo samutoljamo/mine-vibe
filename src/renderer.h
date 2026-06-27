@@ -142,6 +142,21 @@ typedef struct Renderer {
     VmaAllocation    outline_vb_alloc[MAX_FRAMES_IN_FLIGHT];
     void*            outline_vb_mapped[MAX_FRAMES_IN_FLIGHT];
     uint32_t         outline_vert_count;   /* reset to 0 per frame; one block emits 24 verts */
+
+    /* Per-frame perf counters, written by renderer_draw_frame each frame and
+     * read back by the caller for the stats overlay. visible_chunks counts the
+     * chunk meshes that survived frustum culling and were drawn; draw_calls
+     * counts every draw command (chunks, players, outline) issued this frame. */
+    uint32_t         stat_visible_chunks;
+    uint32_t         stat_draw_calls;
+
+    /* Stats overlay control, set by the caller (main.c) before each draw.
+     * When show_stats is true and stats_overlay is non-NULL, the per-frame
+     * counters above are mirrored into it and hud_draw_stats() renders the
+     * overlay in the UI pass. Kept out of the draw-frame signature so the call
+     * site stays merge-friendly. */
+    bool             show_stats;
+    PerfStats*       stats_overlay;
 } Renderer;
 
 bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings);

@@ -87,3 +87,40 @@ BlockID hud_selected_block(const Inventory* inv)
 {
     return inv->slots[inv->selected].block;
 }
+
+/* Performance overlay — top-left stack of small text lines on a dark panel.
+ * Uses the pure PerfStats helpers (see hud.h) for the FPS/frametime math. */
+void hud_draw_stats(const PerfStats* p, float sw, float sh)
+{
+    (void)sw; (void)sh;
+    if (!p) return;
+
+    const float FS    = 16.0f;   /* font size  */
+    const float LINE  = 18.0f;   /* line height */
+    const float PAD   = 6.0f;
+    const float X0    = 8.0f;
+    const float Y0    = 8.0f;
+
+    char l0[48], l1[48], l2[48];
+    snprintf(l0, sizeof(l0), "FPS %.0f  (%.2f ms)",
+             perf_stats_avg_fps(p), perf_stats_avg_frametime_ms(p));
+    snprintf(l1, sizeof(l1), "Chunks %u", p->visible_chunks);
+    snprintf(l2, sizeof(l2), "Draws %u", p->draw_calls);
+
+    const char* lines[3] = { l0, l1, l2 };
+    int nlines = 3;
+
+    /* Panel sized to the widest line. */
+    float maxw = 0.0f;
+    for (int i = 0; i < nlines; i++) {
+        float w = ui_text_width(lines[i], FS);
+        if (w > maxw) maxw = w;
+    }
+    vec4 panel = {0.0f, 0.0f, 0.0f, 0.5f};
+    ui_rect(X0 - PAD, Y0 - PAD,
+            maxw + 2 * PAD, nlines * LINE + 2 * PAD - (LINE - FS), panel);
+
+    vec4 fg = {1.0f, 1.0f, 0.4f, 1.0f};
+    for (int i = 0; i < nlines; i++)
+        ui_text(X0, Y0 + i * LINE, FS, lines[i], fg);
+}
