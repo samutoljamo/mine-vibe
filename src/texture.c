@@ -272,10 +272,14 @@ bool texture_create_atlas(Renderer* r)
     vkGetPhysicalDeviceProperties(r->physical_device, &props);
     VkPhysicalDeviceFeatures feats;
     vkGetPhysicalDeviceFeatures(r->physical_device, &feats);
-    float max_aniso = feats.samplerAnisotropy
-                        ? (props.limits.maxSamplerAnisotropy > 16.0f
-                              ? 16.0f : props.limits.maxSamplerAnisotropy)
-                        : 1.0f;
+    /* Requested anisotropy comes from RenderSettings.aniso (default 4x for
+     * iGPUs), clamped to the device's maxSamplerAnisotropy. A request of 1x
+     * (or no device support) disables anisotropy outright. */
+    float requested = r->max_anisotropy > 0.0f ? r->max_anisotropy : 1.0f;
+    if (requested > props.limits.maxSamplerAnisotropy)
+        requested = props.limits.maxSamplerAnisotropy;
+    bool aniso_on = feats.samplerAnisotropy && requested > 1.0f;
+    float max_aniso = aniso_on ? requested : 1.0f;
 
     VkSamplerCreateInfo sampler_ci = {
         .sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -284,7 +288,7 @@ bool texture_create_atlas(Renderer* r)
         .addressModeU     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeV     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeW     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .anisotropyEnable = feats.samplerAnisotropy ? VK_TRUE : VK_FALSE,
+        .anisotropyEnable = aniso_on ? VK_TRUE : VK_FALSE,
         .maxAnisotropy    = max_aniso,
         .mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR,
         .mipLodBias       = 0.0f,

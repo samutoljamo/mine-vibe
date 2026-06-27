@@ -186,6 +186,10 @@ int main(int argc, char *argv[])
     const char* connect_ip = "127.0.0.1";
     uint16_t    port       = NET_DEFAULT_PORT;
 
+    /* Graphics/perf settings, defaulting to values that run well on
+     * integrated GPUs. Override via CLI flags below. */
+    RenderSettings gfx = render_settings_default();
+
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--agent")  == 0) agent_mode  = true;
         else if (strcmp(argv[i], "--server") == 0) server_mode = true;
@@ -195,7 +199,22 @@ int main(int argc, char *argv[])
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 connect_ip = argv[++i];
         }
+        else if (strcmp(argv[i], "--render-distance") == 0 && i + 1 < argc) {
+            int v = atoi(argv[++i]);
+            if (v < 1)  v = 1;
+            if (v > 64) v = 64;   /* keep the loading expected-chunk math sane */
+            gfx.render_distance = v;
+        }
+        else if (strcmp(argv[i], "--msaa") == 0 && i + 1 < argc) {
+            gfx.msaa = atoi(argv[++i]);   /* clamped to device caps at init */
+        }
+        else if (strcmp(argv[i], "--aniso") == 0 && i + 1 < argc) {
+            gfx.aniso = atoi(argv[++i]);  /* clamped to device caps at init */
+        }
     }
+
+    printf("Settings: render-distance=%d chunks, msaa=%dx, aniso=%dx\n",
+           gfx.render_distance, gfx.msaa, gfx.aniso);
 
     /* Single-player is a loopback host: spawn an in-process server and
      * connect to it. Gameplay (inventory, block break/place) is server-
@@ -222,7 +241,7 @@ int main(int argc, char *argv[])
     }
 
     Renderer renderer;
-    if (!renderer_init(&renderer, window)) {
+    if (!renderer_init(&renderer, window, gfx)) {
         fprintf(stderr, "Failed to init renderer\n");
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -278,7 +297,7 @@ int main(int argc, char *argv[])
     g_player_ptr = &g_player;
     glm_vec3_copy(g_spawn, g_spawn_pos);
     g_player.agent_mode = agent_mode;
-    World* world = world_create(&renderer, WORLD_SEED, 32);
+    World* world = world_create(&renderer, WORLD_SEED, gfx.render_distance);
 
     BlockPhysics physics;
     block_physics_init(&physics);
