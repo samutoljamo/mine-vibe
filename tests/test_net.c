@@ -62,11 +62,13 @@ static void test_mob_state_roundtrip(void) {
         { .id = 7, .type = 0, .x = 1.5f, .y = 64.0f, .z = -3.25f, .yaw = 1.0f, .health = 20 },
         { .id = 9, .type = 0, .x = 9.0f, .y = 65.0f, .z =  2.00f, .yaw = -2.0f, .health = 5 },
     };
-    size_t len = net_write_mob_state(buf, &hdr, in, 2);
-    assert(len == 8 + 2 + 2 * 20);
+    size_t len = net_write_mob_state(buf, &hdr, 12345u, in, 2);
+    assert(len == 8 + 4 + 2 + 2 * 20);  /* header + bcast_seq + count + entries */
 
     PacketHeader h; size_t off = 0; net_read_header(buf, &off, &h);
     assert(h.type == PKT_MOB_STATE);
+    uint32_t bseq = net_read_u32(buf, &off);
+    assert(bseq == 12345u);
     uint16_t count; net_read_mob_state_header(buf, &off, &count);
     assert(count == 2);
     for (int i = 0; i < 2; i++) {
@@ -75,6 +77,62 @@ static void test_mob_state_roundtrip(void) {
         assert(m.x == in[i].x && m.y == in[i].y && m.z == in[i].z && m.yaw == in[i].yaw);
     }
     printf("PASS: mob_state_roundtrip\n");
+}
+
+static void test_world_state_roundtrip(void) {
+    uint8_t buf[512];
+    PacketHeader hdr = { .type = PKT_WORLD_STATE, .player_id = 0 };
+    NetPlayerState in[2] = {
+        { .player_id = 1, .x = 1.0f, .y = 64.0f, .z = -2.0f, .yaw = 0.5f, .pitch = -0.1f },
+        { .player_id = 2, .x = 8.0f, .y = 70.0f, .z =  3.0f, .yaw = 1.5f, .pitch =  0.2f },
+    };
+    size_t len = net_write_world_state(buf, &hdr, 777u, in, 2, 4242u);
+    assert(len == 8 + 4 + 1 + 2 * WORLD_STATE_PLAYER_SIZE + 4);
+
+    PacketHeader h; size_t off = 0; net_read_header(buf, &off, &h);
+    assert(h.type == PKT_WORLD_STATE);
+    uint32_t bseq = net_read_u32(buf, &off);
+    assert(bseq == 777u);
+    uint8_t count = net_read_u8(buf, &off);
+    assert(count == 2);
+    for (int i = 0; i < 2; i++) {
+        uint8_t pid = net_read_u8(buf, &off);
+        float x = net_read_float(buf, &off);
+        float y = net_read_float(buf, &off);
+        float z = net_read_float(buf, &off);
+        float yaw = net_read_float(buf, &off);
+        float pitch = net_read_float(buf, &off);
+        assert(pid == in[i].player_id);
+        assert(x == in[i].x && y == in[i].y && z == in[i].z);
+        assert(yaw == in[i].yaw && pitch == in[i].pitch);
+    }
+    uint32_t world_ticks = net_read_u32(buf, &off);
+    assert(world_ticks == 4242u);
+    printf("PASS: world_state_roundtrip\n");
+}
+
+static void test_seq_is_newer(void) {
+    /* Strict ordering: equal is never newer. */
+    assert(!seq_is_newer(5, 5));
+    assert( seq_is_newer(6, 5));
+    assert(!seq_is_newer(5, 6));
+
+    /* Far apart in the small range. */
+    assert( seq_is_newer(1000, 0));
+    assert(!seq_is_newer(0, 1000));
+
+    /* Wrap-around: small values are "newer" than values just below 2^32. */
+    assert( seq_is_newer(0, 0xFFFFFFFFu));
+    assert(!seq_is_newer(0xFFFFFFFFu, 0));
+    assert( seq_is_newer(5, 0xFFFFFFF0u));
+    assert(!seq_is_newer(0xFFFFFFF0u, 5));
+
+    /* Exactly half the range: not newer (ambiguous boundary, treated as old). */
+    assert(!seq_is_newer(0x80000000u, 0));
+    /* Just under half the range forward: newer. */
+    assert( seq_is_newer(0x7FFFFFFFu, 0));
+
+    printf("PASS: seq_is_newer\n");
 }
 
 static void test_mob_attack_roundtrip(void) {
@@ -231,6 +289,8 @@ int main(void)
     test_serialize_position();
     test_reliable_ack();
     test_mob_state_roundtrip();
+    test_world_state_roundtrip();
+    test_seq_is_newer();
     test_mob_attack_roundtrip();
     test_player_health_roundtrip();
     test_connect_request_carries_version();
