@@ -19,6 +19,7 @@
  */
 
 #include "audio.h"
+#include "audio_backend.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -170,25 +171,12 @@ size_t audio_gen_music(int16_t* out, size_t cap, uint64_t start)
 /* ===================================================================== *
  *  Backend interface.
  *
- *  A backend owns the OS audio device. The engine talks to it only through
- *  this vtable, so a real implementation can be dropped in without touching
- *  the engine or the generators.
+ *  The AudioBackend vtable lives in audio_backend.h so concrete backends
+ *  (audio_miniaudio.c) can implement it without depending on this TU. A
+ *  backend owns the OS audio device; the engine talks to it only through
+ *  the vtable, so a real implementation drops in without touching the
+ *  engine or the pure generators.
  * ===================================================================== */
-
-typedef struct AudioBackend {
-    const char* name;
-    /* Bring up the device. Return 0 on success, non-zero on failure. */
-    int  (*init)(void);
-    /* Submit a one-shot PCM buffer for immediate playback. `gain` is a linear
-     * 0..1 volume (post-attenuation). `loop` requests looping playback. */
-    void (*submit_pcm)(const int16_t* pcm, size_t samples, float gain, bool loop);
-    /* Per-frame pump (a real ring-buffer backend refills here). */
-    void (*update)(void);
-    /* Stop the looping stream started with loop=true (used for music off). */
-    void (*stop_loop)(void);
-    /* Release the device. */
-    void (*shutdown)(void);
-} AudioBackend;
 
 /* --------------------------------------------------------------------- *
  *  NULL backend — no device, no allocation, no external dependency.
@@ -222,18 +210,24 @@ static const AudioBackend NULL_BACKEND = {
 };
 
 /* ============================ BACKEND PLUG-IN POINT ===================== *
- *  To add a real backend (e.g. miniaudio):
- *    1. Add the backend's source/header WITHOUT a new FetchContent download
- *       unless separately authorized (vendor it, or guard behind a flag).
- *    2. Implement another `static const AudioBackend MINIAUDIO_BACKEND = {…}`
- *       filling in init/submit_pcm/update/stop_loop/shutdown.
- *    3. In audio_select_backend() below, return &MINIAUDIO_BACKEND (optionally
- *       falling back to &NULL_BACKEND if its init() fails).
- *  Nothing else in this file — or in the engine — needs to change.
+ *  audio_select_backend() picks the playback backend. The real game build
+ *  links src/audio_miniaudio.c, which provides audio_miniaudio_backend()
+ *  (a miniaudio-driven device). If that TU is NOT linked (e.g. the pure
+ *  test_audio unit test, which links only audio.c), audio_miniaudio_backend
+ *  resolves to a weak NULL and we transparently use the NULL backend.
+ *
+ *  Note: this only SELECTS the backend. If the chosen backend's init() fails
+ *  at runtime (no audio device — headless/CI), audio_init() below falls back
+ *  to the always-safe NULL backend. So selection never crashes a no-device
+ *  machine; the device handshake is what falls back.
  * ======================================================================= */
 static const AudioBackend* audio_select_backend(void)
 {
-    /* Only the NULL backend exists today. */
+    if (audio_miniaudio_backend) {
+        const AudioBackend* be = audio_miniaudio_backend();
+        if (be) return be;
+    }
+    /* No real backend linked in (or it declined): use the NULL backend. */
     return &NULL_BACKEND;
 }
 
@@ -287,7 +281,12 @@ void audio_init(void)
     g_audio.backend = audio_select_backend();
     if (g_audio.backend && g_audio.backend->init) {
         if (g_audio.backend->init() != 0) {
-            /* Device came up unhappy — fall back to the always-safe NULL backend. */
+            /* Device came up unhappy (no audio hardware — headless/CI, or a
+             * busy device). Fall back to the always-safe NULL backend so the
+             * game still runs silently rather than crashing. */
+            fprintf(stderr,
+                    "[audio] backend '%s' init failed; falling back to null backend\n",
+                    g_audio.backend->name ? g_audio.backend->name : "?");
             g_audio.backend = &NULL_BACKEND;
             g_audio.backend->init();
         }

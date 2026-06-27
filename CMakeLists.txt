@@ -85,6 +85,18 @@ FetchContent_Declare(FastNoiseLite
 )
 FetchContent_MakeAvailable(FastNoiseLite)
 
+# miniaudio (header-only audio playback backend). Pinned to a stable tag.
+# We consume only the header (miniaudio.h) and define MA_IMPLEMENTATION in
+# exactly one TU (src/audio_miniaudio.c). SOURCE_SUBDIR points at a dir with no
+# CMakeLists so MakeAvailable downloads the sources WITHOUT adding miniaudio's
+# own library/example/extra-node targets to our build.
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG 0.11.22
+    SOURCE_SUBDIR  do-not-build
+)
+FetchContent_MakeAvailable(miniaudio)
+
 # ---- Find Vulkan SDK (headers + glslc) ----
 find_package(Vulkan REQUIRED COMPONENTS glslangValidator)
 
@@ -163,6 +175,7 @@ add_executable(minecraft
     src/server.c
     src/client.c
     src/audio.c
+    src/audio_miniaudio.c
     src/remote_player.c
     src/mob.c
     src/inventory.c
@@ -180,6 +193,7 @@ target_include_directories(minecraft PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${stb_SOURCE_DIR}
     ${fastnoiselite_SOURCE_DIR}/C
+    ${miniaudio_SOURCE_DIR}
 )
 
 target_link_libraries(minecraft PRIVATE
