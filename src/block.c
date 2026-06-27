@@ -16,6 +16,12 @@ static const BlockDef block_defs[BLOCK_COUNT] = {
     [BLOCK_IRON_ORE]    = { "iron_ore",    true, false, false, 15, 0,  9,  9,  9 },
     [BLOCK_GOLD_ORE]    = { "gold_ore",    true, false, false, 15, 0, 10, 10, 10 },
     [BLOCK_DIAMOND_ORE] = { "diamond_ore", true, false, false, 15, 0, 11, 11, 11 },
+    /* Village decorative blocks. GLASS is solid but transparent with low light
+     * absorption so windows let light leak through and neighbour faces render. */
+    [BLOCK_PLANKS]  = { "planks", true, false, false, 15, 0, 12, 12, 12 },
+    [BLOCK_COBBLE]  = { "cobble", true, false, false, 15, 0, 13, 13, 13 },
+    [BLOCK_GLASS]   = { "glass",  true, true,  false, 2,  0, 14, 14, 14 },
+    [BLOCK_PATH]    = { "path",   true, false, false, 15, 0, 15, 15, 15 },
 };
 
 const BlockDef* block_get_def(BlockID id) {
@@ -37,6 +43,10 @@ void block_representative_color(BlockID id, uint8_t* r, uint8_t* g, uint8_t* b) 
         case BLOCK_IRON_ORE:    *r = 184; *g = 150; *b = 117; break;
         case BLOCK_GOLD_ORE:    *r = 222; *g = 188; *b =  72; break;
         case BLOCK_DIAMOND_ORE: *r = 102; *g = 214; *b = 213; break;
+        case BLOCK_PLANKS:  *r = 160; *g = 124; *b =  74; break;
+        case BLOCK_COBBLE:  *r = 110; *g = 110; *b = 110; break;
+        case BLOCK_GLASS:   *r = 198; *g = 226; *b = 232; break;
+        case BLOCK_PATH:    *r = 120; *g = 105; *b =  84; break;
         default:            *r = 255; *g =   0; *b = 255; break;   /* magenta = bug */
     }
 }

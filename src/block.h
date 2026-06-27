@@ -20,6 +20,11 @@ enum {
     BLOCK_IRON_ORE,
     BLOCK_GOLD_ORE,
     BLOCK_DIAMOND_ORE,
+    /* Village decorative blocks (atlas tiles 12-15). */
+    BLOCK_PLANKS,
+    BLOCK_COBBLE,
+    BLOCK_GLASS,
+    BLOCK_PATH,
     BLOCK_COUNT,
 };
 

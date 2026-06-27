@@ -157,6 +157,73 @@ def draw_bedrock(size=16):
         img.putpixel((px, py), (22, 22, 22, 255))
     return img
 
+def draw_planks(size=16):
+    """Warm oak planks: horizontal plank bands with darker seams and a few
+    vertical board joints, plus light grain noise."""
+    img = Image.new('RGBA', (size, size))
+    plank_h = 4
+    for y in range(size):
+        band = (y // plank_h)
+        base = 168 if band % 2 == 0 else 150
+        seam = (y % plank_h == 0)
+        for x in range(size):
+            r = base
+            g = int(base * 0.72)
+            b = int(base * 0.42)
+            if seam:
+                r, g, b = int(r*0.7), int(g*0.7), int(b*0.7)
+            img.putpixel((x, y), _noise(r, g, b, 255, x, y, 8))
+    # vertical board joints, offset per band
+    for band in range(size // plank_h):
+        jx = (band * 7 + 3) % size
+        for y in range(band*plank_h, (band+1)*plank_h):
+            if 0 <= y < size:
+                img.putpixel((jx, y), (96, 68, 38, 255))
+    return img
+
+def draw_cobble(size=16):
+    """Grey cobblestone: stone base with a darker mortar grid and lumpy stones."""
+    img = draw_stone(size)
+    # mortar grid (darker lines)
+    for i in range(size):
+        if i % 5 == 0:
+            for j in range(size):
+                img.putpixel((i, j), (70, 70, 70, 255))
+                img.putpixel((j, i), (70, 70, 70, 255))
+    # a few lighter lumps
+    rng = random.Random(55)
+    for _ in range(14):
+        px, py = rng.randint(0, size-1), rng.randint(0, size-1)
+        v = rng.randint(140, 165)
+        img.putpixel((px, py), (v, v, v, 255))
+    return img
+
+def draw_glass(size=16):
+    """Near-transparent pale window pane with a brighter border + corner glints."""
+    img = Image.new('RGBA', (size, size), (210, 232, 238, 40))
+    for x in range(size):
+        img.putpixel((x, 0), (230, 245, 250, 200))
+        img.putpixel((x, size-1), (230, 245, 250, 200))
+        img.putpixel((0, x), (230, 245, 250, 200))
+        img.putpixel((size-1, x), (230, 245, 250, 200))
+    # diagonal glint
+    for i in range(2, 6):
+        img.putpixel((i, i+1), (255, 255, 255, 180))
+    return img
+
+def draw_path(size=16):
+    """Desaturated gravel path: dirt base with scattered grey pebbles."""
+    img = Image.new('RGBA', (size, size))
+    for y in range(size):
+        for x in range(size):
+            img.putpixel((x, y), _noise(120, 104, 82, 255, x, y, 10))
+    rng = random.Random(77)
+    for _ in range(28):
+        px, py = rng.randint(0, size-1), rng.randint(0, size-1)
+        v = rng.randint(95, 140)
+        img.putpixel((px, py), (v, v, int(v*0.95), 255))
+    return img
+
 TILE_GENERATORS = {
     0:  draw_stone,
     1:  draw_dirt,
@@ -170,6 +237,10 @@ TILE_GENERATORS = {
     9:  draw_iron_ore,
     10: draw_gold_ore,
     11: draw_diamond_ore,
+    12: draw_planks,
+    13: draw_cobble,
+    14: draw_glass,
+    15: draw_path,
     16: draw_water,
     17: draw_bedrock,
 }
@@ -178,6 +249,7 @@ TILE_NAMES = {
     0: "stone", 1: "dirt", 2: "grass_top", 3: "grass_side", 4: "sand",
     5: "wood_top", 6: "wood_side", 7: "leaves",
     8: "coal_ore", 9: "iron_ore", 10: "gold_ore", 11: "diamond_ore",
+    12: "planks", 13: "cobble", 14: "glass", 15: "path",
     16: "water", 17: "bedrock",
 }
 
