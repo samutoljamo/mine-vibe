@@ -48,6 +48,16 @@ typedef struct {
     uint32_t world_ticks;
     double   world_ticks_recv_time;
 
+    /* Last-applied per-stream broadcast sequence numbers (dedup of unreliable
+     * snapshots). PKT_WORLD_STATE / PKT_MOB_STATE are sent unreliable, so a
+     * reordered/late datagram can carry a stale snapshot; we drop any packet
+     * whose seq is not seq_is_newer than the last applied. *_seq_valid is false
+     * until the first packet of that stream arrives (seq 0 is itself valid). */
+    uint32_t world_state_seq;
+    uint32_t mob_state_seq;
+    bool     world_state_seq_valid;
+    bool     mob_state_seq_valid;
+
     /* Block-change events received from the server, drained by main.c each
      * frame to call world_set_block + remesh on the main thread.
      * (Network thread cannot remesh — meshing is not thread-safe with the

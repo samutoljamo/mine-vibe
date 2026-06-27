@@ -187,10 +187,21 @@ int client_poll(Client* c)
             size_t off = 0;
             PacketHeader hdr;
             net_read_header(msg->data, &off, &hdr);
+
+            /* Per-stream broadcast seq (protocol v3): drop reordered/late
+             * datagrams so a stale snapshot never overwrites a newer one. */
+            if (msg->len < (int)off + 4) { free(msg); continue; }
+            uint32_t bseq = net_read_u32(msg->data, &off);
+            if (c->world_state_seq_valid &&
+                !seq_is_newer(bseq, c->world_state_seq)) {
+                free(msg);
+                continue;
+            }
+
             uint8_t count = net_read_u8(msg->data, &off);
 
             /* Validate: packet must contain count * (1+5*4) player bytes plus
-             * a trailing u32 world_ticks (protocol v2), after header+count. */
+             * a trailing u32 world_ticks (protocol v3), after header+seq+count. */
             int required = (int)off + count * (1 + 5 * 4) + 4;
             if (required > msg->len) {
                 fprintf(stderr, "[client] PKT_WORLD_STATE truncated "
@@ -198,6 +209,10 @@ int client_poll(Client* c)
                 free(msg);
                 continue;
             }
+
+            /* Commit: this packet is being applied, so it becomes the newest. */
+            c->world_state_seq       = bseq;
+            c->world_state_seq_valid = true;
 
             for (int i = 0; i < count; i++) {
                 uint8_t pid = net_read_u8(msg->data, &off);
@@ -229,9 +244,23 @@ int client_poll(Client* c)
 
         } else if (type == PKT_MOB_STATE && c->state == CLIENT_CONNECTED) {
             size_t off = 0; PacketHeader hdr; net_read_header(msg->data, &off, &hdr);
+
+            /* Per-stream broadcast seq (protocol v3): drop stale reordered
+             * snapshots before applying (see seq_is_newer in net.h). */
+            if (msg->len < (int)off + 4) { free(msg); continue; }
+            uint32_t bseq = net_read_u32(msg->data, &off);
+            if (c->mob_state_seq_valid &&
+                !seq_is_newer(bseq, c->mob_state_seq)) {
+                free(msg);
+                continue;
+            }
+
             uint16_t count; net_read_mob_state_header(msg->data, &off, &count);
             int required = (int)off + (int)count * MOB_STATE_ENTRY_SIZE;
             if (count > MOB_MAX || required > msg->len) { free(msg); continue; }
+
+            c->mob_state_seq       = bseq;
+            c->mob_state_seq_valid = true;
             ClientMobSnapshot snaps[MOB_MAX];
             for (uint16_t i = 0; i < count; i++) {
                 NetMobState m; net_read_mob_state_entry(msg->data, &off, &m);

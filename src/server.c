@@ -638,9 +638,17 @@ static void server_tick(Server* s, int tick_num)
         count++;
     }
 
+    /* Per-stream broadcast sequence numbers for unreliable-snapshot dedup.
+     * Incremented once per emitted packet so the client can drop stale
+     * reordered datagrams (see seq_is_newer in net.h). One server runs per
+     * process, so process-static counters suffice and keep server.h untouched. */
+    static uint32_t world_state_bseq = 0;
+    static uint32_t mob_state_bseq   = 0;
+
     uint8_t buf[NET_MAX_PACKET];
     PacketHeader hdr = { .type = PKT_WORLD_STATE, .player_id = 0 };
-    size_t len = net_write_world_state(buf, &hdr, players, count, s->world_ticks);
+    size_t len = net_write_world_state(buf, &hdr, world_state_bseq++,
+                                       players, count, s->world_ticks);
     for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
         if (!s->clients[i].active) continue;
         net_thread_push_outbound(s->net, buf, (int)len, &s->clients[i].addr);
@@ -663,7 +671,8 @@ static void server_tick(Server* s, int tick_num)
         }
         uint8_t mbuf[NET_MAX_PACKET];
         PacketHeader mhdr = { .type = PKT_MOB_STATE, .player_id = 0 };
-        size_t mlen = net_write_mob_state(mbuf, &mhdr, mobs_wire, mc);
+        size_t mlen = net_write_mob_state(mbuf, &mhdr, mob_state_bseq++,
+                                          mobs_wire, mc);
         for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
             if (!s->clients[i].active) continue;
             net_thread_push_outbound(s->net, mbuf, (int)mlen, &s->clients[i].addr);

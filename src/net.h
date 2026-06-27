@@ -34,7 +34,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 2
+#define NET_PROTOCOL_VERSION 3
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -110,6 +110,25 @@ static inline void net_write_i32(uint8_t* buf, size_t* off, int32_t v)
 static inline int32_t net_read_i32(const uint8_t* buf, size_t* off)
 {
     return (int32_t)net_read_u32(buf, off);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Broadcast-stream sequence numbers (dedup of unreliable state)      */
+/*                                                                     */
+/*  PKT_WORLD_STATE and PKT_MOB_STATE are sent unreliable, so a late   */
+/*  or reordered datagram can deliver a stale snapshot after a newer   */
+/*  one (rubber-banding). Each broadcast carries a per-stream u32 seq  */
+/*  that the server increments once per emitted packet; the client     */
+/*  remembers the highest applied seq per stream and drops anything    */
+/*  not newer.                                                         */
+/*                                                                     */
+/*  seq_is_newer(a, b) is a PURE, wrap-aware "is a strictly newer than */
+/*  b" test (RFC 1982 serial-number arithmetic over u32): true iff the */
+/*  forward distance b -> a is in (0, 2^31). Equal seqs are NOT newer. */
+/* ------------------------------------------------------------------ */
+static inline int seq_is_newer(uint32_t a, uint32_t b)
+{
+    return (a != b) && ((uint32_t)(a - b) < 0x80000000u);
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,17 +211,21 @@ typedef struct {
     float    yaw, pitch;
 } NetPlayerState;
 
-/* Wire format: [header 8][count 1][players 21*N][world_ticks u32].
- * world_ticks is the server's day/night clock, appended after the player
- * array so all existing player offsets are unchanged (protocol v2). */
+/* Wire format: [header 8][bcast_seq u32][count 1][players 21*N][world_ticks u32].
+ * bcast_seq is the per-stream broadcast sequence the client uses to drop stale
+ * reordered datagrams (see seq_is_newer); it sits between the header and count
+ * (protocol v3). world_ticks is the server's day/night clock, appended after
+ * the player array. */
 static inline size_t net_write_world_state(uint8_t* buf,
                                             const PacketHeader* hdr,
+                                            uint32_t bcast_seq,
                                             const NetPlayerState* players,
                                             uint8_t count,
                                             uint32_t world_ticks)
 {
     size_t off = 0;
     net_write_header(buf, &off, hdr);
+    net_write_u32(buf, &off, bcast_seq);
     net_write_u8(buf, &off, count);
     for (int i = 0; i < count; i++) {
         net_write_u8(buf, &off, players[i].player_id);
@@ -353,7 +376,7 @@ static inline void net_read_inventory(const uint8_t* buf, InventoryPacket* p)
 
 /* ------------------------------------------------------------------ */
 /*  Mob + health packets                                               */
-/*    PKT_MOB_STATE    — [header 8][count u16][ count × 20 ]           */
+/*    PKT_MOB_STATE    — [header 8][bcast_seq u32][count u16][count×20] */
 /*       entry: id u16 | type u8 | x f32 | y f32 | z f32 | yaw f32 | health u8
  *    PKT_MOB_ATTACK   — [header 8][mob_id u16]            = 10 bytes  */
 /*    PKT_PLAYER_HEALTH— [header 8][health u8][flags u8]   = 10 bytes  */
@@ -368,10 +391,15 @@ typedef struct {
     uint8_t  health;
 } NetMobState;
 
+/* Wire format: [header 8][bcast_seq u32][count u16][ count × 20 ]. bcast_seq
+ * (protocol v3) is the per-stream broadcast sequence for dedup; see
+ * seq_is_newer / net_write_world_state. */
 static inline size_t net_write_mob_state(uint8_t* buf, const PacketHeader* hdr,
+                                         uint32_t bcast_seq,
                                          const NetMobState* mobs, uint16_t count) {
     size_t off = 0;
     net_write_header(buf, &off, hdr);
+    net_write_u32(buf, &off, bcast_seq);
     net_write_u16(buf, &off, count);
     for (uint16_t i = 0; i < count; i++) {
         net_write_u16  (buf, &off, mobs[i].id);
