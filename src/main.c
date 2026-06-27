@@ -583,7 +583,12 @@ int main(int argc, char *argv[])
                     g_mining_y = g_target.y;
                     g_mining_z = g_target.z;
                 }
-                float need = block_break_time(g_target.block);
+                /* Mining speed depends on the held hotbar item: a matching tool
+                 * (and higher tier) breaks faster; a wrong item / block / hand
+                 * uses the base time. */
+                int    sel  = g_client->inventory.selected;
+                ItemId held = g_client->inventory.slots[sel].item;
+                float need = tool_break_time(held, g_target.block);
                 if (need >= BLOCK_BREAK_UNBREAKABLE) {
                     /* Bedrock and friends: never completes. */
                     g_mining_progress = 0.0f;
@@ -592,7 +597,8 @@ int main(int argc, char *argv[])
                     if (g_mining_progress >= need) {
                         client_send_break(g_client,
                                           g_target.x, g_target.y, g_target.z,
-                                          (uint8_t)g_target.block);
+                                          (uint8_t)g_target.block,
+                                          (uint8_t)sel);
                         /* Stop re-sending until the cell changes (the server
                          * echo will clear the block and move the target). */
                         g_mining_progress = 0.0f;

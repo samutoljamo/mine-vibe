@@ -6,6 +6,7 @@
 #include <cglm/cglm.h>
 
 #include "../block.h"
+#include "../item.h"
 
 /* Forward-declare Renderer to avoid circular include (renderer.h includes hud.h) */
 struct Renderer;
@@ -131,7 +132,7 @@ void  ui_text(float x, float y, float size, const char* text, vec4 color);
 float ui_text_width(const char* text, float size);
 
 /* Draw a baked isometric block icon at (x, y) with the given square pixel size. */
-void  ui_block_icon(BlockID id, float x, float y, float size);
+void  ui_block_icon(ItemId id, float x, float y, float size);
 
 /* ------------------------------------------------------------------ */
 /*  Layout (Plan 2 — stubs now, full impl in Plan 2)                  */

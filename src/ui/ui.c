@@ -40,9 +40,15 @@ static bool      g_font_baked = false;
 /*  Block icon strip (baked at the bottom of the atlas)                */
 /* ------------------------------------------------------------------ */
 
+/* Item icons are baked into a grid in the bottom region of the atlas. The grid
+ * covers every ItemId (blocks AND tools) so the hotbar/inventory can draw a
+ * recognisable icon for tools too. ICON_COLS icons per row; rows grow upward
+ * from the bottom edge. */
 #define ICON_PX        32
-#define ICON_STRIP_Y0  (ATLAS_H - ICON_PX)
-#define ICON_COUNT     BLOCK_COUNT
+#define ICON_COLS      (ATLAS_W / ICON_PX)            /* 16 */
+#define ICON_COUNT     ITEM_COUNT
+#define ICON_ROWS      ((ICON_COUNT + ICON_COLS - 1) / ICON_COLS)
+#define ICON_GRID_Y0   (ATLAS_H - ICON_ROWS * ICON_PX)
 
 typedef struct { float u0, v0, u1, v1; } UiBlockIcon;
 static UiBlockIcon g_block_icons[ICON_COUNT];
@@ -94,10 +100,10 @@ static void put_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b)
     g_atlas_cpu[i + 3] = 255;
 }
 
-static void bake_one_icon(int cell_x, int cell_y, BlockID b)
+static void bake_one_icon(int cell_x, int cell_y, ItemId b)
 {
     uint8_t cr, cg, cb;
-    block_representative_color(b, &cr, &cg, &cb);
+    item_representative_color(b, &cr, &cg, &cb);
 
     /* Iso projection inside a 32x32 cell.
      * Top face (rhombus, lighter):  shading 1.0
@@ -147,13 +153,16 @@ static void bake_one_icon(int cell_x, int cell_y, BlockID b)
 static void bake_block_icons(void)
 {
     for (int b = 0; b < ICON_COUNT; b++) {
-        int cell_x = b * ICON_PX;
-        if (cell_x + ICON_PX > ATLAS_W) break;
-        bake_one_icon(cell_x, ICON_STRIP_Y0, (BlockID)b);
-        g_block_icons[b].u0 =  cell_x                     / (float)ATLAS_W;
-        g_block_icons[b].v0 =  ICON_STRIP_Y0              / (float)ATLAS_H;
-        g_block_icons[b].u1 = (cell_x + ICON_PX)          / (float)ATLAS_W;
-        g_block_icons[b].v1 = (ICON_STRIP_Y0 + ICON_PX)   / (float)ATLAS_H;
+        int col = b % ICON_COLS;
+        int row = b / ICON_COLS;
+        int cell_x = col * ICON_PX;
+        int cell_y = ICON_GRID_Y0 + row * ICON_PX;
+        if (cell_x + ICON_PX > ATLAS_W || cell_y + ICON_PX > ATLAS_H) break;
+        bake_one_icon(cell_x, cell_y, (ItemId)b);
+        g_block_icons[b].u0 =  cell_x            / (float)ATLAS_W;
+        g_block_icons[b].v0 =  cell_y            / (float)ATLAS_H;
+        g_block_icons[b].u1 = (cell_x + ICON_PX) / (float)ATLAS_W;
+        g_block_icons[b].v1 = (cell_y + ICON_PX) / (float)ATLAS_H;
     }
 }
 
@@ -816,7 +825,7 @@ void ui_text(float x, float y, float size, const char* text, vec4 color)
     }
 }
 
-void ui_block_icon(BlockID id, float x, float y, float size)
+void ui_block_icon(ItemId id, float x, float y, float size)
 {
     if ((int)id < 0 || (int)id >= ICON_COUNT) return;
     UiBlockIcon* ic = &g_block_icons[id];

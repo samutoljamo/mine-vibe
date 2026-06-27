@@ -3,6 +3,7 @@
 #include "net_thread.h"
 #include "platform_thread.h"
 #include "inventory.h"
+#include "item.h"      /* ItemId, tool_break_time, starter tools */
 #include "raycast.h"   /* for block_face_offset / FACE_PZ */
 #include "gameplay.h"  /* for MAX_REACH */
 #include "mob.h"
@@ -47,6 +48,15 @@ static ServerClient* find_client_by_addr(Server* s,
     return NULL;
 }
 
+/* Give a fresh player a usable starter set of tools (one of each kind at the
+ * lowest tier). Tools are unstackable, so each lands in its own slot; with
+ * INVENTORY_SLOTS == 6 this leaves 3 slots free for mined blocks. */
+static void server_give_starter_kit(ServerClient* c) {
+    inventory_add_item(&c->inventory, ITEM_WOOD_PICKAXE, 1);
+    inventory_add_item(&c->inventory, ITEM_WOOD_AXE,     1);
+    inventory_add_item(&c->inventory, ITEM_WOOD_SHOVEL,  1);
+}
+
 static ServerClient* alloc_client(Server* s, const struct sockaddr_in* addr)
 {
     int active = 0;
@@ -75,6 +85,7 @@ static ServerClient* alloc_client(Server* s, const struct sockaddr_in* addr)
         c->last_recv_time = net_time();
         reliable_init(&c->reliable);
         inventory_init(&c->inventory);
+        server_give_starter_kit(c);
         c->health = PLAYER_MAX_HEALTH;
         survival_init(&c->survival);
         c->prev_pos_valid = false;
@@ -248,8 +259,9 @@ static void server_send_inventory(Server* s, ServerClient* c)
         .slot_count = INVENTORY_NET_SLOTS,
     };
     for (int i = 0; i < INVENTORY_NET_SLOTS; i++) {
-        p.slots[i].block = (uint8_t)c->inventory.slots[i].block;
-        p.slots[i].count = c->inventory.slots[i].count;
+        p.slots[i].item       = (uint16_t)c->inventory.slots[i].item;
+        p.slots[i].count      = c->inventory.slots[i].count;
+        p.slots[i].durability = c->inventory.slots[i].durability;
     }
     uint8_t buf[64];
     size_t  len = net_write_inventory(buf, &p);
@@ -302,8 +314,8 @@ static bool server_block_intersects_player(Server* s, int bx, int by, int bz)
 static void handle_block_break(Server* s, ServerClient* c,
                                 const uint8_t* data, size_t len)
 {
-    /* Header is 8 bytes; payload is 12 (xyz) + 1 (block) = 13. */
-    if (len < 8 + 13) return;
+    /* Header 8 + payload 12 (xyz) + 1 (block) + 1 (slot) = 22 wire bytes. */
+    if (len < 8 + 14) return;
     BlockBreakPacket p;
     net_read_block_break(data, &p);
 
@@ -338,6 +350,11 @@ static void handle_block_break(Server* s, ServerClient* c,
         /* No room — refuse the break. Don't broadcast, don't send inventory. */
         return;
     }
+    /* Successful break: wear the held tool (no-op if the slot isn't a tool).
+     * If it breaks, inventory_damage_tool empties the slot; the snapshot below
+     * carries the change to the client. */
+    if (p.slot < INVENTORY_SLOTS)
+        inventory_damage_tool(&c->inventory, p.slot);
     server_persist_edit(s, p.x, p.y, p.z, BLOCK_AIR);
     server_broadcast_block_change(s, p.x, p.y, p.z, BLOCK_AIR);
     server_send_inventory(s, c);
@@ -367,7 +384,7 @@ static void handle_block_place(Server* s, ServerClient* c,
     /* Edible item: right-clicking with the designated food block consumes one
      * to restore hunger instead of placing it (only when not already full).
      * Reuses the block/item model — no new wire packet or client input path. */
-    if (c->inventory.slots[p.slot].block == SERVER_FOOD_BLOCK) {
+    if (c->inventory.slots[p.slot].item == SERVER_FOOD_BLOCK) {
         if (survival_eat(&c->survival.food, &c->survival.saturation,
                          SERVER_FOOD_RESTORE, SERVER_FOOD_SAT)) {
             inventory_consume(&c->inventory, p.slot);
@@ -401,7 +418,9 @@ static void handle_block_place(Server* s, ServerClient* c,
             pmaxz > bminz && pminz < bmaxz) return;
     }
 
-    BlockID b = c->inventory.slots[p.slot].block;
+    ItemId  held = c->inventory.slots[p.slot].item;
+    if (!item_is_block(held)) return;                 /* tools aren't placeable */
+    BlockID b = item_as_block(held);
     if (b == BLOCK_AIR || b >= BLOCK_COUNT) return;   /* should be impossible, but don't broadcast garbage */
 
     /* Validate against the authoritative server world (reflects the overlay's
@@ -518,6 +537,7 @@ static void server_send_health(Server* s, ServerClient* c, uint8_t flags) {
  * state and teleport to spawn. */
 static void server_kill_player(Server* s, ServerClient* c) {
     inventory_init(&c->inventory);
+    server_give_starter_kit(c);   /* keep tools usable after respawn */
     server_send_inventory(s, c);
 
     c->health = 0;

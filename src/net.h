@@ -34,7 +34,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 3
+#define NET_PROTOCOL_VERSION 4
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -248,10 +248,10 @@ static inline size_t net_write_world_state(uint8_t* buf,
 typedef struct {
     PacketHeader header;
     int32_t      x, y, z;
-    uint8_t      block;   /* claimed block ID being broken — server checks
-                            * it isn't AIR/WATER/BEDROCK before crediting
-                            * inventory. Server has no world today, so it
-                            * trusts the client on the actual cell content. */
+    uint8_t      block;   /* claimed block ID being broken — server validates
+                            * against its own world before crediting inventory */
+    uint8_t      slot;    /* hotbar slot held while mining (protocol v4); the
+                            * server applies tool durability wear to it */
 } BlockBreakPacket;
 
 typedef struct {
@@ -272,10 +272,14 @@ typedef struct {
  * tree — keep this constant in sync manually. */
 #define INVENTORY_NET_SLOTS 6
 
+/* PKT_INVENTORY now carries a full item snapshot (protocol v4): per slot an
+ * item id (u16: block id in the low range, tool id above BLOCK_COUNT), a stack
+ * count (u8), and remaining tool durability (u16, 0 for blocks). */
 typedef struct {
     PacketHeader header;
     uint8_t      slot_count;
-    struct { uint8_t block; uint8_t count; } slots[INVENTORY_NET_SLOTS];
+    struct { uint16_t item; uint8_t count; uint16_t durability; }
+                 slots[INVENTORY_NET_SLOTS];
 } InventoryPacket;
 
 static inline size_t net_write_block_break(uint8_t* buf,
@@ -287,6 +291,7 @@ static inline size_t net_write_block_break(uint8_t* buf,
     net_write_i32(buf, &off, p->y);
     net_write_i32(buf, &off, p->z);
     net_write_u8(buf, &off, p->block);
+    net_write_u8(buf, &off, p->slot);
     return off;
 }
 
@@ -299,6 +304,7 @@ static inline void net_read_block_break(const uint8_t* buf,
     p->y     = net_read_i32(buf, &off);
     p->z     = net_read_i32(buf, &off);
     p->block = net_read_u8(buf, &off);
+    p->slot  = net_read_u8(buf, &off);
 }
 
 static inline size_t net_write_block_place(uint8_t* buf,
@@ -349,6 +355,9 @@ static inline void net_read_block_change(const uint8_t* buf,
     p->block = net_read_u8(buf, &off);
 }
 
+/* Wire body per slot: [item u16][count u8][durability u16] = 5 bytes. */
+#define INVENTORY_NET_SLOT_SIZE 5
+
 static inline size_t net_write_inventory(uint8_t* buf,
                                           const InventoryPacket* p)
 {
@@ -356,8 +365,9 @@ static inline size_t net_write_inventory(uint8_t* buf,
     net_write_header(buf, &off, &p->header);
     net_write_u8(buf, &off, p->slot_count);
     for (uint8_t i = 0; i < p->slot_count; i++) {
-        net_write_u8(buf, &off, p->slots[i].block);
-        net_write_u8(buf, &off, p->slots[i].count);
+        net_write_u16(buf, &off, p->slots[i].item);
+        net_write_u8 (buf, &off, p->slots[i].count);
+        net_write_u16(buf, &off, p->slots[i].durability);
     }
     return off;
 }
@@ -369,8 +379,9 @@ static inline void net_read_inventory(const uint8_t* buf, InventoryPacket* p)
     p->slot_count = net_read_u8(buf, &off);
     if (p->slot_count > INVENTORY_NET_SLOTS) p->slot_count = INVENTORY_NET_SLOTS;
     for (uint8_t i = 0; i < p->slot_count; i++) {
-        p->slots[i].block = net_read_u8(buf, &off);
-        p->slots[i].count = net_read_u8(buf, &off);
+        p->slots[i].item       = net_read_u16(buf, &off);
+        p->slots[i].count      = net_read_u8 (buf, &off);
+        p->slots[i].durability = net_read_u16(buf, &off);
     }
 }
 
