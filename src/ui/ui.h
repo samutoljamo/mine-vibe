@@ -68,6 +68,60 @@ void ui_frame_end(void);
 void ui_set_input(float mouse_x, float mouse_y, bool pressed, bool released);
 
 /* ------------------------------------------------------------------ */
+/*  Mouse input handler / hit-testing                                  */
+/* ------------------------------------------------------------------ */
+/*
+ * Data-driven, retained-per-frame interaction model for screens
+ * (buttons, inventory-style slots). Usage per frame:
+ *
+ *   ui_input_begin();                          // clear registered elements
+ *   ui_add_element(SLOT_0, x, y, w, h);        // register hit rects
+ *   ...
+ *   ui_handle_mouse(mx, my, clicked);          // resolve hover + click
+ *   if (ui_clicked_element() == SLOT_0) { ... }
+ *
+ * Elements are axis-aligned rectangles in screen pixels (same coordinate
+ * space as the draw primitives: (0,0) = top-left, y increases down).
+ * Hit-test is inclusive of the top-left edge and exclusive of the
+ * bottom-right edge. On overlap the most-recently-added element wins
+ * (it is treated as topmost / drawn last). Element ids are caller-defined
+ * and should be >= 0; -1 is reserved to mean "none".
+ */
+
+#define UI_MAX_ELEMENTS 256
+#define UI_ELEMENT_NONE (-1)
+
+/* Optional per-element click callback. Invoked by ui_handle_mouse when the
+ * element is clicked. `id` is the element id, `user` the pointer passed to
+ * ui_add_element_cb. */
+typedef void (*UiClickFn)(int id, void* user);
+
+/* Begin a new input frame: clears all registered elements and resets the
+ * hovered/clicked state. Call once before registering elements each frame. */
+void ui_input_begin(void);
+
+/* Register a rectangular interactive element. */
+void ui_add_element(int id, float x, float y, float w, float h);
+
+/* Register an element with a click callback (and user data). */
+void ui_add_element_cb(int id, float x, float y, float w, float h,
+                       UiClickFn on_click, void* user);
+
+/* Resolve the cursor against the registered elements. Sets the hovered
+ * element (topmost under the cursor, or UI_ELEMENT_NONE). If `clicked` is
+ * true and an element is under the cursor, it becomes the clicked element
+ * and its callback (if any) is invoked. */
+void ui_handle_mouse(float x, float y, bool clicked);
+
+/* Id of the element currently under the cursor, or UI_ELEMENT_NONE. */
+int  ui_hovered_element(void);
+
+/* Id of the element clicked in the most recent ui_handle_mouse call, or
+ * UI_ELEMENT_NONE if the last call was not a click on an element. Reset by
+ * ui_input_begin. */
+int  ui_clicked_element(void);
+
+/* ------------------------------------------------------------------ */
 /*  Draw primitives                                                    */
 /* ------------------------------------------------------------------ */
 
