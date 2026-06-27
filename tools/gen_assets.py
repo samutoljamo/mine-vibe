@@ -246,6 +246,65 @@ def draw_path(size=16):
         img.putpixel((px, py), (v, v, int(v*0.95), 255))
     return img
 
+# ── tools ──────────────────────────────────────────────────────────────────────
+#
+# Tool icons share a wooden handle running corner-to-corner; the head colour
+# encodes the material tier (wood/stone/iron). Each is drawn on a transparent
+# 16×16 tile so it reads on the hotbar over any background.
+
+HANDLE = (120, 82, 44, 255)   # wooden stick
+
+TIER_HEAD = {
+    'wood':  (156, 110,  58, 255),
+    'stone': (130, 130, 130, 255),
+    'iron':  (216, 216, 222, 255),
+}
+
+def _draw_handle(img, size):
+    """Diagonal wooden stick from lower-left toward upper-right."""
+    for i in range(2, size - 2):
+        x = i
+        y = size - 1 - i
+        for (dx, dy) in ((0, 0), (1, 0), (0, 1)):
+            px, py = x + dx, y + dy
+            if 0 <= px < size and 0 <= py < size:
+                img.putpixel((px, py), HANDLE)
+
+def draw_pickaxe(tier, size=16):
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    _draw_handle(img, size)
+    head = TIER_HEAD[tier]
+    # Curved head across the top: a wide arc of head pixels.
+    for x in range(2, size - 2):
+        y = 2 + (abs(x - size // 2) // 3)
+        for dy in (0, 1):
+            if 0 <= y + dy < size:
+                img.putpixel((x, y + dy), head)
+    return img
+
+def draw_axe(tier, size=16):
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    _draw_handle(img, size)
+    head = TIER_HEAD[tier]
+    # Blade: a solid wedge in the upper-right quadrant.
+    for y in range(2, 8):
+        for x in range(size - 7, size - 1):
+            if (x - (size - 7)) <= (y - 1) * 2:
+                img.putpixel((x, y), head)
+    return img
+
+def draw_shovel(tier, size=16):
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    _draw_handle(img, size)
+    head = TIER_HEAD[tier]
+    # Scoop: a small rounded blade at the upper-right tip of the handle.
+    for y in range(2, 6):
+        for x in range(size - 6, size - 1):
+            edge = (x == size - 6 or x == size - 2 or y == 2 or y == 5)
+            if not (edge and (x + y) % 2 == 0):
+                img.putpixel((x, y), head)
+    return img
+
 TILE_GENERATORS = {
     0:  draw_stone,
     1:  draw_dirt,
@@ -266,6 +325,16 @@ TILE_GENERATORS = {
     16: draw_water,
     17: draw_bedrock,
     18: draw_torch,
+    # Tool icons (free atlas indices after torch=18).
+    19: lambda: draw_pickaxe('wood'),
+    20: lambda: draw_axe('wood'),
+    21: lambda: draw_shovel('wood'),
+    22: lambda: draw_pickaxe('stone'),
+    23: lambda: draw_axe('stone'),
+    24: lambda: draw_shovel('stone'),
+    25: lambda: draw_pickaxe('iron'),
+    26: lambda: draw_axe('iron'),
+    27: lambda: draw_shovel('iron'),
 }
 
 TILE_NAMES = {
@@ -274,6 +343,9 @@ TILE_NAMES = {
     8: "coal_ore", 9: "iron_ore", 10: "gold_ore", 11: "diamond_ore",
     12: "planks", 13: "cobble", 14: "glass", 15: "path",
     16: "water", 17: "bedrock", 18: "torch",
+    19: "wood_pickaxe",  20: "wood_axe",  21: "wood_shovel",
+    22: "stone_pickaxe", 23: "stone_axe", 24: "stone_shovel",
+    25: "iron_pickaxe",  26: "iron_axe",  27: "iron_shovel",
 }
 
 # ── player skin ───────────────────────────────────────────────────────────────

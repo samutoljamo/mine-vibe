@@ -130,7 +130,8 @@ void client_send_position(Client* c,
     net_thread_push_outbound(c->net, buf, (int)len, &c->server_addr);
 }
 
-void client_send_break(Client* c, int x, int y, int z, uint8_t block)
+void client_send_break(Client* c, int x, int y, int z, uint8_t block,
+                       uint8_t slot)
 {
     if (c->state != CLIENT_CONNECTED) return;
     BlockBreakPacket p = {
@@ -139,7 +140,7 @@ void client_send_break(Client* c, int x, int y, int z, uint8_t block)
             .player_id = c->local_player_id,
             .seq       = c->tick++,
         },
-        .x = x, .y = y, .z = z, .block = block,
+        .x = x, .y = y, .z = z, .block = block, .slot = slot,
     };
     reliable_fill_ack(&c->reliable, &p.header.ack, &p.header.ack_bits);
     uint8_t buf[64];
@@ -328,20 +329,23 @@ int client_poll(Client* c)
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
             if (is_new && (size_t)msg->len >= 8 + 1) {
                 /* Peek slot_count from the wire and verify total length covers
-                 * the implied body (1B per block + 1B per count per slot). */
+                 * the implied body (INVENTORY_NET_SLOT_SIZE bytes per slot). */
                 uint8_t declared_slots = ((const uint8_t*)msg->data)[8];
                 if (declared_slots > INVENTORY_NET_SLOTS) declared_slots = INVENTORY_NET_SLOTS;
-                if ((size_t)msg->len >= (size_t)(8 + 1 + declared_slots * 2)) {
+                if ((size_t)msg->len >=
+                        (size_t)(8 + 1 + declared_slots * INVENTORY_NET_SLOT_SIZE)) {
                     InventoryPacket ip;
                     net_read_inventory(msg->data, &ip);
                     int prev_selected = c->inventory.selected;
                     inventory_init(&c->inventory);
                     c->inventory.selected = prev_selected;  /* preserve focus */
                     for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
-                        BlockID b = (BlockID)ip.slots[i].block;
-                        if ((unsigned)b >= BLOCK_COUNT) continue;   /* range-check; ignore garbage IDs */
-                        c->inventory.slots[i].block = b;
-                        c->inventory.slots[i].count = ip.slots[i].count;
+                        ItemId it = (ItemId)ip.slots[i].item;
+                        if (!item_is_block(it) && !item_is_tool(it))
+                            continue;                       /* ignore garbage ids */
+                        c->inventory.slots[i].item       = it;
+                        c->inventory.slots[i].count      = ip.slots[i].count;
+                        c->inventory.slots[i].durability = ip.slots[i].durability;
                     }
                 }
             }

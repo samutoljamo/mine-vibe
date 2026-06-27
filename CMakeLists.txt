@@ -179,6 +179,7 @@ add_executable(minecraft
     src/remote_player.c
     src/mob.c
     src/inventory.c
+    src/item.c
     src/survival.c
     src/raycast.c
     src/assets_generated.c
@@ -256,6 +257,7 @@ add_executable(test_ui
     src/ui/ui.c
     src/ui/hud.c
     src/block.c
+    src/item.c
     src/pipeline.c
     tests/renderer_stubs.c
 )
@@ -331,7 +333,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME lighting COMMAND test_lighting)
 
-add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/audio.c)
+add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads cglm)
@@ -345,6 +347,8 @@ endif()
 add_executable(test_inventory
     tests/test_inventory.c
     src/inventory.c
+    src/item.c
+    src/block.c
 )
 target_include_directories(test_inventory PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME inventory COMMAND test_inventory)
@@ -372,6 +376,14 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_ore PRIVATE m)
 endif()
 add_test(NAME ore COMMAND test_ore)
+
+# Item model + tool break-time / durability math (pure, no Vulkan/GLFW required)
+add_executable(test_item tests/test_item.c src/item.c src/block.c)
+target_include_directories(test_item PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_item PRIVATE m)
+endif()
+add_test(NAME item COMMAND test_item)
 
 # Audio engine: pure procedural PCM/envelope generators, the sound-id table,
 # and null-backend lifecycle safety (no Vulkan/GLFW/audio device required).

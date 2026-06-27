@@ -205,7 +205,7 @@ static void hud_draw_inventory(const Inventory* inv, float sw, float sh)
         if (!inv) continue;
         const InventorySlot* s = &inv->slots[i];
         if (s->count == 0) continue;
-        ui_block_icon(s->block, r.x + 8, r.y + 8, r.w - 16);
+        ui_block_icon(s->item, r.x + 8, r.y + 8, r.w - 16);
         if (s->count > 1) {
             char buf[8];
             snprintf(buf, sizeof(buf), "%d", s->count);
@@ -286,7 +286,7 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
         if (s->count == 0) continue;
 
         /* Block icon, inset by 4 pixels. */
-        ui_block_icon(s->block, sx + 4, hy + 4, SLOT_SIZE - 8);
+        ui_block_icon(s->item, sx + 4, hy + 4, SLOT_SIZE - 8);
 
         /* Count, only if > 1, bottom-right of slot. */
         if (s->count > 1) {
@@ -366,7 +366,9 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
 
 BlockID hud_selected_block(const Inventory* inv)
 {
-    return inv->slots[inv->selected].block;
+    /* The selected item is a block only when it's in the block id range; a
+     * held tool isn't placeable, so report air. */
+    return item_as_block(inv->slots[inv->selected].item);
 }
 
 /* Performance overlay — top-left stack of small text lines on a dark panel.
