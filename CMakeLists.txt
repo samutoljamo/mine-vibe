@@ -146,6 +146,7 @@ add_executable(minecraft
     src/mesher.c
     src/lighting.c
     src/world.c
+    src/world_persist.c
     src/player.c
     src/physics.c
     src/block_physics.c
@@ -352,8 +353,29 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME ore COMMAND test_ore)
 
+# World persistence overlay (pure: serialize/deserialize roundtrip + file I/O).
+# Pulls in chunk.h (via world_persist.c) which transitively includes Vulkan
+# headers, hence the VK_NO_PROTOTYPES + Vulkan::Headers wiring mirrored from
+# test_mesher / test_lighting.
+add_executable(test_world_persist
+    tests/test_world_persist.c
+    src/world_persist.c
+    src/block.c
+)
+target_include_directories(test_world_persist PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_world_persist PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_world_persist PRIVATE cglm Vulkan::Headers Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_world_persist PRIVATE m)
+endif()
+add_test(NAME world_persist COMMAND test_world_persist)
+
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
-          test_inventory test_raycast test_ore)
+          test_inventory test_raycast test_ore test_world_persist)
     msvc_enable_c11_atomics(${t})
 endforeach()

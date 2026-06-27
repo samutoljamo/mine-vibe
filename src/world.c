@@ -6,6 +6,7 @@
 #include "lighting.h"
 #include "mesher.h"
 #include "worldgen.h"
+#include "world_persist.h"
 #include "renderer.h"
 #include "agent.h"
 
@@ -71,6 +72,11 @@ struct World {
     int            seed;
     int            render_distance;
 
+    /* Optional block-delta persistence overlay (server-owned, may be NULL).
+     * Set once before chunk submission; workers read it (the overlay is
+     * internally synchronized). */
+    const BlockOverlay* overlay;
+
     /* Worker threads */
     PT_Thread*     workers;
     int            worker_count;
@@ -124,6 +130,12 @@ static void* worker_func(void* arg)
 
         if (item->type == WORK_GENERATE) {
             worldgen_generate(item->chunk, item->seed);
+
+            /* Replay persisted player edits over the generated terrain so a
+             * reloaded world matches the last session. Overlay is internally
+             * locked; file I/O never happens on this path. */
+            if (world->overlay)
+                overlay_apply_chunk(world->overlay, item->chunk);
 
             /* Push generate result */
             ResultItem* result = malloc(sizeof(ResultItem));
@@ -312,6 +324,11 @@ World* world_create(Renderer* renderer, int seed, int render_distance)
 World* world_create_headless(int seed, int render_distance)
 {
     return world_create(NULL, seed, render_distance);
+}
+
+void world_set_overlay(World* world, const BlockOverlay* overlay)
+{
+    world->overlay = overlay;
 }
 
 void world_destroy(World* world)

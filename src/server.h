@@ -12,11 +12,14 @@
 #include "net_thread.h"
 #include "inventory.h"
 #include "world.h"
+#include "world_persist.h"
 #include "mob.h"
 
 #define SERVER_MAX_CLIENTS  32
 #define SERVER_TICK_RATE    20     /* Hz */
 #define SERVER_TIMEOUT_SEC  10.0
+#define SERVER_SAVE_INTERVAL 30.0f /* seconds between periodic world flushes  */
+#define SERVER_SAVE_FILE    "world.dat"
 
 typedef struct {
     bool               active;
@@ -42,6 +45,13 @@ typedef struct {
     int          seed;
     MobSet       mobs;           /* (added/used in Task 5)                  */
     float        mob_spawn_timer; /* accumulates time toward MOB_SPAWN_INTERVAL */
+
+    /* World persistence: block-delta overlay + periodic-flush bookkeeping. */
+    BlockOverlay overlay;
+    bool         overlay_active;  /* false if persistence is disabled        */
+    bool         overlay_dirty;   /* edits since last flush                   */
+    float        save_timer;      /* accumulates time toward SERVER_SAVE_INTERVAL */
+    char         save_path[1024];
 } Server;
 
 /* Blocking server loop — call from a dedicated thread or main().

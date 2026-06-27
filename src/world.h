@@ -10,6 +10,7 @@
 typedef struct Renderer Renderer;
 typedef struct World World;
 typedef struct BlockPhysics BlockPhysics;
+typedef struct BlockOverlay BlockOverlay;
 
 World* world_create(Renderer* renderer, int seed, int render_distance);
 
@@ -18,6 +19,12 @@ World* world_create(Renderer* renderer, int seed, int render_distance);
 World* world_create_headless(int seed, int render_distance);
 
 void   world_destroy(World* world);
+
+/* Attach a persistence overlay. When set, generation workers replay the
+ * overlay's recorded block deltas on top of each freshly generated chunk so
+ * loaded worlds reflect prior player edits. Pass NULL to detach. The overlay
+ * is owned by the caller (typically the server) and must outlive the world. */
+void   world_set_overlay(World* world, const BlockOverlay* overlay);
 void   world_update(World* world, BlockPhysics* bp, vec3 player_pos);
 void   world_get_meshes(World* world, ChunkMesh** out_meshes, uint32_t* out_count);
 
