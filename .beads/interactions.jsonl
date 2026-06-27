@@ -26,3 +26,6 @@
 {"id":"int-c1ef1ede","kind":"field_change","created_at":"2026-06-27T10:21:30.86804484Z","actor":"Samu Toljamo","issue_id":"mine-vibe-rz6","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-a84fab57","kind":"field_change","created_at":"2026-06-27T10:21:40.859840816Z","actor":"Samu Toljamo","issue_id":"mine-vibe-zmd","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-d3ddf56f","kind":"field_change","created_at":"2026-06-27T10:22:13.730349216Z","actor":"Samu Toljamo","issue_id":"mine-vibe-23m","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-1bd58f60","kind":"field_change","created_at":"2026-06-27T10:25:53.226800089Z","actor":"Samu Toljamo","issue_id":"mine-vibe-913","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-126abb54","kind":"field_change","created_at":"2026-06-27T10:25:54.754442849Z","actor":"Samu Toljamo","issue_id":"mine-vibe-g09","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-a7ffd594","kind":"field_change","created_at":"2026-06-27T10:25:56.104087897Z","actor":"Samu Toljamo","issue_id":"mine-vibe-4to","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
