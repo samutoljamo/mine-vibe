@@ -39,6 +39,7 @@ static Player  g_player;
 static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
 static RaycastHit g_target;       /* refreshed each frame for outline + click */
 static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none */
+static bool g_show_stats = false; /* perf overlay visibility; toggled with F3 */
 
 /* Timed-mining state. While the break button is held on a block we accumulate
  * elapsed seconds; the break packet is sent once it reaches the block's
@@ -90,6 +91,8 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
     (void)mods;
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
         glfwSetWindowShouldClose(window, GLFW_TRUE);
+    if (key == GLFW_KEY_F3 && action == GLFW_PRESS)
+        g_show_stats = !g_show_stats;   /* toggle the perf overlay */
 }
 
 static bool apply_agent_command(const AgentCommand *cmd, Player *player,
@@ -218,6 +221,9 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "--aniso") == 0 && i + 1 < argc) {
             gfx.aniso = atoi(argv[++i]);  /* clamped to device caps at init */
+        }
+        else if (strcmp(argv[i], "--stats") == 0) {
+            g_show_stats = true;          /* start with the perf overlay on */
         }
     }
 
@@ -378,10 +384,20 @@ int main(int argc, char *argv[])
     double fps_timer = last_time;
     uint64_t tick = 0;
 
+    /* Rolling perf stats: frametime ring buffer drives the FPS/frametime
+     * readout; the renderer mirrors visible-chunk and draw-call counts into it
+     * each frame. Drawn as an overlay when g_show_stats, and printed to stdout
+     * roughly once a second. */
+    PerfStats perf;
+    perf_stats_reset(&perf);
+    double stats_print_timer = last_time;
+
     while (!glfwWindowShouldClose(window)) {
         double now = glfwGetTime();
         float dt = (float)(now - last_time);
         last_time = now;
+
+        perf_stats_push(&perf, dt);   /* feed the rolling FPS/frametime average */
 
         glfwPollEvents();
 
@@ -608,6 +624,11 @@ int main(int argc, char *argv[])
         float day_brightness = daynight_brightness(day_phase);
         vec3  sky_color;  daynight_sky_color(day_phase, sky_color);
 
+        /* Hand the perf overlay state to the renderer; it mirrors this frame's
+         * counters into `perf` and draws the overlay in the UI pass. */
+        renderer.show_stats    = g_show_stats;
+        renderer.stats_overlay = &perf;
+
         renderer_draw_frame(&renderer, meshes, mesh_count,
                             rcount > 0 ? rp_states : NULL, rcount,
                             view, proj, sun_dir,
@@ -659,6 +680,17 @@ int main(int argc, char *argv[])
             glfwSetWindowTitle(window, title);
             frame_count = 0;
             fps_timer = now;
+        }
+
+        /* Perf stats to stdout ~1/s (rolling average; independent of the 2s
+         * title cadence above). Emitted whenever the overlay is enabled. */
+        if (g_show_stats && now - stats_print_timer >= 1.0) {
+            printf("[stats] FPS %.1f  frametime %.2f ms  chunks %u  draws %u\n",
+                   perf_stats_avg_fps(&perf),
+                   perf_stats_avg_frametime_ms(&perf),
+                   perf.visible_chunks, perf.draw_calls);
+            fflush(stdout);
+            stats_print_timer = now;
         }
     }
 

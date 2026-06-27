@@ -7,3 +7,4 @@
 
 # Build output
 /build/
+.claude/worktrees/

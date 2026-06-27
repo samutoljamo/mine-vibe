@@ -68,6 +68,9 @@ void renderer_draw_frame(Renderer* r,
     /* Per-frame outline state reset. Must happen before any
      * renderer_outline_emit_block call this frame. */
     r->outline_vert_count = 0;
+    /* Per-frame perf counters (read back by the caller for the stats HUD). */
+    r->stat_visible_chunks = 0;
+    r->stat_draw_calls     = 0;
     if (target && target->hit) {
         renderer_outline_emit_block(r, target->x, target->y, target->z);
     }
@@ -197,6 +200,8 @@ void renderer_draw_frame(Renderer* r,
 
             /* Draw */
             vkCmdDrawIndexed(cmd, m->index_count, 1, 0, 0, 0);
+            r->stat_visible_chunks++;
+            r->stat_draw_calls++;
         }
     }
 
@@ -207,6 +212,7 @@ void renderer_draw_frame(Renderer* r,
                                 r->player_pipeline_layout, 0, 1,
                                 &r->player_descriptor_sets[fi], 0, NULL);
         player_model_draw(r, cmd, &r->player_model, players, player_count);
+        r->stat_draw_calls += player_count;   /* one instanced/per-player draw each */
     }
 
     /* Block outline (semi-transparent black wireframe on the targeted block).
@@ -222,6 +228,7 @@ void renderer_draw_frame(Renderer* r,
         VkDeviceSize off = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &r->outline_vb[fi], &off);
         vkCmdDraw(cmd, r->outline_vert_count, 1, 0, 0);
+        r->stat_draw_calls++;
     }
 
     /* 7. End render pass */
@@ -232,6 +239,14 @@ void renderer_draw_frame(Renderer* r,
     float sh = (float)r->swapchain.extent.height;
     ui_frame_begin(cmd, image_index, r->current_frame, sw, sh);
     hud_build(inventory, player_health, sw, sh);   /* hud_build draws crosshair unconditionally; hotbar only if inv non-null */
+    /* Performance overlay (top-left). Mirror this frame's renderer counters
+     * into the caller-owned PerfStats so the FPS/frametime rolling average and
+     * the chunk/draw counts render together. */
+    if (r->show_stats && r->stats_overlay) {
+        r->stats_overlay->visible_chunks = r->stat_visible_chunks;
+        r->stats_overlay->draw_calls     = r->stat_draw_calls;
+        hud_draw_stats(r->stats_overlay, sw, sh);
+    }
     /* World-space block outline emission is handled at the top of this
      * function via renderer_outline_emit_block; the draw command is recorded
      * inside the world renderpass above. */
