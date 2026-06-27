@@ -18,13 +18,23 @@
  */
 
 /* A village cell is a coarse grid of chunks; at most one village is anchored
- * per cell, jittered toward the cell interior so adjacent cells never overlap. */
-#define VILLAGE_CELL_CHUNKS  16                              /* 16x16 chunks   */
-#define VILLAGE_CELL_BLOCKS  (VILLAGE_CELL_CHUNKS * 16)      /* 256x256 blocks */
-#define VILLAGE_SPAWN_PCT    25      /* ~25% of cells host a candidate village */
+ * per cell, jittered toward the cell interior so adjacent cells never overlap.
+ *
+ * Findability tuning (see tests/test_village.c density check and the original
+ * 0.3%-of-cells materialization rate): the cell grid was shrunk and the
+ * suitability predicate relaxed so a player reliably finds a village within a
+ * few hundred blocks. The dominant filter used to be flatness — sampling at
+ * radius 40 with a 4-block slope tolerance rejected ~97% of candidate cells on
+ * this terrain. We now sample a tighter footprint (VILLAGE_SAMPLE_RADIUS) with
+ * a looser tolerance, and accept any non-water surface above sea level (the
+ * generator flattens the footprint itself, so gentle slopes are fine). */
+#define VILLAGE_CELL_CHUNKS  8                               /* 8x8 chunks     */
+#define VILLAGE_CELL_BLOCKS  (VILLAGE_CELL_CHUNKS * 16)      /* 128x128 blocks */
+#define VILLAGE_SPAWN_PCT    35      /* ~35% of cells host a candidate village */
 #define VILLAGE_MAX_RADIUS   40      /* blocks; structures stay within this    */
-#define VILLAGE_MARGIN       48      /* keep center this far from cell edges    */
-#define VILLAGE_MAX_SLOPE    4       /* max surface height spread for flatness  */
+#define VILLAGE_MARGIN       36      /* keep center this far from cell edges    */
+#define VILLAGE_SAMPLE_RADIUS 24     /* footprint radius for the flatness check */
+#define VILLAGE_MAX_SLOPE    12      /* max surface height spread for flatness  */
 #define VILLAGE_SEA_LEVEL    62      /* matches worldgen SEA_LEVEL              */
 
 /* Distinct salts so each decision rolls independently of the others. */
@@ -68,6 +78,19 @@ int village_house_count(int vseed);
  * given per-village seed. Houses are scattered within VILLAGE_MAX_RADIUS of
  * the center and do not overlap each other. Pure & deterministic. */
 VillageHouse village_house_at(int vseed, int center_wx, int center_wz, int i);
+
+/* Deterministic locator: find the nearest village center to world position
+ * (wx,wz). Scans the surrounding cell neighbourhood and applies the same
+ * presence + suitability test the generator uses (via worldgen_get_height), so
+ * the returned center is one that actually materializes. Returns true and
+ * writes the center to (*out_x,*out_z) when one is found within the scan
+ * radius, false otherwise. Pure of run state; identical for a given seed. */
+bool village_nearest(int wx, int wz, int seed, int* out_x, int* out_z);
+
+/* Emit a one-line log of the nearest village to (wx,wz) for the given seed to
+ * stderr, so players know which way to walk. Safe to call once at world init.
+ * No-op effect on world state. */
+void village_log_nearest(int wx, int wz, int seed);
 
 /* Forward declaration to avoid pulling chunk.h (and Vulkan headers) into the
  * pure unit test. */

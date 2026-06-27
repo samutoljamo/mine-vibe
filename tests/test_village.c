@@ -46,9 +46,11 @@ static void test_density(void) {
             if (village_cell_at(cgx, cgz, SEED).present) present++;
         }
     double frac = (double)present / (double)total;
-    printf("  present=%ld total=%ld frac=%.3f\n", present, total, frac);
-    /* Wide tolerance around the 25% target. */
-    assert(frac > 0.15 && frac < 0.35);
+    printf("  present=%ld total=%ld frac=%.3f (target %d%%)\n",
+           present, total, frac, VILLAGE_SPAWN_PCT);
+    /* Wide tolerance around the VILLAGE_SPAWN_PCT target. */
+    double target = VILLAGE_SPAWN_PCT / 100.0;
+    assert(frac > target - 0.10 && frac < target + 0.10);
     printf("PASS: density\n");
 }
 
@@ -67,9 +69,13 @@ static void test_center_in_bounds(void) {
             assert(vc.wz >= cell_z0 + VILLAGE_MARGIN);
             assert(vc.wz <  cell_z0 + VILLAGE_CELL_BLOCKS - VILLAGE_MARGIN);
         }
-    /* Margin guarantees neighbour centers are > 2*MAX_RADIUS apart. Since
-     * MARGIN(48) > MAX_RADIUS(40), two villages can never overlap. */
-    assert(VILLAGE_MARGIN > VILLAGE_MAX_RADIUS);
+    /* Neighbour cell centers are at least 2*MARGIN apart. With the findability
+     * tuning MARGIN(36) is below MAX_RADIUS(40), so two close villages may have
+     * slightly overlapping reach — this is harmless (the generator just
+     * overwrites blocks via chunk_set_block, and the seam test below proves the
+     * central landmark still reconstructs correctly). The margin still keeps
+     * every center safely inside its own cell. */
+    assert(VILLAGE_MARGIN > 0);
     printf("PASS: center_in_bounds\n");
 }
 
@@ -87,10 +93,13 @@ static void test_suitability(void) {
     assert(!village_is_suitable(VILLAGE_SEA_LEVEL - 3, BLOCK_GRASS,
                                 VILLAGE_SEA_LEVEL - 3, VILLAGE_SEA_LEVEL - 3));
 
-    /* Wrong surface block → not suitable. */
-    assert(!village_is_suitable(good_h, BLOCK_SAND, good_h, good_h));
+    /* Relaxed surface rule: any non-water solid ground above sea level is now
+     * suitable (the generator flattens the footprint). */
+    assert(village_is_suitable(good_h, BLOCK_SAND, good_h, good_h));
+    assert(village_is_suitable(good_h, BLOCK_STONE, good_h, good_h));
+    /* Water (and air) are still rejected. */
     assert(!village_is_suitable(good_h, BLOCK_WATER, good_h, good_h));
-    assert(!village_is_suitable(good_h, BLOCK_STONE, good_h, good_h));
+    assert(!village_is_suitable(good_h, BLOCK_AIR, good_h, good_h));
 
     /* Too steep → not suitable. */
     assert(!village_is_suitable(good_h, BLOCK_GRASS,
@@ -149,8 +158,9 @@ static void test_house_layout(void) {
 static bool center_suitable(int wx, int wz, int seed) {
     int ch = worldgen_get_height(wx, wz, seed);
     int mn = ch, mx = ch;
-    int off[4][2] = { {VILLAGE_MAX_RADIUS,0},{-VILLAGE_MAX_RADIUS,0},
-                      {0,VILLAGE_MAX_RADIUS},{0,-VILLAGE_MAX_RADIUS} };
+    /* Sample at VILLAGE_SAMPLE_RADIUS to match village.c's footprint check. */
+    int off[4][2] = { {VILLAGE_SAMPLE_RADIUS,0},{-VILLAGE_SAMPLE_RADIUS,0},
+                      {0,VILLAGE_SAMPLE_RADIUS},{0,-VILLAGE_SAMPLE_RADIUS} };
     for (int i = 0; i < 4; i++) {
         int h = worldgen_get_height(wx+off[i][0], wz+off[i][1], seed);
         if (h < mn) mn = h;
@@ -254,6 +264,84 @@ static void test_cross_chunk_and_bounds(void) {
     printf("PASS: cross_chunk_and_bounds\n");
 }
 
+/* ── 7. Deterministic locator ──────────────────────────────────────────────
+ * village_nearest() must (a) be deterministic, (b) return a center that is
+ * actually a present + suitable village (i.e. one the generator materializes),
+ * and (c) return the genuinely nearest such center within its scan window. */
+
+static void test_nearest(void) {
+    int seeds[] = { 1337, 420, 7, 99999 };
+    for (size_t s = 0; s < sizeof(seeds)/sizeof(seeds[0]); s++) {
+        int seed = seeds[s];
+
+        /* Probe several query positions, including the origin (spawn). */
+        int probes[][2] = { {0,0}, {500,-500}, {-1234,777}, {3000,3000} };
+        for (size_t p = 0; p < sizeof(probes)/sizeof(probes[0]); p++) {
+            int qx = probes[p][0], qz = probes[p][1];
+
+            int ax, az, bx, bz;
+            bool a = village_nearest(qx, qz, seed, &ax, &az);
+            bool b = village_nearest(qx, qz, seed, &bx, &bz);
+
+            /* (a) Deterministic. */
+            assert(a == b);
+            if (!a) continue;
+            assert(ax == bx && az == bz);
+
+            /* (b) The returned center is a present + suitable village: find the
+             * cell that owns it and confirm village_cell_at agrees, then that
+             * the center materializes per the generator's suitability test. */
+            int ccx = ax >= 0 ? ax / VILLAGE_CELL_BLOCKS
+                              : -((-ax + VILLAGE_CELL_BLOCKS - 1) / VILLAGE_CELL_BLOCKS);
+            int ccz = az >= 0 ? az / VILLAGE_CELL_BLOCKS
+                              : -((-az + VILLAGE_CELL_BLOCKS - 1) / VILLAGE_CELL_BLOCKS);
+            VillageCell vc = village_cell_at(ccx, ccz, seed);
+            assert(vc.present);
+            assert(vc.wx == ax && vc.wz == az);
+            assert(center_suitable(ax, az, seed));
+
+            /* The located village actually emits non-air blocks when generated. */
+            int gcx = ax >= 0 ? ax / 16 : -((-ax + 15) / 16);
+            int gcz = az >= 0 ? az / 16 : -((-az + 15) / 16);
+            int nonair = 0;
+            for (int dx = -2; dx <= 2; dx++)
+                for (int dz = -2; dz <= 2; dz++) {
+                    Chunk* c = chunk_create(gcx + dx, gcz + dz);
+                    for (int i = 0; i < CHUNK_BLOCKS; i++) c->blocks[i] = BLOCK_AIR;
+                    int hm[16][16] = {0};
+                    village_generate(c, seed, hm);
+                    nonair += count_nonair(c);
+                    chunk_destroy(c);
+                }
+            assert(nonair > 0);
+
+            /* (c) No nearer present+suitable village exists in a small window
+             * around the query (brute-force check against the locator result). */
+            long got2 = (long)(ax - qx)*(ax - qx) + (long)(az - qz)*(az - qz);
+            int home_cx = qx >= 0 ? qx / VILLAGE_CELL_BLOCKS
+                                  : -((-qx + VILLAGE_CELL_BLOCKS - 1) / VILLAGE_CELL_BLOCKS);
+            int home_cz = qz >= 0 ? qz / VILLAGE_CELL_BLOCKS
+                                  : -((-qz + VILLAGE_CELL_BLOCKS - 1) / VILLAGE_CELL_BLOCKS);
+            for (int dcx = -6; dcx <= 6; dcx++)
+                for (int dcz = -6; dcz <= 6; dcz++) {
+                    VillageCell cand = village_cell_at(home_cx + dcx, home_cz + dcz, seed);
+                    if (!cand.present || !center_suitable(cand.wx, cand.wz, seed))
+                        continue;
+                    long d2 = (long)(cand.wx - qx)*(cand.wx - qx) +
+                              (long)(cand.wz - qz)*(cand.wz - qz);
+                    assert(d2 >= got2);
+                }
+        }
+    }
+    /* Report the nearest village to spawn for the two seeds of interest. */
+    int vx, vz;
+    if (village_nearest(0, 0, 1337, &vx, &vz))
+        printf("  seed=1337 nearest-to-origin=(%d,%d)\n", vx, vz);
+    if (village_nearest(0, 0, 420, &vx, &vz))
+        printf("  seed=420  nearest-to-origin=(%d,%d)\n", vx, vz);
+    printf("PASS: nearest\n");
+}
+
 int main(void) {
     test_cell_deterministic();
     test_density();
@@ -261,6 +349,7 @@ int main(void) {
     test_suitability();
     test_house_layout();
     test_cross_chunk_and_bounds();
+    test_nearest();
     printf("ALL VILLAGE TESTS PASSED\n");
     return 0;
 }

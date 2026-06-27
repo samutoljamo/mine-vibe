@@ -6,6 +6,7 @@
 #include "lighting.h"
 #include "mesher.h"
 #include "worldgen.h"
+#include "village.h"
 #include "world_persist.h"
 #include "renderer.h"
 #include "agent.h"
@@ -317,6 +318,10 @@ World* world_create(Renderer* renderer, int seed, int render_distance)
 
     fprintf(stderr, "World created: seed=%d, render_distance=%d, workers=%d\n",
             seed, render_distance, nworkers);
+
+    /* Tell the player where the nearest village to spawn (origin) is, so they
+     * have a destination to walk toward. Pure/deterministic for this seed. */
+    village_log_nearest(0, 0, seed);
 
     return world;
 }
