@@ -6,8 +6,19 @@
 #define SLOT_SIZE   40
 #define SLOT_GAP     4
 #define SLOT_BORDER  4
-#define CROSSHAIR_W 14
+#define CROSSHAIR_W 16
 #define CROSSHAIR_T  2
+#define CROSSHAIR_GAP 4   /* centre gap so the crosshair frames the target */
+
+/* Menu button geometry (pixels). Shared by layout + draw. */
+#define BTN_W       260.0f
+#define BTN_H        48.0f
+#define BTN_GAP      16.0f
+#define MENU_TOP_OFF 40.0f   /* first button below vertical centre */
+
+/* Inventory grid geometry. */
+#define INV_SLOT     54.0f
+#define INV_SLOT_GAP  8.0f
 
 /* Static assert for the cross-header invariant introduced in Task 1's fix. */
 _Static_assert(HUD_SLOT_COUNT == INVENTORY_SLOTS,
@@ -26,20 +37,232 @@ void hud_set_survival(int food, int air)
     g_hud_air  = air;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Game-UI state machine (pure)                                       */
+/* ------------------------------------------------------------------ */
+
+static GameUiState g_screen = GAME_MAIN_MENU;
+
+void        hud_set_screen(GameUiState s) { g_screen = s; }
+GameUiState hud_get_screen(void)          { return g_screen; }
+
+GameUiState game_ui_toggle_pause(GameUiState s)
+{
+    switch (s) {
+        case GAME_PLAYING:   return GAME_PAUSED;
+        case GAME_PAUSED:    return GAME_PLAYING;
+        case GAME_INVENTORY: return GAME_PLAYING;  /* esc closes inventory */
+        default:             return s;             /* main menu: no-op */
+    }
+}
+
+GameUiState game_ui_toggle_inventory(GameUiState s)
+{
+    switch (s) {
+        case GAME_PLAYING:   return GAME_INVENTORY;
+        case GAME_INVENTORY: return GAME_PLAYING;
+        default:             return s;             /* ignored in menu/pause */
+    }
+}
+
+bool game_ui_cursor_free(GameUiState s)  { return s != GAME_PLAYING; }
+bool game_ui_world_active(GameUiState s) { return s == GAME_PLAYING; }
+
+/* ------------------------------------------------------------------ */
+/*  Layout helpers (pure)                                              */
+/* ------------------------------------------------------------------ */
+
+HudRect hud_menu_button_rect(int index, float sw, float sh)
+{
+    float x = (sw - BTN_W) * 0.5f;
+    float y = sh * 0.5f + MENU_TOP_OFF + (float)index * (BTN_H + BTN_GAP);
+    return (HudRect){ x, y, BTN_W, BTN_H };
+}
+
+HudRect hud_inventory_slot_rect(int i, float sw, float sh)
+{
+    int n = HUD_SLOT_COUNT;
+    float total_w = n * INV_SLOT + (n - 1) * INV_SLOT_GAP;
+    float x0 = (sw - total_w) * 0.5f;
+    float y0 = sh * 0.5f - INV_SLOT * 0.5f;
+    float x  = x0 + (float)i * (INV_SLOT + INV_SLOT_GAP);
+    return (HudRect){ x, y0, INV_SLOT, INV_SLOT };
+}
+
+bool hud_rect_contains(HudRect r, float px, float py)
+{
+    return px >= r.x && px < r.x + r.w &&
+           py >= r.y && py < r.y + r.h;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Screen drawing (overlays)                                          */
+/* ------------------------------------------------------------------ */
+
+/* A styled button: dark panel, lighter border, brighter when hovered. The
+ * clickable region is registered by main.c (it owns the cursor); here we only
+ * read ui_hovered_element() so the visuals track the cursor. */
+static void draw_button(int id, HudRect r, const char* label)
+{
+    bool hot = (ui_hovered_element() == id);
+    vec4 border_hot = {1.0f, 1.0f, 1.0f, 1.0f},  border_cold = {0.55f, 0.55f, 0.60f, 0.9f};
+    vec4 fill_hot   = {0.30f, 0.32f, 0.38f, 0.95f}, fill_cold = {0.16f, 0.17f, 0.20f, 0.92f};
+    float* border = hot ? border_hot : border_cold;
+    float* fill   = hot ? fill_hot   : fill_cold;
+    vec4 text   = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    ui_rect(r.x, r.y, r.w, r.h, border);
+    ui_rect(r.x + 2, r.y + 2, r.w - 4, r.h - 4, fill);
+
+    float fs = 22.0f;
+    float tw = ui_text_width(label, fs);
+    ui_text(r.x + (r.w - tw) * 0.5f, r.y + (r.h - fs) * 0.5f + fs * 0.78f,
+            fs, label, text);
+}
+
+/* Full-screen dim used behind modal overlays. */
+static void draw_dim(float sw, float sh, float a)
+{
+    vec4 dim = {0.0f, 0.0f, 0.0f, a};
+    ui_rect(0, 0, sw, sh, dim);
+}
+
+static void draw_title(const char* title, float sw, float sh)
+{
+    float fs = 64.0f;
+    float tw = ui_text_width(title, fs);
+    vec4 shadow = {0.0f, 0.0f, 0.0f, 0.6f};
+    vec4 fg     = {0.95f, 0.85f, 0.35f, 1.0f};
+    float x = (sw - tw) * 0.5f;
+    float y = sh * 0.30f;
+    ui_text(x + 3, y + 3, fs, title, shadow);
+    ui_text(x,     y,     fs, title, fg);
+}
+
+static void draw_centered_label(const char* s, float fs, float sw, float y, vec4 col)
+{
+    float tw = ui_text_width(s, fs);
+    ui_text((sw - tw) * 0.5f, y, fs, s, col);
+}
+
+static void hud_draw_main_menu(float sw, float sh)
+{
+    vec4 bg = {0.06f, 0.07f, 0.10f, 1.0f};
+    ui_rect(0, 0, sw, sh, bg);
+    draw_title("MINECRAFT", sw, sh);
+    draw_button(HUD_ID_PLAY, hud_menu_button_rect(0, sw, sh), "Play");
+    draw_button(HUD_ID_QUIT, hud_menu_button_rect(1, sw, sh), "Quit");
+    vec4 hint = {0.7f, 0.7f, 0.7f, 0.8f};
+    draw_centered_label("Click Play to enter the world", 18.0f, sw,
+                        sh - 40.0f, hint);
+}
+
+static void hud_draw_pause(float sw, float sh)
+{
+    draw_dim(sw, sh, 0.55f);
+    draw_title("PAUSED", sw, sh);
+    draw_button(HUD_ID_RESUME, hud_menu_button_rect(0, sw, sh), "Resume");
+    draw_button(HUD_ID_QUIT,   hud_menu_button_rect(1, sw, sh), "Quit");
+    vec4 hint = {0.7f, 0.7f, 0.7f, 0.8f};
+    draw_centered_label("Esc to resume", 18.0f, sw, sh - 40.0f, hint);
+}
+
+static void hud_draw_inventory(const Inventory* inv, float sw, float sh)
+{
+    draw_dim(sw, sh, 0.45f);
+
+    /* Backing panel sized around the slot row. */
+    int n = HUD_SLOT_COUNT;
+    float total_w = n * INV_SLOT + (n - 1) * INV_SLOT_GAP;
+    float px = (sw - total_w) * 0.5f - 20.0f;
+    float py = sh * 0.5f - INV_SLOT * 0.5f - 56.0f;
+    float pw = total_w + 40.0f;
+    float ph = INV_SLOT + 96.0f;
+    vec4 panel_border = {0.55f, 0.55f, 0.60f, 0.95f};
+    vec4 panel_fill   = {0.12f, 0.13f, 0.16f, 0.96f};
+    ui_rect(px, py, pw, ph, panel_border);
+    ui_rect(px + 3, py + 3, pw - 6, ph - 6, panel_fill);
+
+    vec4 title = {0.95f, 0.95f, 0.95f, 1.0f};
+    ui_text(px + 16, py + 28, 24.0f, "Inventory", title);
+
+    vec4 slot_fill   = {0.20f, 0.20f, 0.22f, 1.0f};
+    vec4 slot_sel    = {1.0f,  1.0f,  1.0f,  1.0f};
+    vec4 slot_unsel  = {0.40f, 0.40f, 0.42f, 1.0f};
+    vec4 slot_hot    = {1.0f,  0.95f, 0.55f, 1.0f};
+    vec4 text_white  = {1.0f,  1.0f,  1.0f,  1.0f};
+
+    for (int i = 0; i < n; i++) {
+        HudRect r = hud_inventory_slot_rect(i, sw, sh);
+        int id = HUD_ID_SLOT0 + i;
+        bool hot = (ui_hovered_element() == id);
+        bool sel = (inv && i == inv->selected);
+        vec4* border = hot ? &slot_hot : (sel ? &slot_sel : &slot_unsel);
+        ui_rect(r.x, r.y, r.w, r.h, *border);
+        ui_rect(r.x + SLOT_BORDER, r.y + SLOT_BORDER,
+                r.w - 2 * SLOT_BORDER, r.h - 2 * SLOT_BORDER, slot_fill);
+
+        if (!inv) continue;
+        const InventorySlot* s = &inv->slots[i];
+        if (s->count == 0) continue;
+        ui_block_icon(s->block, r.x + 8, r.y + 8, r.w - 16);
+        if (s->count > 1) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", s->count);
+            float tw = ui_text_width(buf, 14.0f);
+            ui_text(r.x + r.w - tw - 4, r.y + r.h - 6, 14.0f, buf, text_white);
+        }
+    }
+
+    vec4 hint = {0.7f, 0.7f, 0.7f, 0.85f};
+    draw_centered_label("E or Esc to close", 16.0f, sw, py + ph - 14.0f, hint);
+}
+
 /* hud_build — accepts a NULL `inv`. The crosshair is always drawn (e.g., in
  * single-player / pre-connect runs before the first PKT_INVENTORY arrives);
  * the hotbar slots are only drawn when `inv` is non-NULL. */
+/* Crosshair: four short ticks around a centre gap, each with a 1px dark
+ * outline so it stays visible over bright and dark terrain alike. */
+static void hud_draw_crosshair(float sw, float sh)
+{
+    vec4 fg     = {1.0f, 1.0f, 1.0f, 0.95f};
+    vec4 shadow = {0.0f, 0.0f, 0.0f, 0.55f};
+    float cx = sw * 0.5f, cy = sh * 0.5f;
+    float g = CROSSHAIR_GAP, len = CROSSHAIR_W, t = CROSSHAIR_T;
+
+    /* Each arm drawn as a shadow rect then the bright rect on top. */
+    struct { float x, y, w, h; } arms[4] = {
+        { cx + g,           cy - t * 0.5f, len, t },   /* right */
+        { cx - g - len,     cy - t * 0.5f, len, t },   /* left  */
+        { cx - t * 0.5f,    cy + g,        t,   len }, /* down  */
+        { cx - t * 0.5f,    cy - g - len,  t,   len }, /* up    */
+    };
+    for (int i = 0; i < 4; i++)
+        ui_rect(arms[i].x - 1, arms[i].y - 1, arms[i].w + 2, arms[i].h + 2, shadow);
+    for (int i = 0; i < 4; i++)
+        ui_rect(arms[i].x, arms[i].y, arms[i].w, arms[i].h, fg);
+}
+
 void hud_build(const Inventory* inv, int player_health, float sw, float sh)
 {
-    /* Crosshair — always rendered, even with no inventory yet. */
-    vec4 white = {1, 1, 1, 0.9f};
-    float cx = sw * 0.5f, cy = sh * 0.5f;
-    ui_rect(cx - CROSSHAIR_W * 0.5f, cy - CROSSHAIR_T * 0.5f,
-            CROSSHAIR_W, CROSSHAIR_T, white);
-    ui_rect(cx - CROSSHAIR_T * 0.5f, cy - CROSSHAIR_W * 0.5f,
-            CROSSHAIR_T, CROSSHAIR_W, white);
+    /* Screen dispatch: menus/overlays are driven by the latched game-UI state
+     * (set from main.c). The renderer calls hud_build unconditionally, so this
+     * is where the main menu / pause / inventory screens compose on top of (or
+     * instead of) the in-world HUD. */
+    GameUiState screen = hud_get_screen();
 
-    if (!inv) return;
+    if (screen == GAME_MAIN_MENU) {
+        hud_draw_main_menu(sw, sh);
+        return;
+    }
+
+    /* In-world HUD (crosshair + hotbar + bars) for PLAYING / PAUSED /
+     * INVENTORY. The crosshair is hidden when a modal overlay is up so it
+     * doesn't sit under the dim. */
+    if (screen == GAME_PLAYING)
+        hud_draw_crosshair(sw, sh);
+
+    if (inv) {
 
     /* Hotbar layout. */
     int n = HUD_SLOT_COUNT;
@@ -132,6 +355,13 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
             }
         }
     }
+    }  /* end if (inv) */
+
+    /* Modal overlays drawn last so they sit above the in-world HUD. */
+    if (screen == GAME_PAUSED)
+        hud_draw_pause(sw, sh);
+    else if (screen == GAME_INVENTORY)
+        hud_draw_inventory(inv, sw, sh);
 }
 
 BlockID hud_selected_block(const Inventory* inv)
