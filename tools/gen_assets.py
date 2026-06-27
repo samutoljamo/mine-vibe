@@ -112,6 +112,40 @@ def draw_water(size=16):
     img = Image.new('RGBA', (size, size), (28, 82, 185, 255))
     return img
 
+def _draw_ore(speckle_rgb, seed, blobs=7, size=16):
+    """Stone base with coloured ore speckles — small clustered blobs so the
+    ore reads as veins rather than random pixels."""
+    img = draw_stone(size)
+    rng = random.Random(seed)
+    sr, sg, sb = speckle_rgb
+    for _ in range(blobs):
+        cx, cy = rng.randint(1, size - 2), rng.randint(1, size - 2)
+        # 2x2-ish blob with slight shading variation
+        for dx in (0, 1):
+            for dy in (0, 1):
+                if rng.random() < 0.25:
+                    continue
+                px, py = cx + dx, cy + dy
+                if 0 <= px < size and 0 <= py < size:
+                    d = rng.randint(-18, 18)
+                    img.putpixel((px, py),
+                                 (max(0, min(255, sr + d)),
+                                  max(0, min(255, sg + d)),
+                                  max(0, min(255, sb + d)), 255))
+    return img
+
+def draw_coal_ore(size=16):
+    return _draw_ore((38, 38, 38), seed=101, blobs=8, size=size)
+
+def draw_iron_ore(size=16):
+    return _draw_ore((188, 152, 116), seed=102, blobs=7, size=size)
+
+def draw_gold_ore(size=16):
+    return _draw_ore((230, 196, 70), seed=103, blobs=6, size=size)
+
+def draw_diamond_ore(size=16):
+    return _draw_ore((96, 220, 220), seed=104, blobs=6, size=size)
+
 def draw_bedrock(size=16):
     img = Image.new('RGBA', (size, size))
     for y in range(size):
@@ -132,13 +166,19 @@ TILE_GENERATORS = {
     5:  draw_wood_top,
     6:  draw_wood_side,
     7:  draw_leaves,
+    8:  draw_coal_ore,
+    9:  draw_iron_ore,
+    10: draw_gold_ore,
+    11: draw_diamond_ore,
     16: draw_water,
     17: draw_bedrock,
 }
 
 TILE_NAMES = {
     0: "stone", 1: "dirt", 2: "grass_top", 3: "grass_side", 4: "sand",
-    5: "wood_top", 6: "wood_side", 7: "leaves", 16: "water", 17: "bedrock",
+    5: "wood_top", 6: "wood_side", 7: "leaves",
+    8: "coal_ore", 9: "iron_ore", 10: "gold_ore", 11: "diamond_ore",
+    16: "water", 17: "bedrock",
 }
 
 # ── player skin ───────────────────────────────────────────────────────────────

@@ -130,6 +130,7 @@ add_executable(minecraft
     src/chunk_mesh.c
     src/chunk_map.c
     src/worldgen.c
+    src/ore.c
     src/mesher.c
     src/lighting.c
     src/world.c
@@ -331,8 +332,16 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME raycast COMMAND test_raycast)
 
+# Ore selection (pure, no Vulkan/GLFW required)
+add_executable(test_ore tests/test_ore.c src/ore.c src/block.c)
+target_include_directories(test_ore PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_ore PRIVATE m)
+endif()
+add_test(NAME ore COMMAND test_ore)
+
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
-          test_inventory test_raycast)
+          test_inventory test_raycast test_ore)
     msvc_enable_c11_atomics(${t})
 endforeach()

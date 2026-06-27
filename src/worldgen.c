@@ -3,6 +3,7 @@
 
 #include "worldgen.h"
 #include "chunk.h"
+#include "ore.h"
 #include <stdlib.h>
 #include <math.h>
 
@@ -229,6 +230,21 @@ void worldgen_generate(Chunk* chunk, int seed)
 
     /* Carve caves */
     carve_caves(chunk, &cn, height_map);
+
+    /* Sprinkle ores into the remaining (uncarved) stone. Done after carving so
+     * ores only replace solid stone — never left floating in cave air. Ores
+     * exposed in cave walls are intentional and harvestable. */
+    for (int x = 0; x < CHUNK_X; x++) {
+        for (int z = 0; z < CHUNK_Z; z++) {
+            int surface_h = height_map[x][z];
+            for (int y = 1; y < surface_h; y++) {
+                if (chunk_get_block(chunk, x, y, z) != BLOCK_STONE) continue;
+                BlockID ore = ore_select(base_x + x, y, base_z + z, surface_h, seed);
+                if (ore != BLOCK_STONE)
+                    chunk_set_block(chunk, x, y, z, ore);
+            }
+        }
+    }
 
     /* Place trees: ~2% chance on grass blocks, constrained to [2..13] local X/Z */
     for (int x = 2; x <= 13; x++) {
