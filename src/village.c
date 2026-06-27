@@ -1,6 +1,8 @@
 #include "village.h"
 #include "chunk.h"
 #include "worldgen.h"
+#include <math.h>
+#include <stdio.h>
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Deterministic spatial hash (same mixing style as worldgen's hash_pos /
@@ -52,8 +54,14 @@ VillageCell village_cell_at(int cgx, int cgz, int world_seed)
 bool village_is_suitable(int center_surface_h, BlockID center_surface_block,
                          int sampled_min_h, int sampled_max_h)
 {
+    /* Must sit on dry land above sea level. */
     if (center_surface_h < VILLAGE_SEA_LEVEL + 1) return false;
-    if (center_surface_block != BLOCK_GRASS)      return false;
+    /* Any non-water solid ground works — the generator flattens the footprint,
+     * so grass, sand or dirt are all fine. Only reject water (and, defensively,
+     * anything that isn't a plausible ground surface). */
+    if (center_surface_block == BLOCK_WATER ||
+        center_surface_block == BLOCK_AIR)        return false;
+    /* Allow gentle slopes; the footprint is flattened on placement. */
     if (sampled_max_h - sampled_min_h > VILLAGE_MAX_SLOPE) return false;
     return true;
 }
@@ -164,20 +172,89 @@ static bool village_center_suitable(int wx, int wz, int seed, int* out_platform_
 {
     int center_h = worldgen_get_height(wx, wz, seed);
     int min_h = center_h, max_h = center_h;
+    /* Sample the inner footprint (VILLAGE_SAMPLE_RADIUS, not the full reach):
+     * the structures cluster near the center and each column is flattened on
+     * placement, so the flatness gate only needs the core to be reasonably
+     * level. Sampling the full 40-block reach over this terrain rejected ~97%
+     * of candidate cells, which is why villages were almost impossible to find. */
     static const int off[5][2] = {
-        {0, 0}, {VILLAGE_MAX_RADIUS, 0}, {-VILLAGE_MAX_RADIUS, 0},
-        {0, VILLAGE_MAX_RADIUS}, {0, -VILLAGE_MAX_RADIUS}
+        {0, 0}, {VILLAGE_SAMPLE_RADIUS, 0}, {-VILLAGE_SAMPLE_RADIUS, 0},
+        {0, VILLAGE_SAMPLE_RADIUS}, {0, -VILLAGE_SAMPLE_RADIUS}
     };
     for (int i = 1; i < 5; i++) {
         int h = worldgen_get_height(wx + off[i][0], wz + off[i][1], seed);
         if (h < min_h) min_h = h;
         if (h > max_h) max_h = h;
     }
-    /* Center surface block: grass iff above sea level (matches worldgen's
-     * surface rule away from beaches). */
+    /* Center surface block: grass above sea level, sand at the beach line.
+     * Both are accepted ground now (only water is rejected). */
     BlockID surf = (center_h >= VILLAGE_SEA_LEVEL + 2) ? BLOCK_GRASS : BLOCK_SAND;
     *out_platform_y = center_h;
     return village_is_suitable(center_h, surf, min_h, max_h);
+}
+
+/* ── Deterministic locator ──────────────────────────────────────────────────
+ * Scan the cell neighbourhood around (wx,wz), apply the same presence +
+ * suitability test the generator uses, and return the nearest materializing
+ * village center. Pure: depends only on (wx,wz,seed). The scan radius covers a
+ * generous spread of cells so a hit is found even on terrain where many nearby
+ * candidates fail suitability.
+ * ───────────────────────────────────────────────────────────────────────── */
+bool village_nearest(int wx, int wz, int seed, int* out_x, int* out_z)
+{
+    int home_cx = floor_div(wx, VILLAGE_CELL_BLOCKS);
+    int home_cz = floor_div(wz, VILLAGE_CELL_BLOCKS);
+
+    /* Search out to this many cells in every direction. With 128-block cells a
+     * radius of 24 covers ~3000 blocks each way — far beyond the typical
+     * distance to the nearest suitable village, so this effectively always
+     * finds one. */
+    const int SCAN = 24;
+
+    bool found = false;
+    long best = 0;          /* squared distance to the best center so far */
+    int best_x = 0, best_z = 0;
+
+    for (int dcx = -SCAN; dcx <= SCAN; dcx++)
+        for (int dcz = -SCAN; dcz <= SCAN; dcz++) {
+            VillageCell vc = village_cell_at(home_cx + dcx, home_cz + dcz, seed);
+            if (!vc.present) continue;
+            int py;
+            if (!village_center_suitable(vc.wx, vc.wz, seed, &py)) continue;
+
+            long dx = (long)vc.wx - (long)wx;
+            long dz = (long)vc.wz - (long)wz;
+            long d2 = dx * dx + dz * dz;
+            if (!found || d2 < best) {
+                found = true;
+                best = d2;
+                best_x = vc.wx;
+                best_z = vc.wz;
+            }
+        }
+
+    if (found) {
+        if (out_x) *out_x = best_x;
+        if (out_z) *out_z = best_z;
+    }
+    return found;
+}
+
+void village_log_nearest(int wx, int wz, int seed)
+{
+    int vx, vz;
+    if (village_nearest(wx, wz, seed, &vx, &vz)) {
+        double dist = sqrt((double)(((long)vx - wx) * ((long)vx - wx) +
+                                    ((long)vz - wz) * ((long)vz - wz)));
+        fprintf(stderr,
+                "Village finder: nearest village to (%d,%d) is at (%d,%d), "
+                "~%.0f blocks away.\n",
+                wx, wz, vx, vz, dist);
+    } else {
+        fprintf(stderr,
+                "Village finder: no village found near (%d,%d) within scan "
+                "radius.\n", wx, wz);
+    }
 }
 
 /* Place one block in world coords; out-of-range writes drop harmlessly. */
