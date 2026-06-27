@@ -1,4 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Default to an optimized Release build when no build type is given (e.g. a
+# bare `cmake -B build`). Release implies -O3 -DNDEBUG on GCC/Clang and /O2
+# on MSVC; NDEBUG also compiles out the Vulkan validation layers and debug
+# messenger (guarded by #ifndef NDEBUG in renderer.c), so release builds run
+# without validation overhead. Multi-config generators (VS, Ninja Multi-
+# Config) pick the type at build time, so only set it for single-config.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING
+        "Build type (Debug/Release/RelWithDebInfo/MinSizeRel)" FORCE)
+endif()
+
 project(minecraft C CXX)
 
 set(CMAKE_C_STANDARD 11)

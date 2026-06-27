@@ -697,10 +697,30 @@ static void framebuffer_resize_cb(GLFWwindow* window, int width, int height)
 /*  Public API: init                                                  */
 /* ------------------------------------------------------------------ */
 
-bool renderer_init(Renderer* r, GLFWwindow* window)
+/* Map a requested integer sample count to the highest VkSampleCountFlagBits
+ * that is <= the request AND supported by `caps`. Always returns at least
+ * VK_SAMPLE_COUNT_1_BIT (MSAA off), which every device supports. */
+static VkSampleCountFlagBits pick_sample_count(int requested, VkSampleCountFlags caps)
+{
+    if (requested < 1) requested = 1;
+    static const VkSampleCountFlagBits levels[] = {
+        VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_4_BIT,
+        VK_SAMPLE_COUNT_2_BIT, VK_SAMPLE_COUNT_1_BIT,
+    };
+    for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
+        if ((int)levels[i] <= requested && (caps & levels[i]))
+            return levels[i];
+    }
+    return VK_SAMPLE_COUNT_1_BIT;
+}
+
+bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
 {
     memset(r, 0, sizeof(*r));
     r->window = window;
+    /* Stash the requested anisotropy; resolved against device caps when the
+     * atlas sampler is created in texture.c. */
+    r->max_anisotropy = (float)(settings.aniso < 1 ? 1 : settings.aniso);
 
     /* --- volk --- */
     if (volkInitialize() != VK_SUCCESS) {
@@ -786,20 +806,18 @@ bool renderer_init(Renderer* r, GLFWwindow* window)
     if (!pick_physical_device(r))
         return false;
 
-    /* Pick MSAA sample count. 4x is the sweet spot for cost/quality; fall
-     * back to 1 if the device doesn't support 4x on both color and depth
-     * attachments. Higher counts (8x/16x) cost noticeably more VRAM and
-     * fillrate for diminishing returns. */
+    /* Pick MSAA sample count from the requested level (settings.msaa),
+     * clamped to what the device supports on both color and depth
+     * attachments. Default is 1x (off) for low-end GPUs; higher levels are
+     * opt-in via --msaa. The MSAA=1 path skips the multisample resolve. */
     {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(r->physical_device, &props);
         VkSampleCountFlags caps = props.limits.framebufferColorSampleCounts &
                                   props.limits.framebufferDepthSampleCounts;
-        r->sample_count = (caps & VK_SAMPLE_COUNT_4_BIT)
-                            ? VK_SAMPLE_COUNT_4_BIT
-                            : VK_SAMPLE_COUNT_1_BIT;
-        fprintf(stderr, "renderer: MSAA samples = %dx\n",
-                (int)r->sample_count);
+        r->sample_count = pick_sample_count(settings.msaa, caps);
+        fprintf(stderr, "renderer: MSAA samples = %dx (requested %dx)\n",
+                (int)r->sample_count, settings.msaa);
     }
 
     /* --- Logical device --- */

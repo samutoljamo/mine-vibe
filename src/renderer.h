@@ -24,6 +24,25 @@ struct RaycastHit;
 
 typedef struct ChunkMesh ChunkMesh;
 
+/* Runtime graphics settings populated from CLI flags in main.c. Tuned for
+ * low-end / integrated GPUs by default; higher quality is opt-in via flags.
+ *   render_distance : chunk load radius (plumbed into world_create).
+ *   msaa            : requested MSAA sample count (1|2|4|8...); clamped to
+ *                     device caps at init. 1 = MSAA off (no resolve pass).
+ *   aniso           : requested anisotropic-filtering level (1|4|8|16);
+ *                     clamped to device caps. 1 = anisotropy off. */
+typedef struct RenderSettings {
+    int render_distance;
+    int msaa;
+    int aniso;
+} RenderSettings;
+
+/* Sensible defaults for an integrated GPU. */
+static inline RenderSettings render_settings_default(void) {
+    RenderSettings s = { .render_distance = 12, .msaa = 1, .aniso = 4 };
+    return s;
+}
+
 typedef struct Renderer {
     /* Core Vulkan */
     VkInstance                  instance;
@@ -46,6 +65,10 @@ typedef struct Renderer {
      * + MSAA color images), and all pipelines that draw into the world
      * render pass. The UI pass remains single-sampled. */
     VkSampleCountFlagBits       sample_count;
+
+    /* Anisotropic-filtering level for the atlas sampler, resolved from the
+     * requested RenderSettings.aniso clamped to device caps. 1.0 = off. */
+    float                       max_anisotropy;
 
     /* Swapchain */
     Swapchain                   swapchain;
@@ -121,7 +144,7 @@ typedef struct Renderer {
     uint32_t         outline_vert_count;   /* reset to 0 per frame; one block emits 24 verts */
 } Renderer;
 
-bool renderer_init(Renderer* r, GLFWwindow* window);
+bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings);
 void renderer_draw_frame(Renderer* r,
                          ChunkMesh* meshes, uint32_t mesh_count,
                          const PlayerRenderState* players, uint32_t player_count,
