@@ -630,9 +630,18 @@ int main(int argc, char *argv[])
                 .mode      = (g_player.mode == MODE_FREE) ? 0 : 1,
                 .tick      = tick,
             };
-            snap.selected_slot = 0;             /* TODO Task 11: wire from client.inventory */
-            for (int i = 0; i < INVENTORY_SLOTS; i++)
-                snap.hotbar[i] = 0;             /* TODO Task 11 */
+            /* Hotbar mirrors the server-authoritative inventory; only valid
+             * when networking (the Client struct is otherwise uninitialised).
+             * Report the selected slot and each slot's item count. */
+            if (networking) {
+                snap.selected_slot = client.inventory.selected;
+                for (int i = 0; i < INVENTORY_SLOTS; i++)
+                    snap.hotbar[i] = client.inventory.slots[i].count;
+            } else {
+                snap.selected_slot = 0;
+                for (int i = 0; i < INVENTORY_SLOTS; i++)
+                    snap.hotbar[i] = 0;
+            }
             agent_emit_snapshot(&snap);
             tick++;
         }
