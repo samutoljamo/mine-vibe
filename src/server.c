@@ -256,6 +256,49 @@ static void server_send_inventory(Server* s, ServerClient* c)
     send_reliable(s, c, buf, (uint16_t)len);
 }
 
+/* --- Pure block-edit validation predicates (no world/server state) --- */
+
+/* A block can be broken (and dropped into inventory) if it is a real, solid
+ * block that isn't the unbreakable bedrock floor. Air/water are not solid;
+ * bedrock is solid but flagged unbreakable. Both checks are side-effect free. */
+static inline bool server_block_breakable(BlockID id)
+{
+    if (id == BLOCK_AIR || id >= BLOCK_COUNT) return false;
+    if (id == BLOCK_BEDROCK) return false;
+    if (!block_is_solid(id)) return false;                 /* excludes water */
+    if (block_break_time(id) >= BLOCK_BREAK_UNBREAKABLE) return false;
+    return true;
+}
+
+/* A cell currently holding `target` may have a new block placed into it if the
+ * cell is empty (air) or a replaceable fluid (water). Solid blocks block
+ * placement; the client should have aimed at an adjacent empty cell. */
+static inline bool server_block_replaceable(BlockID target)
+{
+    return target == BLOCK_AIR || target == BLOCK_WATER;
+}
+
+/* Does an axis-aligned unit block at (bx,by,bz) overlap any active player's
+ * AABB? Used to refuse placements that would intersect a player (including the
+ * placer, already covered separately, but cheap to include). */
+static bool server_block_intersects_player(Server* s, int bx, int by, int bz)
+{
+    float bminx = (float)bx,        bmaxx = (float)bx + 1.0f;
+    float bminy = (float)by,        bmaxy = (float)by + 1.0f;
+    float bminz = (float)bz,        bmaxz = (float)bz + 1.0f;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        ServerClient* o = &s->clients[i];
+        if (!o->active || !o->position_received) continue;
+        float pminx = o->x - PLAYER_HALF_W, pmaxx = o->x + PLAYER_HALF_W;
+        float pminy = o->y,                 pmaxy = o->y + PLAYER_HEIGHT;
+        float pminz = o->z - PLAYER_HALF_W, pmaxz = o->z + PLAYER_HALF_W;
+        if (pmaxx > bminx && pminx < bmaxx &&
+            pmaxy > bminy && pminy < bmaxy &&
+            pmaxz > bminz && pminz < bmaxz) return true;
+    }
+    return false;
+}
+
 static void handle_block_break(Server* s, ServerClient* c,
                                 const uint8_t* data, size_t len)
 {
@@ -281,12 +324,16 @@ static void handle_block_break(Server* s, ServerClient* c,
     float dz = (p.z + 0.5f) - c->z;
     if (dx*dx + dy*dy + dz*dz > MAX_REACH * MAX_REACH) return;
 
-    /* Server doesn't own a world to validate replaceability against, so we
-     * trust the client's claimed block ID, but reject obvious nonsense. */
-    BlockID b = (BlockID)p.block;
-    if (b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_BEDROCK || b >= BLOCK_COUNT) return;
+    /* Consult the authoritative server world (which already reflects the
+     * persistence overlay's prior edits) instead of trusting the client's
+     * claimed block. Reject the break unless the world actually holds a solid,
+     * breakable block at the requested cell. The credited drop is the server's
+     * block, never the client-supplied one. */
+    if (!s->world) return;
+    BlockID actual = world_get_block(s->world, p.x, p.y, p.z);
+    if (!server_block_breakable(actual)) return;
 
-    uint8_t leftover = inventory_add(&c->inventory, b, 1);
+    uint8_t leftover = inventory_add(&c->inventory, actual, 1);
     if (leftover != 0) {
         /* No room — refuse the break. Don't broadcast, don't send inventory. */
         return;
@@ -356,6 +403,15 @@ static void handle_block_place(Server* s, ServerClient* c,
 
     BlockID b = c->inventory.slots[p.slot].block;
     if (b == BLOCK_AIR || b >= BLOCK_COUNT) return;   /* should be impossible, but don't broadcast garbage */
+
+    /* Validate against the authoritative server world (reflects the overlay's
+     * prior edits): the target cell must currently be empty/replaceable, and
+     * the new block must not intersect any player. */
+    if (!s->world) return;
+    BlockID target = world_get_block(s->world, tx, ty, tz);
+    if (!server_block_replaceable(target)) return;
+    if (server_block_intersects_player(s, tx, ty, tz)) return;
+
     inventory_consume(&c->inventory, p.slot);
     server_persist_edit(s, tx, ty, tz, b);
     server_broadcast_block_change(s, tx, ty, tz, b);
