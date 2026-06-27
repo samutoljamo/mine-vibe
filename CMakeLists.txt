@@ -165,6 +165,7 @@ add_executable(minecraft
     src/remote_player.c
     src/mob.c
     src/inventory.c
+    src/survival.c
     src/raycast.c
     src/assets_generated.c
     src/shaders_generated.c
@@ -314,7 +315,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME lighting COMMAND test_lighting)
 
-add_executable(test_client tests/test_client.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c)
+add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads cglm)
@@ -379,6 +380,14 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_biome PRIVATE m)
 endif()
 add_test(NAME biome COMMAND test_biome)
+
+# Survival mechanics math (pure: fall/hunger/drown/lava/regen, no Vulkan/GLFW)
+add_executable(test_survival tests/test_survival.c src/survival.c)
+target_include_directories(test_survival PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_survival PRIVATE m)
+endif()
+add_test(NAME survival COMMAND test_survival)
 
 # Day/night cycle math (pure, no Vulkan/GLFW required)
 add_executable(test_daynight tests/test_daynight.c src/daynight.c)
@@ -464,6 +473,6 @@ add_test(NAME world_persist COMMAND test_world_persist)
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_raycast test_ore test_hardness test_biome
-          test_daynight test_village test_worldgen test_world_persist)
+          test_daynight test_village test_worldgen test_survival test_world_persist)
     msvc_enable_c11_atomics(${t})
 endforeach()

@@ -23,6 +23,14 @@
 _Static_assert(INVENTORY_SLOTS == INVENTORY_NET_SLOTS,
     "wire format and inventory model must agree on slot count");
 
+/* Edible item: with no dedicated FOOD item in the block model, we designate an
+ * existing, naturally-obtainable block as food ("foraged berries from leaves").
+ * Right-clicking while holding it eats one to restore hunger. Each leaf restores
+ * a few drumsticks plus a little saturation. */
+#define SERVER_FOOD_BLOCK    BLOCK_LEAVES
+#define SERVER_FOOD_RESTORE  4.0f
+#define SERVER_FOOD_SAT      2.4f
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -68,6 +76,11 @@ static ServerClient* alloc_client(Server* s, const struct sockaddr_in* addr)
         reliable_init(&c->reliable);
         inventory_init(&c->inventory);
         c->health = PLAYER_MAX_HEALTH;
+        survival_init(&c->survival);
+        c->prev_pos_valid = false;
+        c->falling        = false;
+        c->respawn_grace  = 0.0f;
+        c->needs_health_sync = false;
         return c;
     }
     return NULL;
@@ -304,6 +317,20 @@ static void handle_block_place(Server* s, ServerClient* c,
     if (p.face > FACE_PZ || p.slot >= INVENTORY_SLOTS) return;
     if (c->inventory.slots[p.slot].count == 0) return;
 
+    /* Edible item: right-clicking with the designated food block consumes one
+     * to restore hunger instead of placing it (only when not already full).
+     * Reuses the block/item model — no new wire packet or client input path. */
+    if (c->inventory.slots[p.slot].block == SERVER_FOOD_BLOCK) {
+        if (survival_eat(&c->survival.food, &c->survival.saturation,
+                         SERVER_FOOD_RESTORE, SERVER_FOOD_SAT)) {
+            inventory_consume(&c->inventory, p.slot);
+            c->needs_health_sync = true;   /* push updated hunger this tick */
+            server_send_inventory(s, c);
+            return;
+        }
+        /* Full: fall through and place it like a normal block. */
+    }
+
     int dx, dy, dz;
     block_face_offset((BlockFace)p.face, &dx, &dy, &dz);
     int tx = p.x + dx, ty = p.y + dy, tz = p.z + dz;
@@ -410,22 +437,168 @@ static void server_try_spawn(Server* s, vec3 anchor) {
     if (m) fprintf(stderr, "[server] spawned mob %u (type %d) at (%d,%d)\n", m->id, (int)type, x, z);
 }
 
+/* Convert survival air seconds (0..MAX_AIR_SEC) to 0..20 bubbles for the HUD. */
+static uint8_t server_air_bubbles(const ServerClient* c) {
+    float frac = c->survival.air / SURVIVAL_MAX_AIR_SEC;
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    return (uint8_t)(frac * NET_MAX_AIR + 0.5f);
+}
+
 static void server_send_health(Server* s, ServerClient* c, uint8_t flags) {
     uint8_t buf[16];
     PacketHeader h = { .type = PKT_PLAYER_HEALTH, .player_id = 0 };
     uint8_t hp = (uint8_t)(c->health < 0 ? 0 : c->health);
-    size_t len = net_write_player_health(buf, &h, hp, flags);
+    uint8_t food = (uint8_t)(c->survival.food < 0.0f ? 0 : (int)(c->survival.food + 0.5f));
+    if (food > NET_MAX_FOOD) food = NET_MAX_FOOD;
+    size_t len = net_write_player_health(buf, &h, hp, flags, food,
+                                         server_air_bubbles(c));
     send_reliable(s, c, buf, (uint16_t)len);
+}
+
+/* On death: clear the inventory (vanilla drops items; with no item-entity
+ * system we simply clear them), refill health/hunger/air, and start a brief
+ * invulnerability window. The DIED flag tells the client to play its death
+ * state and teleport to spawn. */
+static void server_kill_player(Server* s, ServerClient* c) {
+    inventory_init(&c->inventory);
+    server_send_inventory(s, c);
+
+    c->health = 0;
+    server_send_health(s, c, MOB_HEALTH_FLAG_DIED);
+
+    /* Respawn refill (client teleports to spawn on the DIED flag). */
+    c->health = PLAYER_MAX_HEALTH;
+    survival_init(&c->survival);
+    c->respawn_grace  = SURVIVAL_RESPAWN_GRACE_SEC;
+    c->falling        = false;
+    c->prev_pos_valid = false;
+    c->needs_health_sync = true;
 }
 
 void server_damage_player(Server* s, ServerClient* c, int dmg) {
     if (c->health <= 0) return;
+    if (c->respawn_grace > 0.0f) return;   /* invulnerable after respawn */
     c->health = (int16_t)(c->health - dmg);
     if (c->health <= 0) {
-        c->health = 0;
-        server_send_health(s, c, MOB_HEALTH_FLAG_DIED);
-        c->health = PLAYER_MAX_HEALTH;   /* respawn refill (client teleports) */
+        server_kill_player(s, c);
     } else {
+        server_send_health(s, c, 0);
+    }
+}
+
+/* Is the block at (x,y,z) lava? No BLOCK_LAVA exists in the world model yet,
+ * so this is always false today; the survival lava path and its pure math are
+ * fully wired and tested, ready for a lava block to be added later. */
+static bool server_block_is_lava(BlockID b) {
+    (void)b;
+#ifdef BLOCK_LAVA
+    return b == BLOCK_LAVA;
+#else
+    return false;
+#endif
+}
+
+/* Per-tick survival simulation for one client: hunger decay from movement,
+ * fall damage on landing, drowning when the head is underwater, lava contact,
+ * starvation, and natural regen. Server-authoritative; mutates health/hunger
+ * and flags a health sync when anything visible changes. */
+static void server_simulate_survival(Server* s, ServerClient* c, float dt) {
+    if (!c->position_received) return;
+
+    SurvivalState* sv = &c->survival;
+    int16_t hp_before   = c->health;
+    float   food_before = sv->food;
+    uint8_t air_before  = server_air_bubbles(c);
+
+    if (c->respawn_grace > 0.0f) {
+        c->respawn_grace -= dt;
+        if (c->respawn_grace < 0.0f) c->respawn_grace = 0.0f;
+    }
+
+    /* --- Movement-driven exhaustion (horizontal distance) --- */
+    if (c->prev_pos_valid) {
+        float ddx = c->x - c->prev_x;
+        float ddz = c->z - c->prev_z;
+        float hdist = sqrtf(ddx*ddx + ddz*ddz);
+        bool sprinting = hdist > (PLAYER_SPRINT_SPEED * 0.5f) * dt; /* rough */
+        survival_apply_exhaustion(&sv->food, &sv->saturation, &sv->exhaustion,
+                                  survival_exhaustion_move(hdist, sprinting));
+    }
+    /* Idle trickle so a stationary player still grows hungry over time. */
+    survival_apply_exhaustion(&sv->food, &sv->saturation, &sv->exhaustion,
+                              SURVIVAL_EXH_IDLE_PER_SEC * dt);
+
+    /* --- Fall damage: track descent, apply on landing --- */
+    if (c->prev_pos_valid && s->world) {
+        bool grounded = block_is_solid(
+            world_get_block(s->world, (int)floorf(c->x),
+                            (int)floorf(c->y - 0.1f), (int)floorf(c->z)));
+        bool descending = c->y < c->prev_y - 1e-4f;
+        if (descending) {
+            if (!c->falling) { c->falling = true; c->fall_start_y = c->prev_y; }
+            else if (c->prev_y > c->fall_start_y) c->fall_start_y = c->prev_y;
+        }
+        if (c->falling && grounded) {
+            float dist = c->fall_start_y - c->y;
+            int dmg = survival_fall_damage(dist);
+            c->falling = false;
+            if (dmg > 0) server_damage_player(s, c, dmg);
+        }
+        /* Reset the fall tracker if we end up rising (jump/swim) while not
+         * mid-descent, so a jump doesn't pre-arm fall damage. */
+        if (!descending && grounded) c->falling = false;
+    }
+
+    /* --- Drowning: is the head block water? --- */
+    bool head_water = false;
+    if (s->world) {
+        int hx = (int)floorf(c->x);
+        int hy = (int)floorf(c->y + PLAYER_EYE_H);
+        int hz = (int)floorf(c->z);
+        head_water = (world_get_block(s->world, hx, hy, hz) == BLOCK_WATER);
+    }
+    {
+        int dmg = survival_drown_step(head_water, &sv->air, &sv->drown_timer, dt);
+        if (dmg > 0) server_damage_player(s, c, dmg);
+    }
+
+    /* --- Lava contact (feet block) --- */
+    bool in_lava = false;
+    if (s->world) {
+        in_lava = server_block_is_lava(
+            world_get_block(s->world, (int)floorf(c->x),
+                            (int)floorf(c->y), (int)floorf(c->z)));
+    }
+    {
+        int dmg = survival_lava_step(in_lava, &sv->lava_timer, dt);
+        if (dmg > 0) server_damage_player(s, c, dmg);
+    }
+
+    /* --- Starvation + regen (only if still alive after the above) --- */
+    if (c->health > 0) {
+        int starve = survival_starve_step(sv->food, c->health, &sv->starve_timer, dt);
+        if (starve > 0) server_damage_player(s, c, starve);
+
+        int heal = survival_regen_step(sv->food, c->health, &sv->regen_timer,
+                                       &sv->exhaustion, dt);
+        if (heal > 0) {
+            c->health = (int16_t)(c->health + heal);
+            if (c->health > PLAYER_MAX_HEALTH) c->health = PLAYER_MAX_HEALTH;
+        }
+    }
+
+    /* Remember this tick's position for next-tick diffing. */
+    c->prev_x = c->x; c->prev_y = c->y; c->prev_z = c->z;
+    c->prev_pos_valid = true;
+
+    /* Push a health packet if anything the client renders changed. server_*
+     * damage already sent packets on hits; this catches hunger/air/regen. */
+    if (c->health != hp_before
+        || (int)(sv->food + 0.5f) != (int)(food_before + 0.5f)
+        || server_air_bubbles(c) != air_before
+        || c->needs_health_sync) {
+        c->needs_health_sync = false;
         server_send_health(s, c, 0);
     }
 }
@@ -612,6 +785,13 @@ static void server_tick(Server* s, int tick_num)
     /* Stream terrain around the anchor so mobs have ground to walk on. */
     if (s->world) {
         world_update(s->world, /*bp=*/NULL, anchor);
+    }
+
+    /* Survival: hunger, fall/drown/lava damage, regen — per connected client. */
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        ServerClient* c = &s->clients[i];
+        if (!c->active) continue;
+        server_simulate_survival(s, c, 1.0f / SERVER_TICK_RATE);
     }
 
     if (s->world) {

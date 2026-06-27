@@ -74,4 +74,10 @@ BlockID hud_selected_block(const struct Inventory* inv);
  * ui_frame_begin / ui_frame_end. */
 void    hud_draw_stats(const PerfStats* p, float sw, float sh);
 
+/* Latch the latest server-reported survival stats so hud_build (whose
+ * signature is fixed by its renderer caller) can draw the hunger + oxygen
+ * bars. food: 0..20, air: 0..20. The client calls this from the
+ * PKT_PLAYER_HEALTH handler. */
+void    hud_set_survival(int food, int air);
+
 #endif
