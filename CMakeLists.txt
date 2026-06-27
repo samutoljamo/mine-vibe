@@ -143,6 +143,7 @@ add_executable(minecraft
     src/chunk_map.c
     src/worldgen.c
     src/ore.c
+    src/daynight.c
     src/mesher.c
     src/lighting.c
     src/world.c
@@ -353,6 +354,14 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME ore COMMAND test_ore)
 
+# Day/night cycle math (pure, no Vulkan/GLFW required)
+add_executable(test_daynight tests/test_daynight.c src/daynight.c)
+target_include_directories(test_daynight PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_daynight PRIVATE m)
+endif()
+add_test(NAME daynight COMMAND test_daynight)
+
 # World persistence overlay (pure: serialize/deserialize roundtrip + file I/O).
 # Pulls in chunk.h (via world_persist.c) which transitively includes Vulkan
 # headers, hence the VK_NO_PROTOTYPES + Vulkan::Headers wiring mirrored from
@@ -376,6 +385,6 @@ add_test(NAME world_persist COMMAND test_world_persist)
 
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
-          test_inventory test_raycast test_ore test_world_persist)
+          test_inventory test_raycast test_ore test_daynight test_world_persist)
     msvc_enable_c11_atomics(${t})
 endforeach()
