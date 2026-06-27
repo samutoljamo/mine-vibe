@@ -3,6 +3,8 @@
 #include "gameplay.h"
 #include "daynight.h"   /* DAY_LENGTH_TICKS for noon init */
 #include "ui/hud.h"     /* hud_set_survival — latch food/air for the HUD */
+#include "audio.h"      /* audio_init/play/shutdown — client-side SFX hooks */
+#include "block.h"      /* BLOCK_AIR — distinguish break vs place events */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -62,9 +64,15 @@ void client_init(Client* c, NetThread* net,
     /* Start at noon so the sky is daylit before the first PKT_WORLD_STATE. */
     c->world_ticks = DAY_LENGTH_TICKS / 4;
     c->world_ticks_recv_time = 0.0;
+
+    /* Bring up the audio engine from the client (the only place that owns the
+     * server-event stream that drives SFX). Safe no-op with the null backend
+     * and idempotent, so this is fine even with multiple clients in a test. */
+    audio_init();
+    audio_set_music(true);
 }
 
-void client_destroy(Client* c) { (void)c; }
+void client_destroy(Client* c) { (void)c; audio_shutdown(); }
 
 /* Server runs the world clock at 20 Hz; mirror that here for extrapolation.
  * Kept local so client.c doesn't need to pull in server.h. */
@@ -293,6 +301,15 @@ int client_poll(Client* c)
             if (is_new && (size_t)msg->len >= 8 + 13) {
                 BlockChangePacket bp;
                 net_read_block_change(msg->data, &bp);
+                /* SFX hook: a change to AIR is a break, anything else a place.
+                 * Positional so distant edits by other players are quieter. */
+                {
+                    float pos[3]      = { (float)bp.x, (float)bp.y, (float)bp.z };
+                    float listener[3] = { 0.0f, 0.0f, 0.0f }; /* updated via audio_update */
+                    audio_play_at(bp.block == BLOCK_AIR ? SFX_BLOCK_BREAK
+                                                        : SFX_BLOCK_PLACE,
+                                  pos, listener);
+                }
                 if (c->pending_block_change_count < 256) {
                     int i = c->pending_block_change_count++;
                     c->pending_block_changes[i].x     = bp.x;
@@ -336,6 +353,11 @@ int client_poll(Client* c)
                 uint8_t hp, fl, food, air;
                 net_read_player_health(msg->data, (size_t)msg->len,
                                        &h, &hp, &fl, &food, &air);
+                /* SFX hook: a drop in health means the local player took
+                 * damage. (Death is handled below, which also plays nothing
+                 * extra — the hurt cue already fired here.) */
+                if ((int16_t)hp < c->health)
+                    audio_play(SFX_HURT);
                 c->health = (int16_t)hp;
                 c->food   = food;
                 c->air    = air;
@@ -383,6 +405,11 @@ int client_poll(Client* c)
             client_connect(c);
         }
     }
+
+    /* Pump the audio engine once per frame (client_poll is the per-frame drain
+     * point). Null backend makes this a cheap no-op; a real backend refills its
+     * device buffer and advances the procedural music here. */
+    audio_update(NULL);
 
     return state_packets;
 }
