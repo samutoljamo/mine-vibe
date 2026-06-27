@@ -2,11 +2,13 @@
 #include "net.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 static void* thread_func(void* arg)
 {
     NetThread* nt = (NetThread*)arg;
     uint8_t buf[NET_THREAD_MAX_MSG];
+    double next_drop_report = 0.0;
 
     while (atomic_load(&nt->running)) {
         /* Drain inbound socket */
@@ -14,7 +16,12 @@ static void* thread_func(void* arg)
         int n;
         while ((n = net_recv(nt->fd, buf, sizeof(buf), &from)) > 0) {
             NetMsg* msg = malloc(sizeof(NetMsg));
-            if (!msg) continue;
+            if (!msg) {
+                /* Dropped an inbound packet: queue semantics unchanged, but
+                 * count it so the loss is observable rather than silent. */
+                atomic_fetch_add(&nt->dropped, 1ull);
+                continue;
+            }
             memcpy(msg->data, buf, (size_t)n);
             msg->len       = n;
             msg->addr      = from;
@@ -41,6 +48,21 @@ static void* thread_func(void* arg)
             out = next;
         }
 
+        /* Periodically surface any packet loss (at most ~once per second). */
+        {
+            unsigned long long dropped = atomic_load(&nt->dropped);
+            if (dropped != nt->dropped_reported) {
+                double now = net_time();
+                if (now >= next_drop_report) {
+                    fprintf(stderr,
+                            "net_thread: dropped %llu packet(s) total "
+                            "(allocation failure under load)\n", dropped);
+                    nt->dropped_reported = dropped;
+                    next_drop_report = now + 1.0;
+                }
+            }
+        }
+
         /* ~1ms sleep to avoid burning CPU */
         pt_sleep_ms(1);
     }
@@ -52,10 +74,19 @@ bool net_thread_start(NetThread* nt, int fd)
     nt->fd       = fd;
     nt->in_head  = nt->in_tail  = NULL;
     nt->out_head = nt->out_tail = NULL;
+    atomic_store(&nt->dropped, 0ull);
+    nt->dropped_reported = 0;
     pt_mutex_init(&nt->in_mutex);
     pt_mutex_init(&nt->out_mutex);
     atomic_store(&nt->running, true);
-    pt_thread_create(&nt->thread, thread_func, nt); /* void return */
+    if (pt_thread_create(&nt->thread, thread_func, nt) != 0) {
+        /* Thread did not start — undo init so the caller sees a clean failure. */
+        atomic_store(&nt->running, false);
+        pt_mutex_destroy(&nt->in_mutex);
+        pt_mutex_destroy(&nt->out_mutex);
+        fprintf(stderr, "net_thread_start: failed to create network thread\n");
+        return false;
+    }
     return true;
 }
 
@@ -81,7 +112,12 @@ void net_thread_push_outbound(NetThread* nt, const void* data, int len,
 {
     if (len <= 0 || len > NET_THREAD_MAX_MSG) return;
     NetMsg* msg = malloc(sizeof(NetMsg));
-    if (!msg) return;
+    if (!msg) {
+        /* Dropped an outbound packet — count it so the loss is observable
+         * (the thread loop emits a periodic warning). */
+        atomic_fetch_add(&nt->dropped, 1ull);
+        return;
+    }
     memcpy(msg->data, data, (size_t)len);
     msg->len  = len;
     msg->addr = *addr;

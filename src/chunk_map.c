@@ -2,6 +2,7 @@
 #include "chunk.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 /* splitmix64 hash */
 static uint64_t hash_key(int32_t cx, int32_t cz)
@@ -32,6 +33,12 @@ void chunk_map_init(ChunkMap* map, uint32_t capacity)
     map->capacity = round_up_pow2(capacity);
     map->count = 0;
     map->entries = calloc(map->capacity, sizeof(ChunkMapEntry));
+    if (!map->entries) {
+        /* Unrecoverable: the map is a core structure with no caller error path. */
+        fprintf(stderr, "chunk_map_init: out of memory allocating %u entries\n",
+                map->capacity);
+        abort();
+    }
 }
 
 void chunk_map_free(ChunkMap* map)
@@ -58,6 +65,13 @@ static void rehash(ChunkMap* map)
 {
     uint32_t new_cap = map->capacity * 2;
     ChunkMapEntry* new_entries = calloc(new_cap, sizeof(ChunkMapEntry));
+    if (!new_entries) {
+        /* Unrecoverable: chunk_map_put has no error path, and returning here
+         * would leave the map over-full with no room to insert. */
+        fprintf(stderr, "chunk_map rehash: out of memory growing to %u entries\n",
+                new_cap);
+        abort();
+    }
 
     for (uint32_t i = 0; i < map->capacity; i++) {
         if (map->entries[i].occupied) {
