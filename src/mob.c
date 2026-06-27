@@ -39,8 +39,62 @@ Mob* mob_set_spawn(MobSet* s, MobType type, vec3 pos) {
     m->active = true;
     m->type   = type;
     glm_vec3_copy(pos, m->position);
-    m->health = MOB_HEALTH;
+    m->health = mob_stats(type).health;
     return m;
+}
+
+/* ---- Mob variety: per-type stats + AI helpers (pure) ---- */
+
+MobStats mob_stats(MobType type) {
+    switch (type) {
+    case MOB_SKELETON:
+        return (MobStats){
+            .health = SKELETON_HEALTH,
+            .speed  = MOB_SPEED,
+            .attack_range    = SKELETON_SHOOT_RANGE,
+            .attack_damage   = SKELETON_ATTACK_DAMAGE,
+            .attack_interval = SKELETON_ATTACK_INTERVAL,
+            .ranged   = true,
+            .explodes = false,
+        };
+    case MOB_CREEPER:
+        return (MobStats){
+            .health = CREEPER_HEALTH,
+            .speed  = MOB_SPEED,
+            .attack_range    = CREEPER_DETONATE_RANGE,
+            .attack_damage   = CREEPER_BLAST_DAMAGE,
+            .attack_interval = 0.0f,
+            .ranged   = false,
+            .explodes = true,
+        };
+    case MOB_ZOMBIE:
+    default:
+        return (MobStats){
+            .health = MOB_HEALTH,
+            .speed  = MOB_SPEED,
+            .attack_range    = MOB_ATTACK_RANGE,
+            .attack_damage   = MOB_ATTACK_DAMAGE,
+            .attack_interval = MOB_ATTACK_INTERVAL,
+            .ranged   = false,
+            .explodes = false,
+        };
+    }
+}
+
+bool skeleton_wants_to_retreat(float dist) {
+    return dist < SKELETON_RETREAT_RANGE;
+}
+
+bool skeleton_in_shoot_range(float dist) {
+    return dist <= SKELETON_SHOOT_RANGE;
+}
+
+bool creeper_should_arm_fuse(float dist) {
+    return dist <= CREEPER_FUSE_RANGE;
+}
+
+bool creeper_should_detonate(float dist, float fuse_timer) {
+    return dist <= CREEPER_DETONATE_RANGE && fuse_timer <= 0.0f;
 }
 
 uint16_t mob_acquire_target(const Mob* m, const MobTargetInfo* players, int count) {

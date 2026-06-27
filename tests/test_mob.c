@@ -129,6 +129,71 @@ static void test_mob_ray_hit(void) {
     printf("PASS: mob_ray_hit\n");
 }
 
+/* ---- Mob variety: per-type stats + AI helpers ---- */
+
+static void test_per_type_stats(void) {
+    MobStats z = mob_stats(MOB_ZOMBIE);
+    MobStats k = mob_stats(MOB_SKELETON);
+    MobStats c = mob_stats(MOB_CREEPER);
+
+    /* Zombie keeps the legacy melee numbers. */
+    assert(z.health == MOB_HEALTH);
+    assert(z.attack_damage == MOB_ATTACK_DAMAGE);
+    assert(feq(z.attack_range, MOB_ATTACK_RANGE));
+    assert(z.ranged == false);
+    assert(z.explodes == false);
+
+    /* Skeleton is a ranged attacker, distinct stats, fragile-ish. */
+    assert(k.ranged == true);
+    assert(k.explodes == false);
+    assert(k.attack_range > MOB_ATTACK_RANGE);   /* shoots from afar */
+    assert(k.health > 0);
+
+    /* Creeper explodes; big damage, short range, dies on detonation. */
+    assert(c.explodes == true);
+    assert(c.ranged == false);
+    assert(c.attack_damage > z.attack_damage);
+    assert(c.health > 0);
+
+    /* Spawn uses per-type health, not a hardcoded constant. */
+    MobSet s; mob_set_init(&s);
+    Mob* m = mob_set_spawn(&s, MOB_CREEPER, (vec3){0,64,0});
+    assert(m && m->health == c.health);
+    Mob* sk = mob_set_spawn(&s, MOB_SKELETON, (vec3){1,64,0});
+    assert(sk && sk->health == k.health);
+    printf("PASS: per_type_stats\n");
+}
+
+static void test_skeleton_retreat_and_shoot(void) {
+    /* Too close -> wants to back off. */
+    assert(skeleton_wants_to_retreat(SKELETON_RETREAT_RANGE - 0.5f) == true);
+    /* At/beyond the comfortable standoff -> hold ground. */
+    assert(skeleton_wants_to_retreat(SKELETON_RETREAT_RANGE + 0.5f) == false);
+
+    /* In shoot band: between retreat distance and max shoot range. */
+    assert(skeleton_in_shoot_range(SKELETON_SHOOT_RANGE - 1.0f) == true);
+    /* Out of range -> can't shoot. */
+    assert(skeleton_in_shoot_range(SKELETON_SHOOT_RANGE + 1.0f) == false);
+    /* Point-blank is still "in range" (it can shoot while retreating). */
+    assert(skeleton_in_shoot_range(0.5f) == true);
+    printf("PASS: skeleton_retreat_and_shoot\n");
+}
+
+static void test_creeper_detonation(void) {
+    /* Out of detonation radius: never blows up regardless of fuse. */
+    assert(creeper_should_detonate(CREEPER_DETONATE_RANGE + 1.0f, 0.0f) == false);
+    /* In range but fuse still burning. */
+    assert(creeper_should_detonate(CREEPER_DETONATE_RANGE - 0.5f, 0.5f) == false);
+    /* In range and fuse elapsed -> boom. */
+    assert(creeper_should_detonate(CREEPER_DETONATE_RANGE - 0.5f, 0.0f) == true);
+    assert(creeper_should_detonate(CREEPER_DETONATE_RANGE - 0.5f, -0.1f) == true);
+
+    /* Fuse should arm only when the creeper is close enough to start hissing. */
+    assert(creeper_should_arm_fuse(CREEPER_FUSE_RANGE - 0.5f) == true);
+    assert(creeper_should_arm_fuse(CREEPER_FUSE_RANGE + 0.5f) == false);
+    printf("PASS: creeper_detonation\n");
+}
+
 int main(void) {
     test_spawn_assigns_unique_ids();
     test_acquire_target_nearest_in_range();
@@ -139,6 +204,9 @@ int main(void) {
     test_client_apply_and_deactivate();
     test_client_interpolate_midpoint();
     test_mob_ray_hit();
+    test_per_type_stats();
+    test_skeleton_retreat_and_shoot();
+    test_creeper_detonation();
     printf("All mob tests passed.\n");
     return 0;
 }
