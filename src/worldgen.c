@@ -12,9 +12,14 @@
 
 static int hash_pos(int x, int z, int seed)
 {
-    /* Simple spatial hash for tree placement decisions */
-    uint32_t h = (uint32_t)(x * 374761393 + z * 668265263 + seed * 1274126177);
-    h = (h ^ (h >> 13)) * 1274126177;
+    /* Simple spatial hash for tree placement decisions. All multiplies are
+     * done in uint32_t: signed-int multiplication by these large constants
+     * overflows for ordinary world coordinates, which is undefined behavior.
+     * Unsigned wraparound is well-defined and gives a stable hash. */
+    uint32_t h = (uint32_t)x * 374761393u
+               + (uint32_t)z * 668265263u
+               + (uint32_t)seed * 1274126177u;
+    h = (h ^ (h >> 13)) * 1274126177u;
     h = h ^ (h >> 16);
     return (int)(h & 0x7FFFFFFF);
 }
