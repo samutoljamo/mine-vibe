@@ -38,10 +38,17 @@ int net_socket_server(uint16_t port)
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        fprintf(stderr, "net: bind(port=%u) failed: %d\n",
+                (unsigned)port, WSAGetLastError());
         closesocket(s);
         return -1;
     }
-    make_nonblocking(s);
+    if (make_nonblocking(s) != 0) {
+        fprintf(stderr, "net: ioctlsocket(FIONBIO) failed: %d\n",
+                WSAGetLastError());
+        closesocket(s);
+        return -1;
+    }
     return (int)(uintptr_t)s;
 }
 
@@ -50,7 +57,12 @@ int net_socket_client(void)
     wsa_init();
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s == INVALID_SOCKET) return -1;
-    make_nonblocking(s);
+    if (make_nonblocking(s) != 0) {
+        fprintf(stderr, "net: ioctlsocket(FIONBIO) failed: %d\n",
+                WSAGetLastError());
+        closesocket(s);
+        return -1;
+    }
     return (int)(uintptr_t)s;
 }
 
@@ -97,21 +109,37 @@ double net_time(void)
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <string.h>  /* strerror */
 
 static int make_nonblocking(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    if (flags < 0) {
+        fprintf(stderr, "net: fcntl(F_GETFL) failed: %s\n", strerror(errno));
+        return -1;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        fprintf(stderr, "net: fcntl(F_SETFL, O_NONBLOCK) failed: %s\n",
+                strerror(errno));
+        return -1;
+    }
+    return 0;
 }
 
 int net_socket_server(uint16_t port)
 {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        fprintf(stderr, "net: socket() failed: %s\n", strerror(errno));
+        return -1;
+    }
 
     int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        /* Non-fatal: bind may still succeed. Surface for diagnostics. */
+        fprintf(stderr, "net: setsockopt(SO_REUSEADDR) failed: %s\n",
+                strerror(errno));
+    }
 
     struct sockaddr_in addr = {0};
     addr.sin_family      = AF_INET;
@@ -119,18 +147,29 @@ int net_socket_server(uint16_t port)
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "net: bind(port=%u) failed: %s\n",
+                (unsigned)port, strerror(errno));
         close(fd);
         return -1;
     }
-    make_nonblocking(fd);
+    if (make_nonblocking(fd) < 0) {
+        close(fd);
+        return -1;
+    }
     return fd;
 }
 
 int net_socket_client(void)
 {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return -1;
-    make_nonblocking(fd);
+    if (fd < 0) {
+        fprintf(stderr, "net: socket() failed: %s\n", strerror(errno));
+        return -1;
+    }
+    if (make_nonblocking(fd) < 0) {
+        close(fd);
+        return -1;
+    }
     return fd;
 }
 

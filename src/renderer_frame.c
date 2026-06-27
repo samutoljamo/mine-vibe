@@ -29,8 +29,18 @@ void renderer_draw_frame(Renderer* r,
 {
     uint32_t fi = r->current_frame;
 
-    /* 1. Wait for current frame's fence */
-    vkWaitForFences(r->device, 1, &r->in_flight_fences[fi], VK_TRUE, UINT64_MAX);
+    /* 1. Wait for current frame's fence. A non-success here (notably
+     * VK_ERROR_DEVICE_LOST) means we can't safely reuse this frame's
+     * resources — log and skip the frame rather than racing the GPU. */
+    {
+        VkResult wr = vkWaitForFences(r->device, 1, &r->in_flight_fences[fi],
+                                      VK_TRUE, UINT64_MAX);
+        if (wr != VK_SUCCESS) {
+            fprintf(stderr, "vkWaitForFences failed (%d); skipping frame\n",
+                    (int)wr);
+            return;
+        }
+    }
 
     /* 2. Acquire next swapchain image */
     uint32_t image_index;
@@ -50,7 +60,10 @@ void renderer_draw_frame(Renderer* r,
     r->last_image_index = image_index;
 
     /* 3. Reset fence (only after we know we will submit work) */
-    vkResetFences(r->device, 1, &r->in_flight_fences[fi]);
+    if (vkResetFences(r->device, 1, &r->in_flight_fences[fi]) != VK_SUCCESS) {
+        fprintf(stderr, "vkResetFences failed; skipping frame\n");
+        return;
+    }
 
     /* Per-frame outline state reset. Must happen before any
      * renderer_outline_emit_block call this frame. */
@@ -81,12 +94,18 @@ void renderer_draw_frame(Renderer* r,
 
     /* 5. Record command buffer */
     VkCommandBuffer cmd = r->command_buffers[fi];
-    vkResetCommandBuffer(cmd, 0);
+    if (vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
+        fprintf(stderr, "vkResetCommandBuffer failed; skipping frame\n");
+        return;
+    }
 
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     };
-    vkBeginCommandBuffer(cmd, &begin_info);
+    if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
+        fprintf(stderr, "vkBeginCommandBuffer failed; skipping frame\n");
+        return;
+    }
 
     /* Dynamic viewport and scissor — hoisted so HUD pass can reuse them */
     VkViewport viewport = {
@@ -218,7 +237,10 @@ void renderer_draw_frame(Renderer* r,
      * inside the world renderpass above. */
     ui_frame_end();
 
-    vkEndCommandBuffer(cmd);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        fprintf(stderr, "vkEndCommandBuffer failed; skipping frame\n");
+        return;
+    }
 
     /* 8. Submit */
     VkSemaphore wait_sems[]   = { r->image_available_sems[fi] };

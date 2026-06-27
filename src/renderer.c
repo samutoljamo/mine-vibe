@@ -41,9 +41,17 @@ static const uint32_t VALIDATION_LAYER_COUNT = 1;
 static bool check_validation_support(void)
 {
     uint32_t count = 0;
-    vkEnumerateInstanceLayerProperties(&count, NULL);
+    if (vkEnumerateInstanceLayerProperties(&count, NULL) != VK_SUCCESS || count == 0)
+        return false;
     VkLayerProperties* props = malloc(count * sizeof(VkLayerProperties));
-    vkEnumerateInstanceLayerProperties(&count, props);
+    if (!props) {
+        fprintf(stderr, "check_validation_support: out of memory\n");
+        return false;
+    }
+    if (vkEnumerateInstanceLayerProperties(&count, props) != VK_SUCCESS) {
+        free(props);
+        return false;
+    }
 
     for (uint32_t i = 0; i < VALIDATION_LAYER_COUNT; i++) {
         bool found = false;
@@ -81,6 +89,10 @@ static QueueFamilyIndices find_queue_families(VkPhysicalDevice pd, VkSurfaceKHR 
     uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(pd, &count, NULL);
     VkQueueFamilyProperties* props = malloc(count * sizeof(VkQueueFamilyProperties));
+    if (!props) {
+        fprintf(stderr, "find_queue_families: out of memory\n");
+        return indices;  /* has_graphics/has_present stay false */
+    }
     vkGetPhysicalDeviceQueueFamilyProperties(pd, &count, props);
 
     for (uint32_t i = 0; i < count; i++) {
@@ -107,9 +119,18 @@ static QueueFamilyIndices find_queue_families(VkPhysicalDevice pd, VkSurfaceKHR 
 static bool device_has_swapchain_ext(VkPhysicalDevice pd)
 {
     uint32_t count = 0;
-    vkEnumerateDeviceExtensionProperties(pd, NULL, &count, NULL);
+    if (vkEnumerateDeviceExtensionProperties(pd, NULL, &count, NULL) != VK_SUCCESS
+        || count == 0)
+        return false;
     VkExtensionProperties* exts = malloc(count * sizeof(VkExtensionProperties));
-    vkEnumerateDeviceExtensionProperties(pd, NULL, &count, exts);
+    if (!exts) {
+        fprintf(stderr, "device_has_swapchain_ext: out of memory\n");
+        return false;
+    }
+    if (vkEnumerateDeviceExtensionProperties(pd, NULL, &count, exts) != VK_SUCCESS) {
+        free(exts);
+        return false;
+    }
 
     bool found = false;
     for (uint32_t i = 0; i < count; i++) {
@@ -125,14 +146,25 @@ static bool device_has_swapchain_ext(VkPhysicalDevice pd)
 static bool pick_physical_device(Renderer* r)
 {
     uint32_t count = 0;
-    vkEnumeratePhysicalDevices(r->instance, &count, NULL);
+    if (vkEnumeratePhysicalDevices(r->instance, &count, NULL) != VK_SUCCESS) {
+        fprintf(stderr, "Failed to enumerate physical devices\n");
+        return false;
+    }
     if (count == 0) {
         fprintf(stderr, "No Vulkan-capable GPU found\n");
         return false;
     }
 
     VkPhysicalDevice* devices = malloc(count * sizeof(VkPhysicalDevice));
-    vkEnumeratePhysicalDevices(r->instance, &count, devices);
+    if (!devices) {
+        fprintf(stderr, "pick_physical_device: out of memory\n");
+        return false;
+    }
+    if (vkEnumeratePhysicalDevices(r->instance, &count, devices) != VK_SUCCESS) {
+        fprintf(stderr, "Failed to enumerate physical devices\n");
+        free(devices);
+        return false;
+    }
 
     /* Score each device, prefer discrete GPU */
     VkPhysicalDevice best       = VK_NULL_HANDLE;
@@ -748,6 +780,10 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
         ext_count += 1; /* VK_EXT_DEBUG_UTILS_EXTENSION_NAME */
 #endif
         const char** extensions = malloc(ext_count * sizeof(const char*));
+        if (!extensions) {
+            fprintf(stderr, "renderer_init: out of memory for extension list\n");
+            return false;
+        }
         for (uint32_t i = 0; i < glfw_ext_count; i++)
             extensions[i] = glfw_exts[i];
 #ifndef NDEBUG
@@ -792,7 +828,15 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
                                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
             .pfnUserCallback = debug_callback,
         };
-        vkCreateDebugUtilsMessengerEXT(r->instance, &ci, NULL, &r->debug_messenger);
+        /* Non-fatal: losing the debug messenger only costs validation output,
+         * so log and continue with a null handle rather than aborting init. */
+        VkResult dbg = vkCreateDebugUtilsMessengerEXT(r->instance, &ci, NULL,
+                                                      &r->debug_messenger);
+        if (dbg != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create debug messenger (%d); "
+                            "continuing without validation output\n", (int)dbg);
+            r->debug_messenger = VK_NULL_HANDLE;
+        }
     }
 #endif
 
@@ -1220,21 +1264,43 @@ VkCommandBuffer renderer_begin_single_cmd(Renderer* r)
         .commandBufferCount = 1,
     };
 
-    VkCommandBuffer cmd;
-    vkAllocateCommandBuffers(r->device, &alloc_info, &cmd);
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkResult res = vkAllocateCommandBuffers(r->device, &alloc_info, &cmd);
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "renderer_begin_single_cmd: vkAllocateCommandBuffers "
+                        "failed (%d)\n", (int)res);
+        return VK_NULL_HANDLE;
+    }
 
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
 
-    vkBeginCommandBuffer(cmd, &begin_info);
+    res = vkBeginCommandBuffer(cmd, &begin_info);
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "renderer_begin_single_cmd: vkBeginCommandBuffer "
+                        "failed (%d)\n", (int)res);
+        vkFreeCommandBuffers(r->device, r->command_pool, 1, &cmd);
+        return VK_NULL_HANDLE;
+    }
     return cmd;
 }
 
 void renderer_end_single_cmd(Renderer* r, VkCommandBuffer cmd)
 {
-    vkEndCommandBuffer(cmd);
+    /* Tolerate a failed begin_single_cmd (returns VK_NULL_HANDLE) so callers
+     * that don't check still behave safely. */
+    if (cmd == VK_NULL_HANDLE)
+        return;
+
+    VkResult res = vkEndCommandBuffer(cmd);
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "renderer_end_single_cmd: vkEndCommandBuffer "
+                        "failed (%d)\n", (int)res);
+        vkFreeCommandBuffers(r->device, r->command_pool, 1, &cmd);
+        return;
+    }
 
     VkSubmitInfo submit = {
         .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1242,8 +1308,21 @@ void renderer_end_single_cmd(Renderer* r, VkCommandBuffer cmd)
         .pCommandBuffers    = &cmd,
     };
 
-    vkQueueSubmit(r->graphics_queue, 1, &submit, VK_NULL_HANDLE);
-    vkQueueWaitIdle(r->graphics_queue);
+    res = vkQueueSubmit(r->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "renderer_end_single_cmd: vkQueueSubmit failed (%d)\n",
+                (int)res);
+        vkFreeCommandBuffers(r->device, r->command_pool, 1, &cmd);
+        return;
+    }
+
+    res = vkQueueWaitIdle(r->graphics_queue);
+    if (res != VK_SUCCESS) {
+        /* Includes VK_ERROR_DEVICE_LOST — surface it; the buffer is still
+         * freed below since the queue is idle/lost either way. */
+        fprintf(stderr, "renderer_end_single_cmd: vkQueueWaitIdle failed (%d)\n",
+                (int)res);
+    }
 
     vkFreeCommandBuffers(r->device, r->command_pool, 1, &cmd);
 }

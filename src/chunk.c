@@ -13,8 +13,9 @@ Chunk* chunk_create(int32_t cx, int32_t cz) {
 
 void chunk_destroy(Chunk* chunk) {
     pt_mutex_destroy(&chunk->pending_mutex);
-    free(chunk->meta);
-    free(chunk->lights);
+    /* No concurrent access at destroy time; load the atomic slots once. */
+    free(atomic_load_explicit(&chunk->meta, memory_order_relaxed));
+    free(atomic_load_explicit(&chunk->lights, memory_order_relaxed));
     free(chunk->pending_deltas);
     free(chunk);
 }
