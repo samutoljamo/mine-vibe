@@ -136,6 +136,96 @@ static void test_disconnect_reason_roundtrip(void) {
     printf("PASS: disconnect_reason_roundtrip\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  Reliable message fragmentation                                     */
+/* ------------------------------------------------------------------ */
+
+/* A payload larger than RELIABLE_MAX_PAYLOAD splits into multiple fragment
+ * packets, each of which fits within RELIABLE_MAX_PAYLOAD, and reassembles
+ * back to the exact original bytes. */
+static void test_fragment_roundtrip(void) {
+    uint8_t payload[1000];
+    for (size_t i = 0; i < sizeof(payload); i++)
+        payload[i] = (uint8_t)(i * 31 + 7);
+
+    uint16_t total = reliable_fragment_count(sizeof(payload));
+    assert(total > 1); /* must actually fragment */
+
+    ReliableReassembler re;
+    reliable_reassemble_init(&re);
+
+    uint8_t out[2048];
+    size_t out_len = 0;
+    bool done = false;
+    for (uint16_t i = 0; i < total; i++) {
+        uint8_t frag[RELIABLE_MAX_PAYLOAD];
+        size_t flen = reliable_fragment_build(frag, /*msg_id*/ 5, i, total,
+                                              payload, sizeof(payload));
+        assert(flen <= RELIABLE_MAX_PAYLOAD);
+        assert(reliable_packet_is_fragment(frag, flen));
+        done = reliable_reassemble_feed(&re, frag, flen,
+                                        out, sizeof(out), &out_len);
+    }
+    assert(done);
+    assert(out_len == sizeof(payload));
+    assert(memcmp(out, payload, sizeof(payload)) == 0);
+    printf("PASS: fragment_roundtrip\n");
+}
+
+/* Fragments arriving out of order must still reassemble correctly. */
+static void test_fragment_out_of_order(void) {
+    uint8_t payload[600];
+    for (size_t i = 0; i < sizeof(payload); i++)
+        payload[i] = (uint8_t)(255 - (i % 251));
+
+    uint16_t total = reliable_fragment_count(sizeof(payload));
+    assert(total >= 3);
+
+    /* Build all fragments up front. */
+    uint8_t frags[16][RELIABLE_MAX_PAYLOAD];
+    size_t  flens[16];
+    assert(total <= 16);
+    for (uint16_t i = 0; i < total; i++)
+        flens[i] = reliable_fragment_build(frags[i], 9, i, total,
+                                           payload, sizeof(payload));
+
+    /* Feed in reverse order. */
+    ReliableReassembler re;
+    reliable_reassemble_init(&re);
+    uint8_t out[2048];
+    size_t out_len = 0;
+    bool done = false;
+    for (int i = (int)total - 1; i >= 0; i--)
+        done = reliable_reassemble_feed(&re, frags[i], flens[i],
+                                        out, sizeof(out), &out_len);
+    assert(done);
+    assert(out_len == sizeof(payload));
+    assert(memcmp(out, payload, sizeof(payload)) == 0);
+
+    /* A duplicate fragment after completion must not corrupt anything. */
+    done = reliable_reassemble_feed(&re, frags[0], flens[0],
+                                    out, sizeof(out), &out_len);
+    assert(out_len == sizeof(payload));
+    assert(memcmp(out, payload, sizeof(payload)) == 0);
+    printf("PASS: fragment_out_of_order\n");
+}
+
+/* A small message (<= RELIABLE_MAX_PAYLOAD) needs exactly one fragment and is
+ * NOT recognized as a fragment packet on the wire — it goes through the plain
+ * unfragmented reliable path untouched. */
+static void test_small_message_not_fragmented(void) {
+    uint8_t small[32];
+    for (size_t i = 0; i < sizeof(small); i++) small[i] = (uint8_t)i;
+
+    assert(reliable_fragment_count(sizeof(small)) == 1);
+    /* The raw small payload must not be mistaken for a fragment packet. */
+    assert(!reliable_packet_is_fragment(small, sizeof(small)));
+
+    /* Even a zero-length payload reports one fragment. */
+    assert(reliable_fragment_count(0) == 1);
+    printf("PASS: small_message_not_fragmented\n");
+}
+
 int main(void)
 {
     test_serialize_position();
@@ -146,6 +236,9 @@ int main(void)
     test_connect_request_carries_version();
     test_legacy_connect_request_reads_version_zero();
     test_disconnect_reason_roundtrip();
+    test_fragment_roundtrip();
+    test_fragment_out_of_order();
+    test_small_message_not_fragmented();
     printf("All net tests passed.\n");
     return 0;
 }
