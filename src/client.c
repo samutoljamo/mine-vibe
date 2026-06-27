@@ -1,6 +1,7 @@
 #include "client.h"
 #include "net_thread.h"
 #include "gameplay.h"
+#include "daynight.h"   /* DAY_LENGTH_TICKS for noon init */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -55,9 +56,31 @@ void client_init(Client* c, NetThread* net,
     inventory_init(&c->inventory);
     c->health = PLAYER_MAX_HEALTH;
     c->pending_block_change_count = 0;
+    /* Start at noon so the sky is daylit before the first PKT_WORLD_STATE. */
+    c->world_ticks = DAY_LENGTH_TICKS / 4;
+    c->world_ticks_recv_time = 0.0;
 }
 
 void client_destroy(Client* c) { (void)c; }
+
+/* Server runs the world clock at 20 Hz; mirror that here for extrapolation.
+ * Kept local so client.c doesn't need to pull in server.h. */
+#define CLIENT_SERVER_TICK_RATE 20.0
+
+uint32_t client_estimate_world_ticks(const Client* c)
+{
+    /* Before the first packet, world_ticks_recv_time is 0: just use the
+     * noon seed set in client_init (no extrapolation). */
+    if (c->world_ticks_recv_time <= 0.0)
+        return c->world_ticks;
+    double elapsed = net_time() - c->world_ticks_recv_time;
+    if (elapsed < 0.0) elapsed = 0.0;
+    double advanced = elapsed * CLIENT_SERVER_TICK_RATE;
+    /* u32 add wraps modulo 2^32, which is exactly what the day phase math
+     * expects; cast through double carefully to avoid UB on huge elapsed. */
+    uint32_t delta = (uint32_t)advanced;
+    return c->world_ticks + delta;
+}
 
 void client_connect(Client* c)
 {
@@ -166,8 +189,9 @@ int client_poll(Client* c)
             net_read_header(msg->data, &off, &hdr);
             uint8_t count = net_read_u8(msg->data, &off);
 
-            /* Validate: packet must contain at least count * (1+5*4) bytes after header+count */
-            int required = (int)off + count * (1 + 5 * 4);
+            /* Validate: packet must contain count * (1+5*4) player bytes plus
+             * a trailing u32 world_ticks (protocol v2), after header+count. */
+            int required = (int)off + count * (1 + 5 * 4) + 4;
             if (required > msg->len) {
                 fprintf(stderr, "[client] PKT_WORLD_STATE truncated "
                         "(need %d bytes, have %d)\n", required, msg->len);
@@ -195,6 +219,12 @@ int client_poll(Client* c)
                     g_snap_cb(&snap, g_snap_user);
                 }
             }
+
+            /* Trailing day/night clock. Re-anchor every packet; the renderer
+             * extrapolates from here so missed packets keep the sky moving and
+             * a u32 wrap (or backward jump) simply re-anchors harmlessly. */
+            c->world_ticks           = net_read_u32(msg->data, &off);
+            c->world_ticks_recv_time = msg->recv_time;
             state_packets++;
 
         } else if (type == PKT_MOB_STATE && c->state == CLIENT_CONNECTED) {

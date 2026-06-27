@@ -19,6 +19,8 @@ void renderer_draw_frame(Renderer* r,
                          ChunkMesh* meshes, uint32_t mesh_count,
                          const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir,
+                         float day_brightness,
+                         vec3 sky_color,
                          const Inventory* inventory,
                          int player_health,
                          const RaycastHit* target,
@@ -65,11 +67,15 @@ void renderer_draw_frame(Renderer* r,
     ubo.sun_direction[1] = sun_dir[1];
     ubo.sun_direction[2] = sun_dir[2];
     ubo.sun_direction[3] = 0.0f;
-    ubo.sun_color[0] = 1.0f;
-    ubo.sun_color[1] = 1.0f;
-    ubo.sun_color[2] = 1.0f;
+    /* Day/night drive: block.frag multiplies baked sky-light by sun_color,
+     * so scaling sun_color by the daylight factor uniformly darkens the world
+     * at night without touching baked lighting. Ambient floors the darkness so
+     * caves/night never go fully black. */
+    ubo.sun_color[0] = day_brightness;
+    ubo.sun_color[1] = day_brightness;
+    ubo.sun_color[2] = day_brightness;
     ubo.sun_color[3] = 1.0f;
-    ubo.ambient = 0.3f;
+    ubo.ambient = 0.06f + 0.24f * day_brightness;
     ubo.underwater = underwater;
     memcpy(r->ubo_mapped[fi], &ubo, sizeof(ubo));
 
@@ -102,10 +108,12 @@ void renderer_draw_frame(Renderer* r,
      * sky doesn't pop as the eye dips below the surface. clearValues[2]
      * (resolve target, MSAA only) has DONT_CARE loadOp — present for
      * indexing. */
+    /* Lerp the day/night sky color toward deep-water in that order, so an
+     * underwater-at-night view reads dark (both effects stack). */
     float t = underwater;
-    float clear_r = 0.53f * (1.0f - t) + 0.06f * t;
-    float clear_g = 0.81f * (1.0f - t) + 0.18f * t;
-    float clear_b = 0.92f * (1.0f - t) + 0.40f * t;
+    float clear_r = sky_color[0] * (1.0f - t) + 0.06f * t;
+    float clear_g = sky_color[1] * (1.0f - t) + 0.18f * t;
+    float clear_b = sky_color[2] * (1.0f - t) + 0.40f * t;
     VkClearValue clear_values[3] = {
         { .color = { .float32 = { clear_r, clear_g, clear_b, 1.0f } } },
         { .depthStencil = { .depth = 1.0f, .stencil = 0 } },

@@ -11,6 +11,7 @@
 #include "block.h"       /* block_is_solid */
 #include "chunk.h"       /* CHUNK_Y */
 #include "world.h"
+#include "daynight.h"    /* world clock + darkness gate for spawning */
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -569,6 +570,10 @@ static void server_tick(Server* s, int tick_num)
     /* Only remaining steps at 20 Hz */
     if (tick_num % 1 != 0) return; /* always true — placeholder for future rate div */
 
+    /* Advance the day/night clock. u32 wrap is harmless: daynight_phase01
+     * takes it modulo DAY_LENGTH_TICKS. */
+    s->world_ticks++;
+
     /* Compute once per tick; shared by terrain streaming (here) and mob
      * simulation/spawning (Task 5). */
     vec3 anchor;
@@ -582,10 +587,17 @@ static void server_tick(Server* s, int tick_num)
     if (s->world) {
         server_simulate_mobs(s, 1.0f / SERVER_TICK_RATE);
 
-        s->mob_spawn_timer += 1.0f / SERVER_TICK_RATE;
-        if (s->mob_spawn_timer >= MOB_SPAWN_INTERVAL) {
-            s->mob_spawn_timer = 0.0f;
-            server_try_spawn(s, anchor);
+        /* Hostile mobs only spawn in darkness. Only accumulate/attempt the
+         * spawn timer while dark so a dusk transition doesn't immediately
+         * dump a burst of mobs from time built up during the day. Only
+         * MOB_ZOMBIE exists today (all hostile), so gating the whole path
+         * is correct; gate per-type once passive mobs arrive. */
+        if (daynight_is_dark(s->world_ticks)) {
+            s->mob_spawn_timer += 1.0f / SERVER_TICK_RATE;
+            if (s->mob_spawn_timer >= MOB_SPAWN_INTERVAL) {
+                s->mob_spawn_timer = 0.0f;
+                server_try_spawn(s, anchor);
+            }
         }
     }
 
@@ -628,7 +640,7 @@ static void server_tick(Server* s, int tick_num)
 
     uint8_t buf[NET_MAX_PACKET];
     PacketHeader hdr = { .type = PKT_WORLD_STATE, .player_id = 0 };
-    size_t len = net_write_world_state(buf, &hdr, players, count);
+    size_t len = net_write_world_state(buf, &hdr, players, count, s->world_ticks);
     for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
         if (!s->clients[i].active) continue;
         net_thread_push_outbound(s->net, buf, (int)len, &s->clients[i].addr);
@@ -682,6 +694,10 @@ void server_run(uint16_t port, int max_clients, int seed)
     s.running     = true;
 
     s.seed  = seed;
+
+    /* Start the world at noon (phase 0.25) so a fresh server begins in
+     * full daylight rather than mid-transition. */
+    s.world_ticks = DAY_LENGTH_TICKS / 4;
 
     /* ---- World persistence: load (or start) the block-delta overlay ---- */
     snprintf(s.save_path, sizeof(s.save_path), "%s", SERVER_SAVE_FILE);

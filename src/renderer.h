@@ -149,6 +149,8 @@ void renderer_draw_frame(Renderer* r,
                          ChunkMesh* meshes, uint32_t mesh_count,
                          const PlayerRenderState* players, uint32_t player_count,
                          mat4 view, mat4 proj, vec3 sun_dir,
+                         float day_brightness,  /* 0..1 daylight factor */
+                         vec3 sky_color,        /* RGB clear/sky color */
                          const struct Inventory* inventory,
                          int player_health,            /* <0 = no hearts */
                          const struct RaycastHit* target,

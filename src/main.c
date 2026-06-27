@@ -23,6 +23,7 @@
 #include "raycast.h"
 #include "gameplay.h"
 #include "inventory.h"
+#include "daynight.h"
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
@@ -316,6 +317,13 @@ int main(int argc, char *argv[])
     vec3 sun_dir = { -0.5f, -0.8f, -0.3f };
     glm_vec3_normalize(sun_dir);
 
+    /* Day/night clock source. When networking, the server is authoritative and
+     * we read a smoothed estimate from the client. Singleplayer has no server,
+     * so we advance a local wall-clock-driven counter ourselves (starting at
+     * noon) — otherwise the sky would freeze. SERVER_TICK_RATE ticks/second
+     * matches the server's clock rate so a day is still DAY_LENGTH_TICKS. */
+    double sp_clock_start = glfwGetTime();
+
     /* Loading loop: run until 30% of chunks are meshed */
     {
         ChunkMesh* meshes = NULL;
@@ -336,7 +344,12 @@ int main(int argc, char *argv[])
                          / (float)renderer.swapchain.extent.height;
             camera_get_proj(&g_player.camera, aspect, proj);
 
+            /* During loading the world is at noon (full daylight). */
+            float ld_phase = daynight_phase01(DAY_LENGTH_TICKS / 4);
+            float ld_bright = daynight_brightness(ld_phase);
+            vec3  ld_sky;   daynight_sky_color(ld_phase, ld_sky);
             renderer_draw_frame(&renderer, meshes, mesh_count, NULL, 0, view, proj, sun_dir,
+                                ld_bright, ld_sky,
                                 networking ? &client.inventory : NULL,
                                 -1,
                                 NULL,
@@ -529,9 +542,26 @@ int main(int argc, char *argv[])
             }
         }
 
+        /* Resolve the current time-of-day. Networking: smoothed estimate of
+         * the server-authoritative clock. Singleplayer: a local clock advanced
+         * from wall time at the server tick rate, seeded at noon. */
+        uint32_t world_ticks;
+        if (networking) {
+            world_ticks = client_estimate_world_ticks(&client);
+        } else {
+            double elapsed = glfwGetTime() - sp_clock_start;
+            if (elapsed < 0.0) elapsed = 0.0;
+            world_ticks = (uint32_t)(DAY_LENGTH_TICKS / 4)
+                        + (uint32_t)(elapsed * SERVER_TICK_RATE);
+        }
+        float day_phase = daynight_phase01(world_ticks);
+        float day_brightness = daynight_brightness(day_phase);
+        vec3  sky_color;  daynight_sky_color(day_phase, sky_color);
+
         renderer_draw_frame(&renderer, meshes, mesh_count,
                             rcount > 0 ? rp_states : NULL, rcount,
                             view, proj, sun_dir,
+                            day_brightness, sky_color,
                             networking ? &client.inventory : NULL,
                             networking ? client.health : -1,
                             &g_target,

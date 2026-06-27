@@ -34,7 +34,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 1
+#define NET_PROTOCOL_VERSION 2
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -182,7 +182,7 @@ static inline void net_read_position(const uint8_t* buf, PositionPacket* p)
 }
 
 /* ------------------------------------------------------------------ */
-/*  WorldStatePacket — 9 + 21*N wire bytes                            */
+/*  WorldStatePacket — 9 + 21*N + 4 wire bytes                        */
 /* ------------------------------------------------------------------ */
 #define WORLD_STATE_PLAYER_SIZE 21  /* 1 + 4 + 4 + 4 + 4 + 4 */
 
@@ -192,11 +192,14 @@ typedef struct {
     float    yaw, pitch;
 } NetPlayerState;
 
-/* Wire format: [header 8][count 1][players 21*N] */
+/* Wire format: [header 8][count 1][players 21*N][world_ticks u32].
+ * world_ticks is the server's day/night clock, appended after the player
+ * array so all existing player offsets are unchanged (protocol v2). */
 static inline size_t net_write_world_state(uint8_t* buf,
                                             const PacketHeader* hdr,
                                             const NetPlayerState* players,
-                                            uint8_t count)
+                                            uint8_t count,
+                                            uint32_t world_ticks)
 {
     size_t off = 0;
     net_write_header(buf, &off, hdr);
@@ -209,6 +212,7 @@ static inline size_t net_write_world_state(uint8_t* buf,
         net_write_float(buf, &off, players[i].yaw);
         net_write_float(buf, &off, players[i].pitch);
     }
+    net_write_u32(buf, &off, world_ticks);
     return off;
 }
 

@@ -39,6 +39,15 @@ typedef struct {
 
     int16_t health;   /* last server-reported; PLAYER_MAX_HEALTH at init */
 
+    /* Day/night clock, server-authoritative. world_ticks is the last value
+     * received in a PKT_WORLD_STATE; world_ticks_recv_time is when (monotonic
+     * net_time seconds). The renderer estimates the current time-of-day by
+     * extrapolating from this anchor at SERVER_TICK_RATE so the sky animates
+     * smoothly between (and through dropped) packets. Initialized to noon to
+     * avoid a one-frame dawn flash before the first packet arrives. */
+    uint32_t world_ticks;
+    double   world_ticks_recv_time;
+
     /* Block-change events received from the server, drained by main.c each
      * frame to call world_set_block + remesh on the main thread.
      * (Network thread cannot remesh — meshing is not thread-safe with the
@@ -99,6 +108,12 @@ void client_set_mobs_cb(Client* c, ClientMobsCb cb, void* user);
 
 typedef void (*ClientDeathCb)(void* user);
 void client_set_death_cb(Client* c, ClientDeathCb cb, void* user);
+
+/* Smoothed estimate of the current server world_ticks, extrapolated from the
+ * last received anchor at the server tick rate. Use this (not c->world_ticks
+ * directly) to drive the sky so it animates between packets and rides through
+ * dropped ones. Re-anchors on every PKT_WORLD_STATE; safe across u32 wrap. */
+uint32_t client_estimate_world_ticks(const Client* c);
 
 void client_disconnect(Client* c);
 

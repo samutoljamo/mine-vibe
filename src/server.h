@@ -45,6 +45,7 @@ typedef struct {
     int          seed;
     MobSet       mobs;           /* (added/used in Task 5)                  */
     float        mob_spawn_timer; /* accumulates time toward MOB_SPAWN_INTERVAL */
+    uint32_t     world_ticks;    /* day/night clock; advances once per tick  */
 
     /* World persistence: block-delta overlay + periodic-flush bookkeeping. */
     BlockOverlay overlay;
