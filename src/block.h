@@ -28,6 +28,18 @@ enum {
     BLOCK_COUNT,
 };
 
+/* Mining difficulty tiers. The numeric value is the relative hardness used to
+ * derive break time; HARDNESS_UNBREAKABLE is a sentinel (bedrock). */
+typedef enum {
+    HARDNESS_INSTANT     = 0,  /* air/water: not actually mined */
+    HARDNESS_SOFT        = 1,  /* dirt, sand, grass, leaves, path */
+    HARDNESS_LOW         = 2,  /* glass */
+    HARDNESS_MEDIUM      = 3,  /* wood, planks */
+    HARDNESS_HARD        = 6,  /* stone, cobble, ores */
+    HARDNESS_HARDEST     = 12, /* obsidian-equivalent (none yet, reserved) */
+    HARDNESS_UNBREAKABLE = 255 /* bedrock: cannot be broken */
+} BlockHardness;
+
 typedef struct BlockDef {
     const char* name;
     bool        is_solid;
@@ -38,9 +50,20 @@ typedef struct BlockDef {
     uint8_t     tex_top;
     uint8_t     tex_side;
     uint8_t     tex_bottom;
+    uint8_t     hardness;        /* BlockHardness tier */
 } BlockDef;
 
 const BlockDef* block_get_def(BlockID id);
+
+/* Sentinel returned by block_break_time for blocks that cannot be broken
+ * by hand (bedrock). Always positive and larger than any real break time. */
+#define BLOCK_BREAK_UNBREAKABLE (1.0e30f)
+
+/* Pure function: seconds of sustained mining required to break `block` by
+ * hand. Derived solely from the block's hardness tier, so it is deterministic
+ * and side-effect free. Returns BLOCK_BREAK_UNBREAKABLE for bedrock and 0 for
+ * non-mineable blocks (air/water). */
+float block_break_time(BlockID block);
 
 /* Returns a representative RGB colour for a block, used by UI block icons
  * (inventory, hotbar). Unknown IDs map to magenta to flag missing entries. */

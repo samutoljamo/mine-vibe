@@ -1,32 +1,42 @@
 #include "block.h"
 
 static const BlockDef block_defs[BLOCK_COUNT] = {
-    /*                  solid  transp gravity absorb emit  top side bottom */
-    [BLOCK_AIR]     = { "air",     false, true,  false, 0,  0, 0,  0,  0 },
-    [BLOCK_STONE]   = { "stone",   true,  false, false, 15, 0, 0,  0,  0 },
-    [BLOCK_DIRT]    = { "dirt",    true,  false, false, 15, 0, 1,  1,  1 },
-    [BLOCK_GRASS]   = { "grass",   true,  false, false, 15, 0, 2,  3,  1 },
-    [BLOCK_SAND]    = { "sand",    true,  false, true,  15, 0, 4,  4,  4 },
-    [BLOCK_WOOD]    = { "wood",    true,  false, false, 15, 0, 5,  6,  5 },
-    [BLOCK_LEAVES]  = { "leaves",  true,  true,  false, 2,  0, 7,  7,  7 },
-    [BLOCK_WATER]   = { "water",   false, true,  false, 2,  0, 16, 16, 16 },
-    [BLOCK_BEDROCK] = { "bedrock", true,  false, false, 15, 0, 17, 17, 17 },
+    /*                  solid  transp gravity absorb emit  top side bottom hardness */
+    [BLOCK_AIR]     = { "air",     false, true,  false, 0,  0, 0,  0,  0,  HARDNESS_INSTANT },
+    [BLOCK_STONE]   = { "stone",   true,  false, false, 15, 0, 0,  0,  0,  HARDNESS_HARD },
+    [BLOCK_DIRT]    = { "dirt",    true,  false, false, 15, 0, 1,  1,  1,  HARDNESS_SOFT },
+    [BLOCK_GRASS]   = { "grass",   true,  false, false, 15, 0, 2,  3,  1,  HARDNESS_SOFT },
+    [BLOCK_SAND]    = { "sand",    true,  false, true,  15, 0, 4,  4,  4,  HARDNESS_SOFT },
+    [BLOCK_WOOD]    = { "wood",    true,  false, false, 15, 0, 5,  6,  5,  HARDNESS_MEDIUM },
+    [BLOCK_LEAVES]  = { "leaves",  true,  true,  false, 2,  0, 7,  7,  7,  HARDNESS_SOFT },
+    [BLOCK_WATER]   = { "water",   false, true,  false, 2,  0, 16, 16, 16, HARDNESS_INSTANT },
+    [BLOCK_BEDROCK] = { "bedrock", true,  false, false, 15, 0, 17, 17, 17, HARDNESS_UNBREAKABLE },
     /* Ores: stone-bodied blocks with a coloured speckle texture per face. */
-    [BLOCK_COAL_ORE]    = { "coal_ore",    true, false, false, 15, 0,  8,  8,  8 },
-    [BLOCK_IRON_ORE]    = { "iron_ore",    true, false, false, 15, 0,  9,  9,  9 },
-    [BLOCK_GOLD_ORE]    = { "gold_ore",    true, false, false, 15, 0, 10, 10, 10 },
-    [BLOCK_DIAMOND_ORE] = { "diamond_ore", true, false, false, 15, 0, 11, 11, 11 },
+    [BLOCK_COAL_ORE]    = { "coal_ore",    true, false, false, 15, 0,  8,  8,  8,  HARDNESS_HARD },
+    [BLOCK_IRON_ORE]    = { "iron_ore",    true, false, false, 15, 0,  9,  9,  9,  HARDNESS_HARD },
+    [BLOCK_GOLD_ORE]    = { "gold_ore",    true, false, false, 15, 0, 10, 10, 10, HARDNESS_HARD },
+    [BLOCK_DIAMOND_ORE] = { "diamond_ore", true, false, false, 15, 0, 11, 11, 11, HARDNESS_HARD },
     /* Village decorative blocks. GLASS is solid but transparent with low light
      * absorption so windows let light leak through and neighbour faces render. */
-    [BLOCK_PLANKS]  = { "planks", true, false, false, 15, 0, 12, 12, 12 },
-    [BLOCK_COBBLE]  = { "cobble", true, false, false, 15, 0, 13, 13, 13 },
-    [BLOCK_GLASS]   = { "glass",  true, true,  false, 2,  0, 14, 14, 14 },
-    [BLOCK_PATH]    = { "path",   true, false, false, 15, 0, 15, 15, 15 },
+    [BLOCK_PLANKS]  = { "planks", true, false, false, 15, 0, 12, 12, 12, HARDNESS_MEDIUM },
+    [BLOCK_COBBLE]  = { "cobble", true, false, false, 15, 0, 13, 13, 13, HARDNESS_HARD },
+    [BLOCK_GLASS]   = { "glass",  true, true,  false, 2,  0, 14, 14, 14, HARDNESS_LOW },
+    [BLOCK_PATH]    = { "path",   true, false, false, 15, 0, 15, 15, 15, HARDNESS_SOFT },
 };
 
 const BlockDef* block_get_def(BlockID id) {
     if (id >= BLOCK_COUNT) return &block_defs[BLOCK_AIR];
     return &block_defs[id];
+}
+
+float block_break_time(BlockID block) {
+    uint8_t h = block_get_def(block)->hardness;
+    if (h == HARDNESS_UNBREAKABLE) return BLOCK_BREAK_UNBREAKABLE;
+    if (h == HARDNESS_INSTANT)     return 0.0f;
+    /* Linear in hardness tier: 0.25s per unit. Yields dirt 0.25s, glass 0.5s,
+     * wood/planks 0.75s, stone/cobble/ore 1.5s, hardest 3.0s. Strictly
+     * increasing in hardness, so ordering is preserved. */
+    return 0.25f * (float)h;
 }
 
 void block_representative_color(BlockID id, uint8_t* r, uint8_t* g, uint8_t* b) {
