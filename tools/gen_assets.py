@@ -211,6 +211,28 @@ def draw_glass(size=16):
         img.putpixel((i, i+1), (255, 255, 255, 180))
     return img
 
+def draw_torch(size=16):
+    """Wooden torch on a transparent tile: a brown handle rising from the
+    bottom with a bright yellow/orange flame at the top."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    cx = size // 2
+    # Handle: a 2-wide brown stick in the lower two-thirds.
+    for y in range(size // 3, size):
+        for x in (cx - 1, cx):
+            img.putpixel((x, y), _noise(110, 74, 38, 255, x, y, 8))
+    # Flame head: a small glowing blob near the top.
+    top = size // 3
+    for y in range(0, top + 1):
+        for x in range(cx - 2, cx + 2):
+            if 0 <= x < size and 0 <= y < size:
+                # core bright, edges oranger
+                edge = abs(x - cx) + (top - y)
+                if edge <= 1:
+                    img.putpixel((x, y), (255, 240, 160, 255))
+                elif edge <= 3:
+                    img.putpixel((x, y), (255, 180, 60, 255))
+    return img
+
 def draw_path(size=16):
     """Desaturated gravel path: dirt base with scattered grey pebbles."""
     img = Image.new('RGBA', (size, size))
@@ -243,6 +265,7 @@ TILE_GENERATORS = {
     15: draw_path,
     16: draw_water,
     17: draw_bedrock,
+    18: draw_torch,
 }
 
 TILE_NAMES = {
@@ -250,7 +273,7 @@ TILE_NAMES = {
     5: "wood_top", 6: "wood_side", 7: "leaves",
     8: "coal_ore", 9: "iron_ore", 10: "gold_ore", 11: "diamond_ore",
     12: "planks", 13: "cobble", 14: "glass", 15: "path",
-    16: "water", 17: "bedrock",
+    16: "water", 17: "bedrock", 18: "torch",
 }
 
 # ── player skin ───────────────────────────────────────────────────────────────

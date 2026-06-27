@@ -25,6 +25,8 @@ enum {
     BLOCK_COBBLE,
     BLOCK_GLASS,
     BLOCK_PATH,
+    /* Emissive block: a torch radiating block light (atlas tile 18). */
+    BLOCK_TORCH,
     BLOCK_COUNT,
 };
 

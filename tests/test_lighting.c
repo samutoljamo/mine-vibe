@@ -390,8 +390,152 @@ static void test_relight_place_does_not_clear_lateral_light(void)
     printf("PASS: test_relight_place_does_not_clear_lateral_light\n");
 }
 
+/* ── Block light (emissive torches) ─────────────────────────────────────── */
+
+/* The torch block exists, is opaque/solid, and emits ~14. */
+static void test_torch_block_def(void)
+{
+    const BlockDef* t = block_get_def(BLOCK_TORCH);
+    assert(t->light_emit == 14);
+    assert(t->is_solid == true);
+    assert(t->is_transparent == false);
+    /* No non-torch block emits. */
+    assert(block_get_def(BLOCK_STONE)->light_emit == 0);
+    assert(block_get_def(BLOCK_PATH)->light_emit  == 0);
+    printf("PASS: test_torch_block_def\n");
+}
+
+/* A torch placed in open air lights its neighbourhood with linear falloff. */
+static void test_torch_lights_neighbourhood(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    chunk_set_block(c, 8, 100, 8, BLOCK_TORCH);
+
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+
+    /* Torch cell itself holds the emit value. */
+    assert(chunk_get_blocklight(c, 8, 100, 8) == 14);
+    /* One step away: 13, two steps: 12, three: 11. */
+    assert(chunk_get_blocklight(c, 9, 100, 8)  == 13);
+    assert(chunk_get_blocklight(c, 8, 100, 9)  == 13);
+    assert(chunk_get_blocklight(c, 8, 101, 8)  == 13);
+    assert(chunk_get_blocklight(c, 10, 100, 8) == 12);
+    assert(chunk_get_blocklight(c, 11, 100, 8) == 11);
+    /* Manhattan distance 14 reaches 0 (15 steps away gone). */
+    assert(chunk_get_blocklight(c, 8 + 14, 100, 8) == 0);
+
+    /* Block light is in the high nibble — sky nibble at these cells is its
+     * own value and unaffected by the torch. */
+    assert(chunk_get_skylight(c, 9, 100, 8) == 15);
+
+    chunk_destroy(c);
+    printf("PASS: test_torch_lights_neighbourhood\n");
+}
+
+/* Block light stops at an opaque wall. */
+static void test_torch_blocked_by_wall(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    /* Torch at x=8, stone wall at x=10 spanning the y/z plane locally. */
+    chunk_set_block(c, 8, 100, 8, BLOCK_TORCH);
+    for (int y = 96; y <= 104; y++)
+        for (int z = 4; z <= 12; z++)
+            chunk_set_block(c, 10, y, z, BLOCK_STONE);
+
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+
+    /* In front of the wall (x=9): lit. */
+    assert(chunk_get_blocklight(c, 9, 100, 8) == 13);
+    /* The wall cell is opaque: no block light entered it. */
+    assert(chunk_get_blocklight(c, 10, 100, 8) == 0);
+    /* Directly behind the wall (x=11), with the wall sealing the straight
+     * path, light must be strictly less than the open-air value (12) — it can
+     * only arrive by detouring around the 9x9 wall patch, if at all. */
+    assert(chunk_get_blocklight(c, 11, 100, 8) < 12);
+
+    chunk_destroy(c);
+    printf("PASS: test_torch_blocked_by_wall\n");
+}
+
+/* Placing a torch at runtime lights neighbours via the relight-on-edit path. */
+static void test_torch_place_relights(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+
+    /* No block light anywhere yet. */
+    assert(chunk_get_blocklight(c, 8, 50, 8) == 0);
+    assert(chunk_get_blocklight(c, 9, 50, 8) == 0);
+
+    chunk_set_block(c, 8, 50, 8, BLOCK_TORCH);
+    lighting_on_block_changed(c, &nb, 8, 50, 8, BLOCK_AIR, BLOCK_TORCH);
+
+    assert(chunk_get_blocklight(c, 8, 50, 8) == 14);
+    assert(chunk_get_blocklight(c, 9, 50, 8) == 13);
+    assert(chunk_get_blocklight(c, 10, 50, 8) == 12);
+
+    chunk_destroy(c);
+    printf("PASS: test_torch_place_relights\n");
+}
+
+/* Removing a torch darkens its neighbourhood back to zero. */
+static void test_torch_remove_darkens(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    chunk_set_block(c, 8, 50, 8, BLOCK_TORCH);
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+    assert(chunk_get_blocklight(c, 9, 50, 8) == 13);
+
+    /* Break the torch. */
+    chunk_set_block(c, 8, 50, 8, BLOCK_AIR);
+    lighting_on_block_changed(c, &nb, 8, 50, 8, BLOCK_TORCH, BLOCK_AIR);
+
+    /* Whole neighbourhood goes dark. */
+    assert(chunk_get_blocklight(c, 8, 50, 8)  == 0);
+    assert(chunk_get_blocklight(c, 9, 50, 8)  == 0);
+    assert(chunk_get_blocklight(c, 10, 50, 8) == 0);
+    assert(chunk_get_blocklight(c, 8, 51, 8)  == 0);
+
+    chunk_destroy(c);
+    printf("PASS: test_torch_remove_darkens\n");
+}
+
+/* Two torches: removing one leaves cells fed by the other still lit. */
+static void test_torch_remove_keeps_independent_source(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    chunk_set_block(c, 4, 50, 8, BLOCK_TORCH);
+    chunk_set_block(c, 12, 50, 8, BLOCK_TORCH);
+    LightingNeighbors nb = { NULL, NULL, NULL, NULL };
+    lighting_initial_pass(c, &nb);
+
+    /* Remove the first torch. */
+    chunk_set_block(c, 4, 50, 8, BLOCK_AIR);
+    lighting_on_block_changed(c, &nb, 4, 50, 8, BLOCK_TORCH, BLOCK_AIR);
+
+    /* Second torch still lights its own neighbourhood. */
+    assert(chunk_get_blocklight(c, 12, 50, 8) == 14);
+    assert(chunk_get_blocklight(c, 11, 50, 8) == 13);
+    /* The removed torch's cell is dark. */
+    assert(chunk_get_blocklight(c, 4, 50, 8) == 0);
+
+    chunk_destroy(c);
+    printf("PASS: test_torch_remove_keeps_independent_source\n");
+}
+
 int main(void)
 {
+    test_torch_block_def();
+    test_torch_lights_neighbourhood();
+    test_torch_blocked_by_wall();
+    test_torch_place_relights();
+    test_torch_remove_darkens();
+    test_torch_remove_keeps_independent_source();
+
     test_block_light_absorb_values();
     test_chunk_light_lazy_alloc_and_pack();
     test_sky_column_empty_chunk();

@@ -182,10 +182,187 @@ static void horizontal_bfs(Chunk* c, const LightingNeighbors* nb)
     free(q);
 }
 
+/* ── Block light (emissive sources) ─────────────────────────────────────────
+ *
+ * Block light lives in the high nibble of the packed light byte and is fully
+ * independent of sky light. It is seeded by each block's `light_emit` value and
+ * spreads by addition-BFS, decremented per step by the destination cell's
+ * absorption (so it stops at opaque walls). The renderer/mesher combines the
+ * two via max(sky, block) so torches brighten caves and nighttime.
+ *
+ * Cross-chunk propagation is intentionally not implemented here (mirrors the
+ * sky-light spec-1 limitation): block light stops at chunk boundaries. */
+
+/* Addition-BFS over the block-light nibble, in-chunk only. The queue must be
+ * pre-seeded with emitter cells at their emit value. */
+static void block_addition_bfs(Chunk* c, LightQueue* q)
+{
+    static const int dx[6] = { 1, -1,  0,  0,  0,  0 };
+    static const int dy[6] = { 0,  0,  1, -1,  0,  0 };
+    static const int dz[6] = { 0,  0,  0,  0,  1, -1 };
+
+    while (!lq_empty(q)) {
+        LightCell cell = lq_pop(q);
+        for (int f = 0; f < 6; f++) {
+            int nx_ = cell.x + dx[f];
+            int ny_ = cell.y + dy[f];
+            int nz_ = cell.z + dz[f];
+            if (ny_ < 0 || ny_ >= CHUNK_Y) continue;
+            if (nx_ < 0 || nx_ >= CHUNK_X) continue; /* no cross-chunk block light */
+            if (nz_ < 0 || nz_ >= CHUNK_Z) continue;
+
+            BlockID nb_block  = chunk_get_block(c, nx_, ny_, nz_);
+            uint8_t nb_absorb = block_get_def(nb_block)->light_absorb;
+            uint8_t new_bl    = step_light(cell.light, nb_absorb);
+            if (new_bl == 0) continue;
+
+            uint8_t cur = chunk_get_blocklight(c, nx_, ny_, nz_);
+            if (new_bl > cur) {
+                chunk_set_blocklight(c, nx_, ny_, nz_, new_bl);
+                lq_push(q, nx_, ny_, nz_, new_bl);
+            }
+        }
+    }
+}
+
+/* Removal-BFS over the block-light nibble. Zeros cells sustained by the source
+ * whose light dropped; cells with an independent brighter source are queued as
+ * re-propagation seeds in `re_propagate`. */
+static void block_removal_bfs(Chunk* c, int x, int y, int z,
+                              uint8_t old_value,
+                              LightQueue* rq, LightQueue* re_propagate)
+{
+    lq_push(rq, x, y, z, old_value);
+
+    static const int dx[6] = { 1, -1,  0,  0,  0,  0 };
+    static const int dy[6] = { 0,  0,  1, -1,  0,  0 };
+    static const int dz[6] = { 0,  0,  0,  0,  1, -1 };
+
+    while (!lq_empty(rq)) {
+        LightCell cell = lq_pop(rq);
+        for (int f = 0; f < 6; f++) {
+            int nx_ = cell.x + dx[f];
+            int ny_ = cell.y + dy[f];
+            int nz_ = cell.z + dz[f];
+            if (ny_ < 0 || ny_ >= CHUNK_Y) continue;
+            if (nx_ < 0 || nx_ >= CHUNK_X) continue;
+            if (nz_ < 0 || nz_ >= CHUNK_Z) continue;
+
+            uint8_t nb_bl = chunk_get_blocklight(c, nx_, ny_, nz_);
+            if (nb_bl == 0) continue;
+
+            BlockID b = chunk_get_block(c, nx_, ny_, nz_);
+            uint8_t cost = block_get_def(b)->light_absorb;
+            if (cost < 1) cost = 1;
+
+            if (nb_bl + cost <= cell.light) {
+                chunk_set_blocklight(c, nx_, ny_, nz_, 0);
+                lq_push(rq, nx_, ny_, nz_, nb_bl);
+            } else {
+                lq_push(re_propagate, nx_, ny_, nz_, nb_bl);
+            }
+        }
+    }
+}
+
+/* Scan the chunk for emitters and run a block-light addition-BFS. */
+static void block_light_initial_pass(Chunk* c)
+{
+    LightQueue* q = malloc(sizeof(LightQueue));
+    if (!q) {
+        fprintf(stderr, "lighting: out of memory for block-light BFS queue\n");
+        return;
+    }
+    lq_init(q);
+
+    int any = 0;
+    for (int y = 0; y < CHUNK_Y; y++) {
+        for (int z = 0; z < CHUNK_Z; z++) {
+            for (int x = 0; x < CHUNK_X; x++) {
+                BlockID b = chunk_get_block(c, x, y, z);
+                uint8_t emit = block_get_def(b)->light_emit;
+                if (emit > 0) {
+                    uint8_t cur = chunk_get_blocklight(c, x, y, z);
+                    if (emit > cur) {
+                        chunk_set_blocklight(c, x, y, z, emit);
+                        lq_push(q, x, y, z, emit);
+                        any = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (any) block_addition_bfs(c, q);
+    free(q);
+}
+
+/* Relight block light around an in-chunk edit at (x,y,z). Handles three cases:
+ *   - new block emits more than old: seed addition-BFS from the cell.
+ *   - old block emitted (torch removed): removal-BFS from its old emit, then
+ *     re-propagate surviving independent sources.
+ *   - new block more opaque (cell no longer transmits): removal-BFS from the
+ *     cell's old block-light, then refill from neighbors.
+ * Always re-seeds from the 6 neighbors so light flows back around the change. */
+static void block_light_on_change(Chunk* c, int x, int y, int z,
+                                  BlockID old_id, BlockID new_id)
+{
+    uint8_t old_emit   = block_get_def(old_id)->light_emit;
+    uint8_t new_emit   = block_get_def(new_id)->light_emit;
+    uint8_t old_absorb = block_get_def(old_id)->light_absorb;
+    uint8_t new_absorb = block_get_def(new_id)->light_absorb;
+    uint8_t cur_bl     = chunk_get_blocklight(c, x, y, z);
+
+    LightQueue* removal_q = malloc(sizeof(LightQueue));
+    LightQueue* add_q     = malloc(sizeof(LightQueue));
+    if (!removal_q || !add_q) {
+        fprintf(stderr, "lighting: out of memory in block_light_on_change\n");
+        free(removal_q);
+        free(add_q);
+        return;
+    }
+    lq_init(removal_q);
+    lq_init(add_q);
+
+    int need_removal = (old_emit > new_emit) || (new_absorb > old_absorb);
+    if (need_removal && cur_bl > 0) {
+        chunk_set_blocklight(c, x, y, z, 0);
+        block_removal_bfs(c, x, y, z, cur_bl, removal_q, add_q);
+    }
+
+    /* New emitter (or stronger emitter): seed addition from the cell. */
+    if (new_emit > 0) {
+        uint8_t cur = chunk_get_blocklight(c, x, y, z);
+        if (new_emit > cur) {
+            chunk_set_blocklight(c, x, y, z, new_emit);
+            lq_push(add_q, x, y, z, new_emit);
+        }
+    }
+
+    /* Re-seed from neighbors so surrounding sources flow back into the edit. */
+    static const int dx[6] = { 1, -1,  0,  0,  0,  0 };
+    static const int dy[6] = { 0,  0,  1, -1,  0,  0 };
+    static const int dz[6] = { 0,  0,  0,  0,  1, -1 };
+    for (int f = 0; f < 6; f++) {
+        int nx_ = x + dx[f], ny_ = y + dy[f], nz_ = z + dz[f];
+        if (ny_ < 0 || ny_ >= CHUNK_Y) continue;
+        if (nx_ < 0 || nx_ >= CHUNK_X) continue;
+        if (nz_ < 0 || nz_ >= CHUNK_Z) continue;
+        uint8_t s = chunk_get_blocklight(c, nx_, ny_, nz_);
+        if (s > 0) lq_push(add_q, nx_, ny_, nz_, s);
+    }
+
+    block_addition_bfs(c, add_q);
+
+    free(removal_q);
+    free(add_q);
+}
+
 void lighting_initial_pass(Chunk* c, const LightingNeighbors* nb)
 {
     sky_column_pass(c);
     horizontal_bfs(c, nb);
+    block_light_initial_pass(c);
 }
 
 void lighting_consume_pending(Chunk* c, const LightingNeighbors* nb)
@@ -470,4 +647,8 @@ void lighting_on_block_changed(
 
     free(removal_q);
     free(add_q);
+
+    /* Block light is independent of sky light: update it for the same edit
+     * (handles torch place/remove and opacity changes near emitters). */
+    block_light_on_change(c, x, y, z, old_id, new_id);
 }
