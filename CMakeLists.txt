@@ -387,6 +387,32 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME village COMMAND test_village)
 
+# Worldgen terrain generation: generates real chunks via worldgen_generate and
+# asserts invariants (determinism, bedrock floor, surface sanity, stone body,
+# ore depth gating, no OOB across a coord spread). Links the modules worldgen
+# pulls in; chunk.h transitively includes Vulkan headers, hence the
+# VK_NO_PROTOTYPES + Vulkan::Headers wiring mirrored from test_village.
+add_executable(test_worldgen
+    tests/test_worldgen.c
+    src/worldgen.c
+    src/ore.c
+    src/village.c
+    src/chunk.c
+    src/block.c
+)
+target_include_directories(test_worldgen PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${fastnoiselite_SOURCE_DIR}/C
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_worldgen PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_worldgen PRIVATE cglm Vulkan::Headers Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_worldgen PRIVATE m)
+endif()
+add_test(NAME worldgen COMMAND test_worldgen)
+
 # World persistence overlay (pure: serialize/deserialize roundtrip + file I/O).
 # Pulls in chunk.h (via world_persist.c) which transitively includes Vulkan
 # headers, hence the VK_NO_PROTOTYPES + Vulkan::Headers wiring mirrored from
@@ -411,6 +437,6 @@ add_test(NAME world_persist COMMAND test_world_persist)
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_raycast test_ore test_daynight test_village
-          test_world_persist)
+          test_worldgen test_world_persist)
     msvc_enable_c11_atomics(${t})
 endforeach()
