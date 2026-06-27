@@ -7,7 +7,7 @@
 
 #define MOB_MAX 64   /* hard array/wire cap */
 
-typedef enum { MOB_ZOMBIE = 0, MOB_TYPE_COUNT } MobType;
+typedef enum { MOB_ZOMBIE = 0, MOB_SKELETON, MOB_CREEPER, MOB_TYPE_COUNT } MobType;
 
 /* ---- Tunables (v1) ---- */
 #define MOB_CAP             8       /* live mobs kept near the anchor */
@@ -28,6 +28,31 @@ typedef enum { MOB_ZOMBIE = 0, MOB_TYPE_COUNT } MobType;
 #define MOB_WANDER_INTERVAL 4.0f
 #define MOB_STATE_MAX_WIRE  24      /* mobs per PKT_MOB_STATE (512B cap) */
 
+/* ---- Skeleton (ranged) tunables ---- */
+#define SKELETON_HEALTH         16
+#define SKELETON_RETREAT_RANGE  6.0f    /* nearer than this -> back away */
+#define SKELETON_SHOOT_RANGE    14.0f   /* max hitscan shot distance */
+#define SKELETON_ATTACK_DAMAGE  3
+#define SKELETON_ATTACK_INTERVAL 1.5f   /* seconds between shots */
+
+/* ---- Creeper (explodes) tunables ---- */
+#define CREEPER_HEALTH          20
+#define CREEPER_FUSE_RANGE      3.5f    /* start the fuse hissing within this */
+#define CREEPER_DETONATE_RANGE  3.0f    /* blast hits the player within this */
+#define CREEPER_FUSE_TIME       1.5f    /* seconds from arming to boom */
+#define CREEPER_BLAST_DAMAGE    20      /* damage at point-blank */
+
+/* Per-type derived stats (pure lookup, no globals). */
+typedef struct {
+    int16_t health;
+    float   speed;            /* chase speed, blocks/s */
+    float   attack_range;     /* contact (melee) or shoot range */
+    int     attack_damage;
+    float   attack_interval;  /* seconds between hits/shots */
+    bool    ranged;           /* attacks from a distance (skeleton) */
+    bool    explodes;         /* self-destructs on detonation (creeper) */
+} MobStats;
+
 /* ---- Server simulation struct ---- */
 typedef struct {
     uint16_t id;             /* 1.. ; 0 = none */
@@ -39,8 +64,10 @@ typedef struct {
     bool     on_ground;
     int16_t  health;
     uint16_t target_player;  /* player_id chased, 0 = none */
-    float    attack_cooldown;/* seconds until next contact hit */
+    float    attack_cooldown;/* seconds until next contact hit / shot */
     float    wander_timer;
+    float    fuse_timer;     /* creeper: seconds left on the lit fuse */
+    bool     fuse_lit;       /* creeper: fuse currently burning */
 } Mob;
 
 typedef struct { Mob mobs[MOB_MAX]; } MobSet;
@@ -65,6 +92,21 @@ void mob_steer(const Mob* m, vec3 target_pos,
 
 /* Pure: subtract dmg, returns true if this hit dropped health to <= 0. */
 bool mob_combat_apply(int16_t* health, int dmg);
+
+/* ---- Mob variety: per-type stats + AI helpers (all pure) ---- */
+
+/* Per-type stat block. Unknown types fall back to the zombie profile. */
+MobStats mob_stats(MobType type);
+
+/* Skeleton: back away when the target is closer than the standoff distance. */
+bool skeleton_wants_to_retreat(float dist);
+/* Skeleton: target is within hitscan shooting range (point-blank included). */
+bool skeleton_in_shoot_range(float dist);
+
+/* Creeper: close enough to start the fuse hissing. */
+bool creeper_should_arm_fuse(float dist);
+/* Creeper: within blast radius AND the fuse has burned out. */
+bool creeper_should_detonate(float dist, float fuse_timer);
 
 /* ---- Client-side interpolated mob ---- */
 #define MOB_INTERP_DELAY 0.025   /* seconds, matches remote players */

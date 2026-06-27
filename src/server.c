@@ -405,8 +405,9 @@ static void server_try_spawn(Server* s, vec3 anchor) {
     int z = (int)floorf(anchor[2] + sinf(ang) * rad);
     int y = server_surface_y(s->world, x, z);
     if (y < 0) return;  /* terrain not ready / no valid column — try again next interval */
-    Mob* m = mob_set_spawn(&s->mobs, MOB_ZOMBIE, (vec3){ (float)x + 0.5f, (float)(y + 1), (float)z + 0.5f });
-    if (m) fprintf(stderr, "[server] spawned mob %u at (%d,%d)\n", m->id, x, z);
+    MobType type = (MobType)(rand() % MOB_TYPE_COUNT);
+    Mob* m = mob_set_spawn(&s->mobs, type, (vec3){ (float)x + 0.5f, (float)(y + 1), (float)z + 0.5f });
+    if (m) fprintf(stderr, "[server] spawned mob %u (type %d) at (%d,%d)\n", m->id, (int)type, x, z);
 }
 
 static void server_send_health(Server* s, ServerClient* c, uint8_t flags) {
@@ -459,8 +460,14 @@ static void server_simulate_mobs(Server* s, float dt) {
             for (int p = 0; p < pcount; p++)
                 if (players[p].player_id == m->target_player) { tgt = &players[p]; break; }
         }
+        MobStats st = mob_stats(m->type);
+        float tdist = tgt ? glm_vec3_distance((float*)tgt->position, m->position) : 0.0f;
         if (tgt) {
             mob_steer(m, (float*)tgt->position, &vx, &vz, &m->yaw);
+            /* Skeleton keeps its distance: reverse the chase vector when too close. */
+            if (m->type == MOB_SKELETON && skeleton_wants_to_retreat(tdist)) {
+                vx = -vx; vz = -vz;   /* face stays toward target via m->yaw */
+            }
         } else {
             /* Idle wander: pick a slow heading periodically. */
             m->wander_timer -= dt;
@@ -496,17 +503,40 @@ static void server_simulate_mobs(Server* s, float dt) {
                                         /*crouch=*/false, s->world);
         m->on_ground = pr.on_ground;
 
-        /* 4. Contact damage to the target. */
-        if (tgt && m->attack_cooldown <= 0.0f) {
-            float d = glm_vec3_distance((float*)tgt->position, m->position);
-            if (d <= MOB_ATTACK_RANGE) {
-                for (int c = 0; c < SERVER_MAX_CLIENTS; c++) {
-                    if (s->clients[c].active && s->clients[c].player_id == m->target_player) {
-                        server_damage_player(s, &s->clients[c], MOB_ATTACK_DAMAGE);
-                        break;
+        /* 4. Per-type attack against the target. */
+        if (tgt) {
+            ServerClient* tc = NULL;
+            for (int c = 0; c < SERVER_MAX_CLIENTS; c++)
+                if (s->clients[c].active && s->clients[c].player_id == m->target_player)
+                    { tc = &s->clients[c]; break; }
+
+            if (m->type == MOB_CREEPER) {
+                /* Arm the fuse near the player; detonate when it burns out. */
+                if (!m->fuse_lit && creeper_should_arm_fuse(tdist)) {
+                    m->fuse_lit = true;
+                    m->fuse_timer = CREEPER_FUSE_TIME;
+                }
+                if (m->fuse_lit) {
+                    m->fuse_timer -= dt;
+                    /* Walk back out of range -> defuse. */
+                    if (tdist > CREEPER_FUSE_RANGE * 1.5f) {
+                        m->fuse_lit = false;
+                    } else if (creeper_should_detonate(tdist, m->fuse_timer)) {
+                        if (tc) server_damage_player(s, tc, CREEPER_BLAST_DAMAGE);
+                        m->active = false;  /* self-destruct (block damage = follow-up) */
+                        continue;
                     }
                 }
-                m->attack_cooldown = MOB_ATTACK_INTERVAL;
+            } else if (m->type == MOB_SKELETON) {
+                /* Ranged hitscan shot on a cooldown. v1: no projectile travel. */
+                if (m->attack_cooldown <= 0.0f && skeleton_in_shoot_range(tdist)) {
+                    if (tc) server_damage_player(s, tc, st.attack_damage);
+                    m->attack_cooldown = st.attack_interval;
+                }
+            } else if (m->attack_cooldown <= 0.0f && tdist <= st.attack_range) {
+                /* Zombie melee contact. */
+                if (tc) server_damage_player(s, tc, st.attack_damage);
+                m->attack_cooldown = st.attack_interval;
             }
         }
 
