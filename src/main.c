@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
@@ -39,6 +40,13 @@ static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
 static RaycastHit g_target;       /* refreshed each frame for outline + click */
 static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none */
 
+/* Timed-mining state. While the break button is held on a block we accumulate
+ * elapsed seconds; the break packet is sent once it reaches the block's
+ * block_break_time. Progress resets when the target cell changes or the button
+ * releases. -1 cell coords mean "no block currently being mined". */
+static float g_mining_progress = 0.0f;
+static int   g_mining_x = INT32_MIN, g_mining_y = INT32_MIN, g_mining_z = INT32_MIN;
+
 static void scroll_callback(GLFWwindow* w, double xoff, double yoff) {
     (void)w; (void)xoff;
     int dir = (yoff > 0) ? -1 : 1;
@@ -61,12 +69,11 @@ static void mouse_button_callback(GLFWwindow* w, int button, int action, int mod
     if (!g_target.hit && !g_target_mob) return;
 
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        /* Mob melee stays a single click. Block breaking is now timed: the
+         * held-button progress is accumulated each frame in the main loop and
+         * the PKT_BLOCK_BREAK is sent only when mining completes. */
         if (g_target_mob) {
             client_send_mob_attack(g_client, g_target_mob);
-        } else if (g_target.hit) {
-            client_send_break(g_client,
-                              g_target.x, g_target.y, g_target.z,
-                              (uint8_t)g_target.block);
         }
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         client_send_place(g_client,
@@ -418,6 +425,49 @@ int main(int argc, char *argv[])
                         (vec3){ g_target.x + 0.5f, g_target.y + 0.5f, g_target.z + 0.5f })
                     : 1e30f;
                 if (mt <= block_d) g_target_mob = mid;
+            }
+        }
+
+        /* Timed mining: while the break button is held over a mineable block,
+         * accumulate progress and send the break only when it completes. Any
+         * change of target, button release, mob-priority, or an unbreakable
+         * block resets progress. The break packet is sent once per completion;
+         * the server applies the edit and echoes a PKT_BLOCK_CHANGE. */
+        {
+            bool lmb = (g_client &&
+                        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT)
+                            == GLFW_PRESS);
+            bool can_mine = lmb && !g_target_mob && g_target.hit;
+
+            if (!can_mine) {
+                g_mining_progress = 0.0f;
+                g_mining_x = g_mining_y = g_mining_z = INT32_MIN;
+            } else {
+                /* Reset if the targeted cell changed since last frame. */
+                if (g_target.x != g_mining_x ||
+                    g_target.y != g_mining_y ||
+                    g_target.z != g_mining_z) {
+                    g_mining_progress = 0.0f;
+                    g_mining_x = g_target.x;
+                    g_mining_y = g_target.y;
+                    g_mining_z = g_target.z;
+                }
+                float need = block_break_time(g_target.block);
+                if (need >= BLOCK_BREAK_UNBREAKABLE) {
+                    /* Bedrock and friends: never completes. */
+                    g_mining_progress = 0.0f;
+                } else {
+                    g_mining_progress += dt;
+                    if (g_mining_progress >= need) {
+                        client_send_break(g_client,
+                                          g_target.x, g_target.y, g_target.z,
+                                          (uint8_t)g_target.block);
+                        /* Stop re-sending until the cell changes (the server
+                         * echo will clear the block and move the target). */
+                        g_mining_progress = 0.0f;
+                        g_mining_x = g_mining_y = g_mining_z = INT32_MIN;
+                    }
+                }
             }
         }
 
