@@ -19,6 +19,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <time.h>
+#include <stdio.h>  /* fprintf for thread-creation failure diagnostics */
 
 typedef pthread_t       PT_Thread;
 typedef pthread_mutex_t PT_Mutex;
@@ -35,9 +36,14 @@ static inline void pt_cond_signal(PT_Cond* c)                       { pthread_co
 static inline void pt_cond_broadcast(PT_Cond* c)                    { pthread_cond_broadcast(c); }
 static inline void pt_cond_destroy(PT_Cond* c)                      { pthread_cond_destroy(c); }
 
-static inline void pt_thread_create(PT_Thread* t, void*(*fn)(void*), void* arg)
+/* Returns 0 on success, -1 on failure. */
+static inline int pt_thread_create(PT_Thread* t, void*(*fn)(void*), void* arg)
 {
-    pthread_create(t, NULL, fn, arg);
+    if (pthread_create(t, NULL, fn, arg) != 0) {
+        fprintf(stderr, "pt_thread_create: pthread_create failed\n");
+        return -1;
+    }
+    return 0;
 }
 static inline void pt_thread_join(PT_Thread t) { pthread_join(t, NULL); }
 
@@ -60,6 +66,7 @@ static inline void pt_sleep_ms(unsigned int ms)
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <stdio.h>  /* fprintf for thread-creation failure diagnostics */
 
 typedef HANDLE             PT_Thread;
 typedef CRITICAL_SECTION   PT_Mutex;
@@ -92,12 +99,24 @@ static DWORD WINAPI pt__trampoline(LPVOID param)
     return 0;
 }
 
-static inline void pt_thread_create(PT_Thread* t, void*(*fn)(void*), void* arg)
+/* Returns 0 on success, -1 on failure. */
+static inline int pt_thread_create(PT_Thread* t, void*(*fn)(void*), void* arg)
 {
     PT__ThreadArgs* a = (PT__ThreadArgs*)malloc(sizeof(PT__ThreadArgs));
+    if (!a) {
+        fprintf(stderr, "pt_thread_create: out of memory allocating thread args\n");
+        *t = NULL;
+        return -1;
+    }
     a->fn  = fn;
     a->arg = arg;
     *t = CreateThread(NULL, 0, pt__trampoline, a, 0, NULL);
+    if (*t == NULL) {
+        fprintf(stderr, "pt_thread_create: CreateThread failed\n");
+        free(a);
+        return -1;
+    }
+    return 0;
 }
 
 static inline void pt_thread_join(PT_Thread t)

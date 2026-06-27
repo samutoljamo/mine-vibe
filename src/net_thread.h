@@ -38,6 +38,12 @@ typedef struct {
     NetMsg*      out_head;
     NetMsg*      out_tail;
     PT_Mutex     out_mutex;
+
+    /* Diagnostics: packets dropped due to allocation failure under load.
+     * `dropped` is the running total; `dropped_reported` is the value at the
+     * last stderr warning, so we only warn when new drops have occurred. */
+    atomic_ullong dropped;
+    unsigned long long dropped_reported;
 } NetThread;
 
 /* fd must already be open and non-blocking (from net_socket_server/client) */
