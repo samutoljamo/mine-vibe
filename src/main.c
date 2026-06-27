@@ -7,6 +7,7 @@
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
 #include "renderer.h"
+#include "ui/ui.h"
 #include "player.h"
 #include "world.h"
 #include "block_physics.h"
@@ -41,6 +42,35 @@ static RaycastHit g_target;       /* refreshed each frame for outline + click */
 static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none */
 static bool g_show_stats = false; /* perf overlay visibility; toggled with F3 */
 
+/* Game-UI state machine. Starts at the main menu; Play enters PLAYING, Esc
+ * toggles the pause overlay, E toggles the inventory screen. The cursor is
+ * captured only in PLAYING (mouselook); freed in every menu/overlay. */
+static GameUiState g_ui_state = GAME_MAIN_MENU;
+static GLFWwindow* g_window = NULL;
+static bool g_agent_mode_active = false;
+
+/* Apply the cursor-capture mode that matches the current UI state. Captured
+ * (disabled) for PLAYING mouselook; normal (visible) for menus/overlays. */
+static void ui_apply_cursor(GLFWwindow* w)
+{
+    if (g_agent_mode_active) return;   /* agent mode never grabs the cursor */
+    glfwSetInputMode(w, GLFW_CURSOR,
+        game_ui_cursor_free(g_ui_state) ? GLFW_CURSOR_NORMAL
+                                        : GLFW_CURSOR_DISABLED);
+}
+
+/* Switch UI state and reflect it in the cursor + the HUD's latched screen. */
+static void ui_set_state(GameUiState s)
+{
+    /* Re-entering mouselook: discard the first delta so the camera doesn't
+     * snap by the distance the free cursor travelled while a menu was open. */
+    if (s == GAME_PLAYING && g_ui_state != GAME_PLAYING)
+        g_player.camera.first_mouse = true;
+    g_ui_state = s;
+    hud_set_screen(s);
+    if (g_window) ui_apply_cursor(g_window);
+}
+
 /* Timed-mining state. While the break button is held on a block we accumulate
  * elapsed seconds; the break packet is sent once it reaches the block's
  * block_break_time. Progress resets when the target cell changes or the button
@@ -50,6 +80,7 @@ static int   g_mining_x = INT32_MIN, g_mining_y = INT32_MIN, g_mining_z = INT32_
 
 static void scroll_callback(GLFWwindow* w, double xoff, double yoff) {
     (void)w; (void)xoff;
+    if (!game_ui_world_active(g_ui_state)) return;   /* hotbar scroll only in-world */
     int dir = (yoff > 0) ? -1 : 1;
     if (!g_client) return;
     g_client->inventory.selected =
@@ -59,6 +90,9 @@ static void scroll_callback(GLFWwindow* w, double xoff, double yoff) {
 static void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
     (void)window;
+    /* Only drive mouselook while playing; in menus/overlays the cursor is free
+     * for hit-testing and must not yank the camera. */
+    if (!game_ui_world_active(g_ui_state)) return;
     camera_process_mouse(&g_player.camera, xpos, ypos);
 }
 
@@ -66,6 +100,7 @@ static void mouse_button_callback(GLFWwindow* w, int button, int action, int mod
 {
     (void)w; (void)mods;
     if (action != GLFW_PRESS) return;
+    if (!game_ui_world_active(g_ui_state)) return;  /* menu clicks handled in loop */
     if (!g_client) return;
     if (!g_target.hit && !g_target_mob) return;
 
@@ -89,8 +124,15 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
 {
     (void)scancode;
     (void)mods;
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+        /* Esc toggles pause from in-world and closes the inventory; in the main
+         * menu it does nothing (use the Quit button to leave). */
+        ui_set_state(game_ui_toggle_pause(g_ui_state));
+    }
+    if (key == GLFW_KEY_E && action == GLFW_PRESS) {
+        /* E opens/closes the inventory screen (no-op in menu/pause). */
+        ui_set_state(game_ui_toggle_inventory(g_ui_state));
+    }
     if (key == GLFW_KEY_F3 && action == GLFW_PRESS)
         g_show_stats = !g_show_stats;   /* toggle the perf overlay */
 }
@@ -246,12 +288,22 @@ int main(int argc, char *argv[])
     GLFWwindow* window = glfwCreateWindow(1280, 720, "Minecraft", NULL, NULL);
     if (!window) { glfwTerminate(); return 1; }
 
+    g_window            = window;
+    g_agent_mode_active = agent_mode;
+
+    /* Agent mode is headless-driven: it never shows menus and always runs the
+     * in-world simulation, so it starts in PLAYING with the cursor captured.
+     * Interactive mode opens at the main menu with a free cursor. */
+    ui_set_state(agent_mode ? GAME_PLAYING : GAME_MAIN_MENU);
+
     if (!agent_mode) {
-        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         glfwSetCursorPosCallback(window, mouse_callback);
         glfwSetKeyCallback(window, key_callback);
         glfwSetScrollCallback(window, scroll_callback);
         glfwSetMouseButtonCallback(window, mouse_button_callback);
+        ui_apply_cursor(window);   /* free cursor for the main menu */
+    } else {
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     }
 
     Renderer renderer;
@@ -415,6 +467,69 @@ int main(int argc, char *argv[])
             }
         }
 
+        /* ---- Menu / overlay input ----
+         * When not in PLAYING the cursor is free; register the current screen's
+         * clickable rects with the UI hit-test API, resolve the cursor, and act
+         * on edge-triggered left clicks. Done before the in-world simulation so
+         * a state transition this frame takes effect immediately. */
+        if (!game_ui_world_active(g_ui_state) && !agent_mode) {
+            double mx, my;
+            glfwGetCursorPos(window, &mx, &my);
+            int lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT);
+            static int prev_lmb = GLFW_RELEASE;
+            bool clicked = (lmb == GLFW_PRESS && prev_lmb == GLFW_RELEASE);
+            prev_lmb = lmb;
+
+            float sw = (float)renderer.swapchain.extent.width;
+            float sh = (float)renderer.swapchain.extent.height;
+
+            ui_input_begin();
+            if (g_ui_state == GAME_MAIN_MENU) {
+                HudRect b0 = hud_menu_button_rect(0, sw, sh);
+                HudRect b1 = hud_menu_button_rect(1, sw, sh);
+                ui_add_element(HUD_ID_PLAY, b0.x, b0.y, b0.w, b0.h);
+                ui_add_element(HUD_ID_QUIT, b1.x, b1.y, b1.w, b1.h);
+            } else if (g_ui_state == GAME_PAUSED) {
+                HudRect b0 = hud_menu_button_rect(0, sw, sh);
+                HudRect b1 = hud_menu_button_rect(1, sw, sh);
+                ui_add_element(HUD_ID_RESUME, b0.x, b0.y, b0.w, b0.h);
+                ui_add_element(HUD_ID_QUIT,   b1.x, b1.y, b1.w, b1.h);
+            } else if (g_ui_state == GAME_INVENTORY) {
+                for (int i = 0; i < HUD_SLOT_COUNT; i++) {
+                    HudRect r = hud_inventory_slot_rect(i, sw, sh);
+                    ui_add_element(HUD_ID_SLOT0 + i, r.x, r.y, r.w, r.h);
+                }
+            }
+            ui_handle_mouse((float)mx, (float)my, clicked);
+
+            int hit = ui_clicked_element();
+            if (hit == HUD_ID_PLAY || hit == HUD_ID_RESUME) {
+                ui_set_state(GAME_PLAYING);
+            } else if (hit == HUD_ID_QUIT) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            } else if (hit >= HUD_ID_SLOT0 && hit < HUD_ID_SLOT0 + HUD_SLOT_COUNT) {
+                /* Clicking an inventory slot selects it (groundwork for
+                 * crafting / item movement). */
+                if (g_client)
+                    g_client->inventory.selected = hit - HUD_ID_SLOT0;
+            }
+        }
+
+        /* In-world simulation (movement, look-target, mining) only runs while
+         * playing; menus/overlays freeze the player. Networking, world meshing
+         * and rendering below always run so the world stays live behind the
+         * overlay and the server connection doesn't stall. */
+        bool world_active = game_ui_world_active(g_ui_state);
+        if (!world_active) {
+            g_player.agent_forward = 0;
+            g_player.agent_right   = 0;
+            g_target.hit = false;
+            g_target_mob = 0;
+            g_mining_progress = 0.0f;
+            g_mining_x = g_mining_y = g_mining_z = INT32_MIN;
+        }
+
+        if (world_active) {
         player_update(&g_player, window, world, dt);
 
         /* Refresh the look-target for outline rendering and click handling.
@@ -486,6 +601,7 @@ int main(int argc, char *argv[])
                 }
             }
         }
+        }  /* end if (world_active) */
 
         /* Networking tick */
         if (networking) {

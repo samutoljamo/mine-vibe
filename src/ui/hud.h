@@ -63,6 +63,74 @@ static inline float perf_stats_avg_fps(const PerfStats* p)
     return 1000.0f / ms;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Game-UI state machine (pure, testable)                             */
+/* ------------------------------------------------------------------ */
+/*
+ * High-level screen the client is showing. The renderer always calls
+ * hud_build(); hud_build dispatches on the latched screen (set from main.c
+ * via hud_set_screen) so the main menu / pause / inventory overlays compose
+ * on top of (or instead of) the in-world HUD without the renderer needing to
+ * know about any of them. Transition + cursor-capture logic lives in pure
+ * helpers below so it can be unit-tested with no Vulkan.
+ */
+typedef enum {
+    GAME_MAIN_MENU = 0,
+    GAME_PLAYING,
+    GAME_PAUSED,
+    GAME_INVENTORY,
+} GameUiState;
+
+/* Stable element ids for the data-driven hit-test API. Menu buttons and
+ * inventory slots share one id space; slot ids start at HUD_ID_SLOT0. */
+enum {
+    HUD_ID_NONE = -1,
+    HUD_ID_PLAY = 1000,   /* main menu: Play   */
+    HUD_ID_QUIT,          /* main menu / pause: Quit */
+    HUD_ID_RESUME,        /* pause: Resume     */
+    HUD_ID_CLOSE,         /* inventory: close  */
+    HUD_ID_SLOT0 = 2000,  /* inventory/hotbar slots: HUD_ID_SLOT0 + i */
+};
+
+/* Axis-aligned rectangle in screen pixels (top-left origin). */
+typedef struct { float x, y, w, h; } HudRect;
+
+/* Esc behaviour: from PLAYING -> PAUSED, from PAUSED -> PLAYING. From
+ * INVENTORY esc returns to PLAYING. From MAIN_MENU esc is a no-op (stays).
+ * Pure; returns the next state. */
+GameUiState game_ui_toggle_pause(GameUiState s);
+
+/* Inventory key (E) behaviour: PLAYING <-> INVENTORY. No-op in menu/pause.
+ * Pure; returns the next state. */
+GameUiState game_ui_toggle_inventory(GameUiState s);
+
+/* True when the mouse cursor should be free (visible) for this state — i.e.
+ * any menu/overlay. False means the cursor is captured for mouselook
+ * (PLAYING). Pure. */
+bool game_ui_cursor_free(GameUiState s);
+
+/* True when in-world input (movement, mouselook, block break/place) should be
+ * processed. Only PLAYING. Pure. */
+bool game_ui_world_active(GameUiState s);
+
+/* Layout helpers — pure, shared by main.c (hit-test registration) and
+ * hud.c (drawing) so the clickable region always matches the drawn button.
+ * Buttons are stacked vertically and centred horizontally.
+ *
+ * `index` is the 0-based button position from the top of the stack. */
+HudRect hud_menu_button_rect(int index, float sw, float sh);
+
+/* Inventory slot rect for slot `i` (0..HUD_SLOT_COUNT-1) in the inventory
+ * screen's grid. */
+HudRect hud_inventory_slot_rect(int i, float sw, float sh);
+
+/* Point-in-rect test (inclusive top-left, exclusive bottom-right). Pure. */
+bool hud_rect_contains(HudRect r, float px, float py);
+
+/* Latch the screen to draw. Called from main.c each frame (or on change). */
+void    hud_set_screen(GameUiState s);
+GameUiState hud_get_screen(void);
+
 /* Forward declarations to avoid circular includes. */
 struct Inventory;
 

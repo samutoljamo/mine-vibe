@@ -239,6 +239,7 @@ add_test(NAME net COMMAND test_net)
 add_executable(test_ui
     tests/test_ui.c
     src/ui/ui.c
+    src/ui/hud.c
     src/block.c
     src/pipeline.c
     tests/renderer_stubs.c

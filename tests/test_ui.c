@@ -211,6 +211,92 @@ static void test_perf_ring_caps_count(void)
     printf("PASS: test_perf_ring_caps_count\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  Game-UI state machine (pure)                                       */
+/* ------------------------------------------------------------------ */
+
+static void test_pause_toggle(void)
+{
+    assert(game_ui_toggle_pause(GAME_PLAYING) == GAME_PAUSED);
+    assert(game_ui_toggle_pause(GAME_PAUSED)  == GAME_PLAYING);
+    /* Esc closes the inventory back to playing. */
+    assert(game_ui_toggle_pause(GAME_INVENTORY) == GAME_PLAYING);
+    /* Esc is a no-op in the main menu. */
+    assert(game_ui_toggle_pause(GAME_MAIN_MENU) == GAME_MAIN_MENU);
+    printf("PASS: test_pause_toggle\n");
+}
+
+static void test_inventory_toggle(void)
+{
+    assert(game_ui_toggle_inventory(GAME_PLAYING)   == GAME_INVENTORY);
+    assert(game_ui_toggle_inventory(GAME_INVENTORY) == GAME_PLAYING);
+    /* No-op outside the world. */
+    assert(game_ui_toggle_inventory(GAME_MAIN_MENU) == GAME_MAIN_MENU);
+    assert(game_ui_toggle_inventory(GAME_PAUSED)    == GAME_PAUSED);
+    printf("PASS: test_inventory_toggle\n");
+}
+
+static void test_cursor_and_world_active(void)
+{
+    /* Cursor is captured only while playing; free in every menu/overlay. */
+    assert(game_ui_cursor_free(GAME_PLAYING)   == false);
+    assert(game_ui_cursor_free(GAME_PAUSED)    == true);
+    assert(game_ui_cursor_free(GAME_INVENTORY) == true);
+    assert(game_ui_cursor_free(GAME_MAIN_MENU) == true);
+    /* World simulation runs only while playing. */
+    assert(game_ui_world_active(GAME_PLAYING)   == true);
+    assert(game_ui_world_active(GAME_PAUSED)    == false);
+    assert(game_ui_world_active(GAME_INVENTORY) == false);
+    assert(game_ui_world_active(GAME_MAIN_MENU) == false);
+    printf("PASS: test_cursor_and_world_active\n");
+}
+
+static void test_menu_button_layout(void)
+{
+    float sw = 1280.0f, sh = 720.0f;
+    HudRect b0 = hud_menu_button_rect(0, sw, sh);
+    HudRect b1 = hud_menu_button_rect(1, sw, sh);
+    /* Buttons are centred horizontally and don't overlap vertically. */
+    assert(fabsf((b0.x + b0.w * 0.5f) - sw * 0.5f) < 0.5f);
+    assert(b1.y > b0.y + b0.h && "second button sits below the first with a gap");
+    assert(b0.w > 0.0f && b0.h > 0.0f);
+    /* The centre of button 0 hit-tests inside button 0's rect. */
+    assert(hud_rect_contains(b0, b0.x + b0.w * 0.5f, b0.y + b0.h * 0.5f));
+    /* ...and not inside button 1. */
+    assert(!hud_rect_contains(b1, b0.x + b0.w * 0.5f, b0.y + b0.h * 0.5f));
+    printf("PASS: test_menu_button_layout\n");
+}
+
+static void test_inventory_slot_layout(void)
+{
+    float sw = 1280.0f, sh = 720.0f;
+    HudRect prev = hud_inventory_slot_rect(0, sw, sh);
+    for (int i = 1; i < HUD_SLOT_COUNT; i++) {
+        HudRect r = hud_inventory_slot_rect(i, sw, sh);
+        assert(r.x > prev.x && "slots are laid out left to right");
+        assert(r.x >= prev.x + prev.w && "slots do not overlap horizontally");
+        assert(fabsf(r.y - prev.y) < 0.001f && "slots share a row");
+        prev = r;
+    }
+    /* The whole row is horizontally centred. */
+    HudRect first = hud_inventory_slot_rect(0, sw, sh);
+    HudRect last  = hud_inventory_slot_rect(HUD_SLOT_COUNT - 1, sw, sh);
+    float row_mid = (first.x + (last.x + last.w)) * 0.5f;
+    assert(fabsf(row_mid - sw * 0.5f) < 0.5f);
+    printf("PASS: test_inventory_slot_layout\n");
+}
+
+static void test_rect_contains_edges(void)
+{
+    HudRect r = { 10.0f, 20.0f, 30.0f, 40.0f };
+    assert(hud_rect_contains(r, 10.0f, 20.0f) && "top-left inclusive");
+    assert(!hud_rect_contains(r, 40.0f, 20.0f) && "right edge exclusive");
+    assert(!hud_rect_contains(r, 10.0f, 60.0f) && "bottom edge exclusive");
+    assert(hud_rect_contains(r, 25.0f, 40.0f) && "interior point inside");
+    assert(!hud_rect_contains(r, 9.0f, 40.0f) && "left of rect outside");
+    printf("PASS: test_rect_contains_edges\n");
+}
+
 int main(void)
 {
     test_font_bake_succeeds();
@@ -231,6 +317,12 @@ int main(void)
     test_perf_averages_samples();
     test_perf_rejects_nonpositive();
     test_perf_ring_caps_count();
+    test_pause_toggle();
+    test_inventory_toggle();
+    test_cursor_and_world_active();
+    test_menu_button_layout();
+    test_inventory_slot_layout();
+    test_rect_contains_edges();
     printf("All ui tests passed.\n");
     return 0;
 }
