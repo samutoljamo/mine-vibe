@@ -95,6 +95,21 @@ static void test_format_snapshot(void) {
     assert(strstr(buf, "\"on_ground\":1")    != NULL);
 }
 
+static void test_format_snapshot_hotbar(void) {
+    AgentSnapshot snap = {
+        .pos           = {0.0f, 0.0f, 0.0f},
+        .vel           = {0.0f, 0.0f, 0.0f},
+        .selected_slot = 2,
+        .hotbar        = {3, 0, 17, 0, 5, 64},
+    };
+    char buf[512];
+    agent_format_snapshot(&snap, buf, sizeof(buf));
+    /* Selected slot and per-slot counts must be reported verbatim */
+    assert(strstr(buf, "\"selected_slot\":2")        != NULL);
+    assert(strstr(buf, "\"hotbar\":[3,0,17,0,5,64]") != NULL);
+    printf("PASS: test_format_snapshot_hotbar\n");
+}
+
 static void test_parse_with_spaces(void) {
     AgentCommand cmd;
     /* Python json.dumps() produces spaces after colons */
@@ -139,6 +154,7 @@ int main(void) {
     test_parse_quit();
     test_parse_unknown_returns_false();
     test_format_snapshot();
+    test_format_snapshot_hotbar();
     test_parse_with_spaces();
     test_cmd_select_slot();
     printf("All agent JSON tests passed.\n");
