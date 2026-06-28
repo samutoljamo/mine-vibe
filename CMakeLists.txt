@@ -188,6 +188,7 @@ add_executable(minecraft
     src/mob_render.c
     src/inventory.c
     src/item.c
+    src/mining.c
     src/crafting.c
     src/survival.c
     src/raycast.c
@@ -441,6 +442,15 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME item COMMAND test_item)
 
+# Mining model: correct-tool speed multiplier by material/kind + harvest-level
+# drop gating (pure, no Vulkan/GLFW required).
+add_executable(test_mining tests/test_mining.c src/mining.c src/item.c src/block.c)
+target_include_directories(test_mining PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mining PRIVATE m)
+endif()
+add_test(NAME mining COMMAND test_mining)
+
 # Armour model: classification, slot-for-item, points total + damage-reduction
 # math + durability (pure, no Vulkan/GLFW required).
 add_executable(test_armor tests/test_armor.c src/item.c src/block.c)
@@ -693,7 +703,7 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_raycast test_ore test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
-          test_crafting test_item test_armor test_worldsave
+          test_crafting test_item test_mining test_armor test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
           test_frustum test_chunkmap)
     msvc_enable_c11_atomics(${t})
