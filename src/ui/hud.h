@@ -80,6 +80,7 @@ typedef enum {
     GAME_PLAYING,
     GAME_PAUSED,
     GAME_INVENTORY,
+    GAME_OPTIONS,
 } GameUiState;
 
 /* Stable element ids for the data-driven hit-test API. Menu buttons and
@@ -95,6 +96,10 @@ enum {
     HUD_ID_BACK,          /* world list: back to main menu */
     HUD_ID_SAVE,          /* pause: Save            */
     HUD_ID_SAVE_QUIT,     /* pause: Save & Quit     */
+    HUD_ID_OPTIONS,       /* main menu / pause: Options */
+    HUD_ID_VOL_SLIDER,    /* options: master volume slider track */
+    HUD_ID_MUTE,          /* options: mute toggle      */
+    HUD_ID_MUSIC,         /* options: music on/off toggle */
     HUD_ID_SLOT0 = 2000,  /* inventory/hotbar slots: HUD_ID_SLOT0 + i */
     HUD_ID_CRAFT0 = 3000, /* inventory crafting-panel rows: HUD_ID_CRAFT0 + i */
     HUD_ID_WORLD0 = 4000, /* load-world list rows: HUD_ID_WORLD0 + i */
@@ -159,6 +164,37 @@ HudRect hud_craft_row_rect(int i, float sw, float sh);
 
 /* Point-in-rect test (inclusive top-left, exclusive bottom-right). Pure. */
 bool hud_rect_contains(HudRect r, float px, float py);
+
+/* ------------------------------------------------------------------ */
+/*  Options / settings screen (pure helpers + latched audio state)     */
+/* ------------------------------------------------------------------ */
+
+/* Track rect of the master-volume slider on the Options screen. Pure; shared by
+ * main.c (hit-test + value math) and hud.c (drawing) so the clickable track
+ * matches the drawn one. */
+HudRect hud_volume_slider_rect(float sw, float sh);
+
+/* Map a cursor x (screen pixels) within a slider `track` to a value in [0,1],
+ * clamped at the ends. Pure. */
+float hud_slider_value_from_x(HudRect track, float px);
+
+/* Inverse of hud_slider_value_from_x: the x (screen pixels) of the knob centre
+ * for a value in [0,1], clamped to the track. Pure. */
+float hud_slider_x_from_value(HudRect track, float v);
+
+/* Latch the current audio settings so the Options screen can draw them without
+ * pulling in audio.c. `volume` is clamped to [0,1]. main.c keeps this in sync
+ * with the audio API (it owns audio_*). */
+void  hud_set_audio_state(float volume, bool muted, bool music);
+
+float hud_get_volume(void);   /* latched master volume, [0,1] */
+bool  hud_get_muted(void);    /* latched mute flag            */
+bool  hud_get_music(void);    /* latched music-on flag        */
+
+/* Pure toggles of the latched flags; return the new value. main.c calls these
+ * and then mirrors the result into the audio API. */
+bool  hud_toggle_muted(void);
+bool  hud_toggle_music(void);
 
 /* Latch the screen to draw. Called from main.c each frame (or on change). */
 void    hud_set_screen(GameUiState s);
