@@ -150,6 +150,59 @@ static void test_regen(void) {
     printf("PASS: regen\n");
 }
 
+/* ---- saturation model + whole-state regen tick ---- */
+static void test_saturation_and_regen_tick(void) {
+    SurvivalState s;
+
+    /* Eating grants saturation but it is capped at the current food level. */
+    survival_init(&s);
+    s.food = 6.0f; s.saturation = 0.0f;
+    /* Restore 2 food (-> 8) but a huge sat bonus: sat must cap at the new food. */
+    assert(survival_eat(&s.food, &s.saturation, 2.0f, 50.0f) == true);
+    assert(fclose_eq(s.food, 8.0f));
+    assert(s.saturation <= s.food + 1e-4f);
+    assert(fclose_eq(s.saturation, 8.0f));
+
+    /* Saturation drains before food during regen. */
+    survival_init(&s);
+    s.food = 20.0f; s.saturation = 20.0f; s.exhaustion = 0.0f; s.regen_timer = 0.0f;
+    float food0 = s.food, sat0 = s.saturation;
+    int heal = survival_regen_tick(&s, 10, SURVIVAL_REGEN_INTERVAL_SEC);
+    assert(heal == 1);                 /* well-fed + hurt heals 1 hp */
+    assert(s.saturation < sat0);       /* hidden reserve burned first */
+    assert(fclose_eq(s.food, food0));  /* food untouched while sat remains */
+
+    /* With no saturation left, regen cost falls onto food. */
+    survival_init(&s);
+    s.food = 20.0f; s.saturation = 0.0f; s.exhaustion = 0.0f; s.regen_timer = 0.0f;
+    food0 = s.food;
+    heal = survival_regen_tick(&s, 10, SURVIVAL_REGEN_INTERVAL_SEC);
+    assert(heal == 1);
+    assert(s.food < food0);            /* food consumed once sat is empty */
+
+    /* No regen below the food threshold (and no resource burn). */
+    survival_init(&s);
+    s.food = (float)(SURVIVAL_REGEN_FOOD_THRESHOLD - 1);
+    s.saturation = s.food; s.exhaustion = 0.0f; s.regen_timer = 0.0f;
+    sat0 = s.saturation; food0 = s.food;
+    heal = survival_regen_tick(&s, 1, 100.0f);
+    assert(heal == 0);
+    assert(fclose_eq(s.saturation, sat0) && fclose_eq(s.food, food0));
+
+    /* No over-heal past max. */
+    survival_init(&s);
+    s.food = 20.0f; s.saturation = 20.0f; s.exhaustion = 0.0f; s.regen_timer = 0.0f;
+    heal = survival_regen_tick(&s, SURVIVAL_MAX_HEALTH, 100.0f);
+    assert(heal == 0);
+    /* And from one-below-max, healing several intervals stops at the cap. */
+    survival_init(&s);
+    s.food = 20.0f; s.saturation = 20.0f; s.exhaustion = 0.0f; s.regen_timer = 0.0f;
+    heal = survival_regen_tick(&s, SURVIVAL_MAX_HEALTH - 1,
+                               SURVIVAL_REGEN_INTERVAL_SEC * 10.0f);
+    assert(heal == 1);
+    printf("PASS: saturation_and_regen_tick\n");
+}
+
 /* ---- starvation ---- */
 static void test_starve(void) {
     float timer = 0.0f;
@@ -218,6 +271,7 @@ int main(void) {
     test_can_eat();
     test_apply_food();
     test_regen();
+    test_saturation_and_regen_tick();
     test_starve();
     test_drown();
     test_lava();

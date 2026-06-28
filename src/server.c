@@ -1061,8 +1061,7 @@ static void server_simulate_survival(Server* s, ServerClient* c, float dt) {
         int starve = survival_starve_step(sv->food, c->health, &sv->starve_timer, dt);
         if (starve > 0) server_damage_player(s, c, starve);
 
-        int heal = survival_regen_step(sv->food, c->health, &sv->regen_timer,
-                                       &sv->exhaustion, dt);
+        int heal = survival_regen_tick(sv, c->health, dt);
         if (heal > 0) {
             c->health = (int16_t)(c->health + heal);
             if (c->health > PLAYER_MAX_HEALTH) c->health = PLAYER_MAX_HEALTH;
