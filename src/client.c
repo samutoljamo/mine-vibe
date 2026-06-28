@@ -178,6 +178,16 @@ void client_send_mob_attack(Client* c, uint16_t mob_id) {
     reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
 }
 
+void client_send_craft(Client* c, uint16_t recipe_index) {
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_CRAFT, .player_id = c->local_player_id,
+                       .seq = c->tick++ };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[16];
+    size_t len = net_write_craft(buf, &h, recipe_index);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
+}
+
 int client_poll(Client* c)
 {
     int state_packets = 0;

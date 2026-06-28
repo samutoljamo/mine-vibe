@@ -90,7 +90,13 @@ enum {
     HUD_ID_RESUME,        /* pause: Resume     */
     HUD_ID_CLOSE,         /* inventory: close  */
     HUD_ID_SLOT0 = 2000,  /* inventory/hotbar slots: HUD_ID_SLOT0 + i */
+    HUD_ID_CRAFT0 = 3000, /* inventory crafting-panel rows: HUD_ID_CRAFT0 + i */
 };
+
+/* Max crafting recipe rows the inventory panel lays out / hit-tests. Kept here
+ * so main.c (registration) and hud.c (drawing) agree without including
+ * crafting.h. The visible list is clamped to the affordable recipes. */
+#define HUD_CRAFT_ROWS 12
 
 /* Axis-aligned rectangle in screen pixels (top-left origin). */
 typedef struct { float x, y, w, h; } HudRect;
@@ -123,6 +129,11 @@ HudRect hud_menu_button_rect(int index, float sw, float sh);
 /* Inventory slot rect for slot `i` (0..HUD_SLOT_COUNT-1) in the inventory
  * screen's grid. */
 HudRect hud_inventory_slot_rect(int i, float sw, float sh);
+
+/* Crafting-panel row rect for the `i`-th listed (affordable) recipe in the
+ * inventory screen. Rows stack vertically below the slot grid. Pure; shared by
+ * main.c (hit-test registration) and hud.c (drawing) so clicks line up. */
+HudRect hud_craft_row_rect(int i, float sw, float sh);
 
 /* Point-in-rect test (inclusive top-left, exclusive bottom-right). Pure. */
 bool hud_rect_contains(HudRect r, float px, float py);

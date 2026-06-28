@@ -25,6 +25,7 @@
 #include "raycast.h"
 #include "gameplay.h"
 #include "inventory.h"
+#include "crafting.h"
 #include "daynight.h"
 #ifdef _WIN32
 #  include <winsock2.h>
@@ -41,6 +42,12 @@ static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
 static RaycastHit g_target;       /* refreshed each frame for outline + click */
 static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none */
 static bool g_show_stats = false; /* perf overlay visibility; toggled with F3 */
+
+/* Crafting-panel row -> recipe-index map, rebuilt each frame the inventory
+ * screen registers its hit-test rects so a click resolves to the right recipe.
+ * g_craft_count rows are valid in g_craft_idx[]. */
+static int g_craft_idx[HUD_CRAFT_ROWS];
+static int g_craft_count = 0;
 
 /* Game-UI state machine. Starts at the main menu; Play enters PLAYING, Esc
  * toggles the pause overlay, E toggles the inventory screen. The cursor is
@@ -499,6 +506,21 @@ int main(int argc, char *argv[])
                     HudRect r = hud_inventory_slot_rect(i, sw, sh);
                     ui_add_element(HUD_ID_SLOT0 + i, r.x, r.y, r.w, r.h);
                 }
+                /* Crafting rows: same affordable-recipe ordering hud.c draws,
+                 * so HUD_ID_CRAFT0 + i maps to craft_idx[i]. */
+                if (g_client) {
+                    ItemCounts counts;
+                    crafting_counts_from_inventory(&g_client->inventory, &counts);
+                    int navail = crafting_affordable(&counts, g_craft_idx,
+                                                     HUD_CRAFT_ROWS);
+                    g_craft_count = navail;
+                    for (int i = 0; i < navail; i++) {
+                        HudRect r = hud_craft_row_rect(i, sw, sh);
+                        ui_add_element(HUD_ID_CRAFT0 + i, r.x, r.y, r.w, r.h);
+                    }
+                } else {
+                    g_craft_count = 0;
+                }
             }
             ui_handle_mouse((float)mx, (float)my, clicked);
 
@@ -512,6 +534,14 @@ int main(int argc, char *argv[])
                  * crafting / item movement). */
                 if (g_client)
                     g_client->inventory.selected = hit - HUD_ID_SLOT0;
+            } else if (hit >= HUD_ID_CRAFT0
+                       && hit < HUD_ID_CRAFT0 + g_craft_count) {
+                /* Clicking a crafting row sends a server-authoritative craft
+                 * request for the recipe that row maps to. */
+                if (g_client) {
+                    int row = hit - HUD_ID_CRAFT0;
+                    client_send_craft(g_client, (uint16_t)g_craft_idx[row]);
+                }
             }
         }
 

@@ -1,6 +1,8 @@
 #include "hud.h"
 #include "ui.h"
 #include "../inventory.h"
+#include "../crafting.h"
+#include "../item.h"
 #include <stdio.h>
 
 #define SLOT_SIZE   40
@@ -87,6 +89,20 @@ HudRect hud_inventory_slot_rect(int i, float sw, float sh)
     float y0 = sh * 0.5f - INV_SLOT * 0.5f;
     float x  = x0 + (float)i * (INV_SLOT + INV_SLOT_GAP);
     return (HudRect){ x, y0, INV_SLOT, INV_SLOT };
+}
+
+/* Crafting panel geometry. Rows sit below the inventory slot row. */
+#define CRAFT_ROW_W   320.0f
+#define CRAFT_ROW_H    30.0f
+#define CRAFT_ROW_GAP   6.0f
+#define CRAFT_TOP_OFF  70.0f   /* first row below the slot row's centre line */
+
+HudRect hud_craft_row_rect(int i, float sw, float sh)
+{
+    float x = (sw - CRAFT_ROW_W) * 0.5f;
+    float y0 = sh * 0.5f + CRAFT_TOP_OFF;
+    float y  = y0 + (float)i * (CRAFT_ROW_H + CRAFT_ROW_GAP);
+    return (HudRect){ x, y, CRAFT_ROW_W, CRAFT_ROW_H };
 }
 
 bool hud_rect_contains(HudRect r, float px, float py)
@@ -214,8 +230,54 @@ static void hud_draw_inventory(const Inventory* inv, float sw, float sh)
         }
     }
 
+    /* --- Crafting panel: list the recipes the player can currently afford ---
+     * The row order matches crafting_affordable() so the click target main.c
+     * registers (HUD_ID_CRAFT0 + i -> that recipe index) lines up with the row
+     * drawn here. */
+    {
+        ItemCounts counts;
+        crafting_counts_from_inventory(inv, &counts);
+        int idx[HUD_CRAFT_ROWS];
+        int navail = crafting_affordable(&counts, idx, HUD_CRAFT_ROWS);
+
+        vec4 ctitle = {0.95f, 0.95f, 0.95f, 1.0f};
+        HudRect first = hud_craft_row_rect(0, sw, sh);
+        ui_text(first.x, first.y - 12.0f, 20.0f, "Crafting", ctitle);
+
+        if (navail == 0) {
+            vec4 dim = {0.6f, 0.6f, 0.62f, 0.9f};
+            ui_text(first.x, first.y + 16.0f, 15.0f,
+                    "Gather materials to craft", dim);
+        }
+
+        vec4 row_fill = {0.18f, 0.19f, 0.22f, 0.96f};
+        vec4 row_hot  = {0.30f, 0.32f, 0.40f, 0.98f};
+        vec4 row_bord = {0.50f, 0.50f, 0.56f, 0.9f};
+        vec4 row_text = {1.0f, 1.0f, 1.0f, 1.0f};
+        vec4 out_text = {0.80f, 0.95f, 0.80f, 1.0f};
+
+        for (int i = 0; i < navail; i++) {
+            const Recipe* r = crafting_recipe(idx[i]);
+            if (!r) continue;
+            HudRect rr = hud_craft_row_rect(i, sw, sh);
+            bool hot = (ui_hovered_element() == HUD_ID_CRAFT0 + i);
+            ui_rect(rr.x, rr.y, rr.w, rr.h, row_bord);
+            ui_rect(rr.x + 2, rr.y + 2, rr.w - 4, rr.h - 4,
+                    hot ? row_hot : row_fill);
+
+            /* Output icon on the left, recipe name, then "xN" yield. */
+            ui_block_icon(r->output.item, rr.x + 4, rr.y + 3, rr.h - 6);
+            ui_text(rr.x + rr.h + 4, rr.y + rr.h - 9, 16.0f, r->name, row_text);
+
+            char yld[16];
+            snprintf(yld, sizeof(yld), "x%d", r->output.count);
+            float tw = ui_text_width(yld, 16.0f);
+            ui_text(rr.x + rr.w - tw - 8, rr.y + rr.h - 9, 16.0f, yld, out_text);
+        }
+    }
+
     vec4 hint = {0.7f, 0.7f, 0.7f, 0.85f};
-    draw_centered_label("E or Esc to close", 16.0f, sw, py + ph - 14.0f, hint);
+    draw_centered_label("E or Esc to close", 16.0f, sw, sh - 36.0f, hint);
 }
 
 /* hud_build — accepts a NULL `inv`. The crosshair is always drawn (e.g., in

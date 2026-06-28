@@ -4,6 +4,7 @@
 #include "platform_thread.h"
 #include "inventory.h"
 #include "item.h"      /* ItemId, tool_break_time, starter tools */
+#include "crafting.h"  /* recipe table + pure matching for PKT_CRAFT */
 #include "raycast.h"   /* for block_face_offset / FACE_PZ */
 #include "gameplay.h"  /* for MAX_REACH */
 #include "mob.h"
@@ -445,6 +446,40 @@ static void handle_block_place(Server* s, ServerClient* c,
     server_send_inventory(s, c);
 }
 
+/* Server-authoritative crafting: validate the player holds every ingredient of
+ * the requested recipe, consume them, add the output, and push a fresh
+ * inventory snapshot. Any failure (bad index, can't afford, no room) is a
+ * silent no-op so a malicious or stale client can't desync the inventory. */
+static void handle_craft(Server* s, ServerClient* c,
+                         const uint8_t* data, size_t len) {
+    if (len < 10) return;
+    PacketHeader h; uint16_t recipe_index;
+    net_read_craft(data, &h, &recipe_index);
+    bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+    if (!is_new) return;
+    c->last_recv_time = net_time();
+
+    const Recipe* r = crafting_recipe((int)recipe_index);
+    if (!r) return;
+
+    ItemCounts counts;
+    crafting_counts_from_inventory(&c->inventory, &counts);
+    if (!crafting_can_make(r, &counts)) return;
+
+    /* Dry-run the output add on a copy so we never consume inputs we can't
+     * deposit the result for (atomic: either the whole craft applies or none). */
+    Inventory trial = c->inventory;
+    for (int k = 0; k < r->input_count; k++) {
+        if (!inventory_remove(&trial, r->inputs[k].item, r->inputs[k].count))
+            return;   /* should not happen after can_make, but stay safe */
+    }
+    if (inventory_add_item(&trial, r->output.item, r->output.count) != 0)
+        return;       /* no room for the output — refuse the craft */
+
+    c->inventory = trial;
+    server_send_inventory(s, c);
+}
+
 static void handle_mob_attack(Server* s, ServerClient* c,
                               const uint8_t* data, size_t len) {
     if (len < 10) return;
@@ -850,6 +885,7 @@ static void server_tick(Server* s, int tick_num)
             else if (type == PKT_BLOCK_BREAK)  handle_block_break(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_BLOCK_PLACE)  handle_block_place(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_MOB_ATTACK)   handle_mob_attack(s, c, msg->data, (size_t)msg->len);
+            else if (type == PKT_CRAFT)        handle_craft(s, c, msg->data, (size_t)msg->len);
         }
         free(msg);
     }

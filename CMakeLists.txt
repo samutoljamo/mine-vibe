@@ -180,6 +180,7 @@ add_executable(minecraft
     src/mob.c
     src/inventory.c
     src/item.c
+    src/crafting.c
     src/survival.c
     src/raycast.c
     src/assets_generated.c
@@ -258,6 +259,7 @@ add_executable(test_ui
     src/ui/hud.c
     src/block.c
     src/item.c
+    src/crafting.c
     src/pipeline.c
     tests/renderer_stubs.c
 )
@@ -376,6 +378,14 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_ore PRIVATE m)
 endif()
 add_test(NAME ore COMMAND test_ore)
+
+# Crafting recipe matching / consumption math (pure, no Vulkan/GLFW required)
+add_executable(test_crafting tests/test_crafting.c src/crafting.c src/item.c src/block.c)
+target_include_directories(test_crafting PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_crafting PRIVATE m)
+endif()
+add_test(NAME crafting COMMAND test_crafting)
 
 # Item model + tool break-time / durability math (pure, no Vulkan/GLFW required)
 add_executable(test_item tests/test_item.c src/item.c src/block.c)
@@ -510,6 +520,7 @@ add_test(NAME world_persist COMMAND test_world_persist)
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_raycast test_ore test_audio test_hardness test_biome
-          test_daynight test_village test_worldgen test_survival test_world_persist)
+          test_daynight test_village test_worldgen test_survival test_world_persist
+          test_crafting test_item)
     msvc_enable_c11_atomics(${t})
 endforeach()

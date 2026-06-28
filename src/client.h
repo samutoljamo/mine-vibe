@@ -97,6 +97,10 @@ void client_send_place(Client* c, int x, int y, int z,
 /* Send a reliable mob attack request for the given mob id. */
 void client_send_mob_attack(Client* c, uint16_t mob_id);
 
+/* Send a reliable craft request for the recipe at `recipe_index` in the shared
+ * crafting table. The server validates inputs and replies with PKT_INVENTORY. */
+void client_send_craft(Client* c, uint16_t recipe_index);
+
 /* Process all inbound messages from the net thread.
  * Returns number of PKT_WORLD_STATE packets processed. */
 int client_poll(Client* c);

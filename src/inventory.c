@@ -59,6 +59,36 @@ bool inventory_consume(Inventory* inv, int slot) {
     return true;
 }
 
+uint16_t inventory_count(const Inventory* inv, ItemId item) {
+    if (item == (ItemId)BLOCK_AIR) return 0;
+    uint32_t total = 0;
+    for (int i = 0; i < INVENTORY_SLOTS; i++) {
+        if (inv->slots[i].item == item && inv->slots[i].count > 0)
+            total += inv->slots[i].count;
+    }
+    return total > UINT16_MAX ? UINT16_MAX : (uint16_t)total;
+}
+
+bool inventory_remove(Inventory* inv, ItemId item, uint8_t count) {
+    if (count == 0) return true;
+    if (item == (ItemId)BLOCK_AIR) return false;
+    if (inventory_count(inv, item) < count) return false;   /* atomic: check first */
+
+    uint8_t remaining = count;
+    for (int i = 0; i < INVENTORY_SLOTS && remaining > 0; i++) {
+        if (inv->slots[i].item != item || inv->slots[i].count == 0) continue;
+        uint8_t take = inv->slots[i].count < remaining
+                     ? inv->slots[i].count : remaining;
+        inv->slots[i].count = (uint8_t)(inv->slots[i].count - take);
+        remaining = (uint8_t)(remaining - take);
+        if (inv->slots[i].count == 0) {
+            inv->slots[i].item       = (ItemId)BLOCK_AIR;
+            inv->slots[i].durability = 0;
+        }
+    }
+    return true;
+}
+
 bool inventory_damage_tool(Inventory* inv, int slot) {
     if (slot < 0 || slot >= INVENTORY_SLOTS) return false;
     InventorySlot* s = &inv->slots[slot];
