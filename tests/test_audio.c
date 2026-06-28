@@ -369,6 +369,82 @@ static void test_sfx_soft_and_short(void) {
     printf("PASS: sfx_soft_and_short\n");
 }
 
+/* ---- SFX quality: smooth envelopes, no inter-sample clicks --------------- *
+ *
+ * These pin the "sounds good" bar from the redesign: every SFX must ramp in
+ * from ~0, ramp out to ~0, carry real signal in the middle, and — crucially —
+ * have NO large sample-to-sample jump anywhere (a big step == an audible click
+ * even in the body of the sound, e.g. a hard square edge or an envelope kink).
+ * Peaks stay inside full scale with headroom so a busy mix never clips. */
+
+static void test_sfx_smooth_envelope_and_no_clicks(void) {
+    for (int id = 0; id < SFX_COUNT; id++) {
+        int16_t buf[AUDIO_SAMPLE_RATE];
+        size_t n = audio_gen_sfx((SoundId)id, buf, sizeof buf / sizeof buf[0]);
+        assert(n > 64);
+
+        /* Onset eases in from (near) zero. */
+        assert(abs(buf[0]) < 400);
+        /* Tail lands on (near) zero. */
+        assert(abs(buf[n - 1]) < 400);
+
+        /* Soft attack: the envelope eases IN, so the immediate onset (first
+         * ~0.5 ms) is clearly quieter than once the attack has opened up
+         * (~3-4 ms in). A hard onset (old buzzer) would be full-level already
+         * at sample ~1 and fail this. We compare windowed RMS-ish averages so a
+         * single zero-crossing doesn't fool it. */
+        size_t onset = (size_t)(AUDIO_SAMPLE_RATE * 0.0005f);  /* ~0.5 ms */
+        size_t open  = (size_t)(AUDIO_SAMPLE_RATE * 0.004f);   /* ~4 ms */
+        if (onset < 4) onset = 4;
+        if (open <= onset) open = onset + 4;
+        if (open + onset > n) { open = n / 2; onset = open / 4; if (onset < 1) onset = 1; }
+        long onset_sum = 0, open_sum = 0;
+        for (size_t i = 0; i < onset; i++) onset_sum += abs(buf[i]);
+        for (size_t i = open; i < open + onset; i++) open_sum += abs(buf[i]);
+        double onset_avg = (double)onset_sum / (double)onset;
+        double open_avg  = (double)open_sum  / (double)onset;
+        assert(open_avg > 100.0);              /* sound has opened to real level */
+        assert(onset_avg < open_avg);          /* attack ramps up, no hard onset */
+
+        /* Body carries real signal in the middle. */
+        long body_sum = 0;
+        size_t bw = open;   /* reuse a ~few-ms window */
+        if (n / 3 + bw > n) bw = n - n / 3;
+        for (size_t i = n / 3; i < n / 3 + bw; i++) body_sum += abs(buf[i]);
+        double body_avg = (double)body_sum / (double)bw;
+        assert(body_avg > 80.0);               /* middle is non-silent */
+
+        /* Soft release: the very tail (~0.5 ms) is clearly quieter than a few ms
+         * earlier — the release ramp decays the sound out to zero. */
+        long tailend_sum = 0, prerel_sum = 0;
+        for (size_t i = n - onset; i < n; i++) tailend_sum += abs(buf[i]);
+        size_t pr = n > open + onset ? n - open - onset : 0;
+        for (size_t i = pr; i < pr + onset; i++) prerel_sum += abs(buf[i]);
+        double tailend_avg = (double)tailend_sum / (double)onset;
+        double prerel_avg  = (double)prerel_sum  / (double)onset;
+        assert(tailend_avg < prerel_avg + 1.0);  /* release decays out (<=, slack) */
+        assert(abs(buf[n - 1]) < abs(buf[pr]) + 200 || abs(buf[n-1]) < 400);
+
+        /* No inter-sample click ANYWHERE: the largest single-sample step stays
+         * well under full scale. A bare square wave at high amplitude (the old
+         * buzzer) would jump ~2*peak between adjacent samples and fail this. */
+        int max_step = 0;
+        for (size_t i = 1; i < n; i++) {
+            int step = abs((int)buf[i] - (int)buf[i - 1]);
+            if (step > max_step) max_step = step;
+        }
+        assert(max_step < 9000);   /* << 65535 full-scale span: no click */
+
+        /* Peak: audible but with comfortable headroom (never near the rails). */
+        int peak = 0;
+        for (size_t i = 0; i < n; i++)
+            if (abs(buf[i]) > peak) peak = abs(buf[i]);
+        assert(peak > 300);            /* audible */
+        assert(peak <= 30000);         /* headroom: never the int16 rail */
+    }
+    printf("PASS: sfx_smooth_envelope_and_no_clicks\n");
+}
+
 /* ---- Music is a render-once looping voice, NOT a per-frame stream -------- *
  *
  * The P0 bug was: audio_update() generated and submitted a ~33ms music chunk
@@ -573,6 +649,7 @@ int main(void) {
     test_music_respects_volume_and_mute();
     test_buffers_in_range_and_finite();
     test_sfx_soft_and_short();
+    test_sfx_smooth_envelope_and_no_clicks();
     test_master_volume_and_mute();
     test_mix_clamp_and_wav_dump();
     test_sound_id_table();

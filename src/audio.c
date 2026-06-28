@@ -77,51 +77,124 @@ static int16_t to_pcm(float s)
     return (int16_t)v;
 }
 
-/* Per-SFX synthesis recipe. Each is a tone/noise mix under a decay envelope. */
+/* ---- SFX synthesis ------------------------------------------------------ *
+ *
+ * The redesign drops the "single osc + exp decay" buzzer in favour of small
+ * additive-synth voices shaped by a real ADSR-style envelope:
+ *
+ *   - Smooth (raised-cosine) attack AND release so the buffer ramps in from 0
+ *     and out to 0 with no boundary discontinuity (clicks/pops gone), plus a
+ *     gentle exponential body decay for a natural percussive tail.
+ *   - 1-3 harmonic partials at independent amplitudes, optionally detuned, for
+ *     body and warmth instead of a thin sine or a harsh square.
+ *   - A per-sound noise bed (filtered = averaged with its neighbour to tame the
+ *     fizz) for impacts/footsteps, blended under the tonal partials.
+ *   - An exponential pitch envelope (downward "chirp") so impacts feel physical.
+ *
+ * Everything is summed in float, scaled by the per-sound .peak (well under
+ * full scale for mix headroom), then clamped once to int16. All pure: output
+ * depends only on `id`.
+ */
+
+/* A single tonal partial: frequency multiple of the base, its own level, and a
+ * small detune in Hz for chorus-like thickness (0 = none). */
+typedef struct { float mult; float level; float detune; } Partial;
+
 typedef struct {
-    float    dur;       /* seconds */
-    float    freq;      /* base frequency (Hz) */
-    float    decay;     /* envelope decay factor */
-    float    noise_mix; /* 0..1 amount of noise vs tone */
-    int      square;    /* 1 = square osc, 0 = sine osc */
-    uint32_t seed;      /* noise seed */
+    float    dur;        /* seconds (kept short — gameplay feedback) */
+    float    freq;       /* base frequency (Hz) */
+    float    pitch_drop; /* fraction the pitch falls over the sound (0..~0.8) */
+    float    pitch_tau;  /* how fast the pitch chirp settles (samples-ish, larger=slower) */
+    float    decay;      /* exponential body-decay factor (over the sustain span) */
+    float    attack;     /* attack time in seconds (raised-cosine ease-in) */
+    float    release;    /* release time in seconds (raised-cosine ease-out) */
+    float    noise_mix;  /* 0..1 amount of (filtered) noise blended under the tone */
+    float    peak;       /* per-sound output peak (fraction of full scale) */
+    uint32_t seed;       /* deterministic noise seed */
+    Partial  partials[3];
 } SfxRecipe;
 
 static SfxRecipe sfx_recipe(SoundId id)
 {
-    /* All SFX lean on sine tones at LOW amplitude with short durations and a
-     * little noise, so they read as subtle, soft cues rather than buzzers. The
-     * per-sample amplitude is further scaled in audio_gen_sfx (see SFX_PEAK). */
     switch (id) {
-        /* Block break: soft low thud, a touch of noise, quick decay. */
-        case SFX_BLOCK_BREAK: return (SfxRecipe){ 0.14f, 130.0f, 7.0f, 0.35f, 0, 0x1001u };
-        /* Block place: gentle short click, very fast decay, mostly tone. */
-        case SFX_BLOCK_PLACE: return (SfxRecipe){ 0.09f, 240.0f, 11.0f, 0.25f, 0, 0x2002u };
-        /* Footstep: very brief, muffled, low noise blip. */
-        case SFX_STEP:        return (SfxRecipe){ 0.07f, 100.0f, 14.0f, 0.55f, 0, 0x3003u };
-        /* Player hurt: short descending sine, mid decay, almost no noise. */
-        case SFX_HURT:        return (SfxRecipe){ 0.18f, 320.0f, 6.0f, 0.08f, 0, 0x4004u };
-        /* Mob hurt: lower than player hurt, a hint of noise (no harsh square). */
-        case SFX_MOB_HURT:    return (SfxRecipe){ 0.17f, 190.0f, 6.0f, 0.20f, 0, 0x5005u };
-        /* Eat: soft short sine warble. */
-        case SFX_EAT:         return (SfxRecipe){ 0.14f, 270.0f, 5.0f, 0.06f, 0, 0x6006u };
-        default:              return (SfxRecipe){ 0.08f, 200.0f, 10.0f, 0.30f, 0, 0x7007u };
+        /* Block break: woody downward thunk — fundamental + 2nd/3rd partials,
+         * a strong pitch drop and a noise transient for the "crack". */
+        case SFX_BLOCK_BREAK: return (SfxRecipe){
+            .dur = 0.16f, .freq = 220.0f, .pitch_drop = 0.55f, .pitch_tau = 0.030f,
+            .decay = 5.5f, .attack = 0.004f, .release = 0.045f,
+            .noise_mix = 0.30f, .peak = 0.34f, .seed = 0x1001u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.45f, 1.5f}, {3.01f, 0.20f, 0.0f} } };
+        /* Block place: short bright tap — mostly fundamental + octave, quick
+         * release, slight chirp, a hint of noise for the "tock". */
+        case SFX_BLOCK_PLACE: return (SfxRecipe){
+            .dur = 0.11f, .freq = 300.0f, .pitch_drop = 0.30f, .pitch_tau = 0.020f,
+            .decay = 6.5f, .attack = 0.003f, .release = 0.035f,
+            .noise_mix = 0.18f, .peak = 0.30f, .seed = 0x2002u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.35f, 0.0f}, {0.0f, 0.0f, 0.0f} } };
+        /* Footstep: soft muffled low thud — mostly filtered noise over a low
+         * sine body, fast settle, no bright partials (dull, earthy). */
+        case SFX_STEP:        return (SfxRecipe){
+            .dur = 0.09f, .freq = 120.0f, .pitch_drop = 0.45f, .pitch_tau = 0.018f,
+            .decay = 7.0f, .attack = 0.004f, .release = 0.030f,
+            .noise_mix = 0.62f, .peak = 0.24f, .seed = 0x3003u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.20f, 0.0f}, {0.0f, 0.0f, 0.0f} } };
+        /* Player hurt: a grunt — two close detuned partials with a downward
+         * bend and almost no noise, mid-length so it reads as a vocalisation. */
+        case SFX_HURT:        return (SfxRecipe){
+            .dur = 0.20f, .freq = 300.0f, .pitch_drop = 0.35f, .pitch_tau = 0.070f,
+            .decay = 3.8f, .attack = 0.008f, .release = 0.060f,
+            .noise_mix = 0.10f, .peak = 0.32f, .seed = 0x4004u,
+            .partials = { {1.0f, 1.0f, 4.0f}, {1.5f, 0.30f, 0.0f}, {2.0f, 0.18f, 6.0f} } };
+        /* Mob hurt: lower, growlier grunt — fundamental + a fifth, a touch of
+         * noise for grit, slower so it sits apart from the player hurt. */
+        case SFX_MOB_HURT:    return (SfxRecipe){
+            .dur = 0.19f, .freq = 175.0f, .pitch_drop = 0.30f, .pitch_tau = 0.060f,
+            .decay = 3.6f, .attack = 0.008f, .release = 0.055f,
+            .noise_mix = 0.22f, .peak = 0.32f, .seed = 0x5005u,
+            .partials = { {1.0f, 1.0f, 3.0f}, {1.5f, 0.35f, 4.0f}, {2.0f, 0.15f, 0.0f} } };
+        /* Eat: soft warm "nom" — low fundamental + octave, slight upward-then-
+         * settling body via a mild chirp, no noise, mellow release. */
+        case SFX_EAT:         return (SfxRecipe){
+            .dur = 0.15f, .freq = 230.0f, .pitch_drop = 0.18f, .pitch_tau = 0.050f,
+            .decay = 3.0f, .attack = 0.010f, .release = 0.050f,
+            .noise_mix = 0.05f, .peak = 0.28f, .seed = 0x6006u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.30f, 2.0f}, {0.0f, 0.0f, 0.0f} } };
+        default:              return (SfxRecipe){
+            .dur = 0.10f, .freq = 220.0f, .pitch_drop = 0.30f, .pitch_tau = 0.030f,
+            .decay = 6.0f, .attack = 0.004f, .release = 0.030f,
+            .noise_mix = 0.25f, .peak = 0.28f, .seed = 0x7007u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.30f, 0.0f}, {0.0f, 0.0f, 0.0f} } };
     }
 }
 
-/* Short linear attack ramp (in [0,1]) so envelopes START at zero rather than
- * snapping to full amplitude — that snap is an audible click/pop. ~3ms. */
-static float attack_ramp(size_t i)
+/* Raised-cosine ease in [0,1] over a window of `len` samples at position `i`.
+ * A smooth S-curve (0 at i=0, 1 at i=len) — its derivative is 0 at both ends,
+ * so unlike a linear ramp it introduces no slope discontinuity (= no click). */
+static float cosine_ease(size_t i, size_t len)
 {
-    enum { ATTACK = AUDIO_SAMPLE_RATE / 300 };   /* ~3.3 ms */
-    if (ATTACK <= 0) return 1.0f;
-    if (i >= (size_t)ATTACK) return 1.0f;
-    return (float)i / (float)ATTACK;
+    if (len == 0) return 1.0f;
+    if (i >= len) return 1.0f;
+    float x = (float)i / (float)len;          /* 0..1 */
+    return 0.5f - 0.5f * cosf((float)M_PI * x);
 }
 
-/* Peak amplitude for SFX (fraction of full scale). Kept low so effects are
- * gentle cues that sit under the music. ~0.3. */
-#define SFX_PEAK 0.30f
+/* The full per-sample amplitude envelope: raised-cosine attack * exponential
+ * body decay * raised-cosine release. Guarantees env(0)==0 and env(n-1)~0. */
+static float sfx_envelope(size_t i, size_t n, const SfxRecipe* r)
+{
+    size_t atk = (size_t)(r->attack  * AUDIO_SAMPLE_RATE);
+    size_t rel = (size_t)(r->release * AUDIO_SAMPLE_RATE);
+    if (atk < 1) atk = 1;
+    if (rel < 1) rel = 1;
+    /* Don't let attack+release overrun a very short buffer. */
+    if (atk + rel >= n) { atk = n / 4; rel = n / 4; if (atk < 1) atk = 1; if (rel < 1) rel = 1; }
+
+    float env = audio_env_decay(i, n, r->decay);   /* gentle body decay */
+    env *= cosine_ease(i, atk);                     /* smooth fade-in */
+    if (i >= n - rel)                               /* smooth fade-out */
+        env *= cosine_ease(n - 1 - i, rel);
+    return env;
+}
 
 size_t audio_gen_sfx(SoundId id, int16_t* out, size_t cap)
 {
@@ -131,23 +204,40 @@ size_t audio_gen_sfx(SoundId id, int16_t* out, size_t cap)
     SfxRecipe r = sfx_recipe(id);
     size_t n = (size_t)(r.dur * AUDIO_SAMPLE_RATE);
     if (n > cap) n = cap;
+    if (n == 0) return 0;
 
-    /* Short release ramp so the tail lands exactly on zero (no end click). */
-    enum { RELEASE = AUDIO_SAMPLE_RATE / 200 };   /* ~5 ms */
+    /* Normalise the tonal partials so a 3-partial voice isn't louder than a
+     * 1-partial one (keeps per-sound peaks honest before the .peak scale). */
+    float psum = 0.0f;
+    for (int p = 0; p < 3; p++) psum += r.partials[p].level;
+    if (psum <= 0.0f) psum = 1.0f;
 
     for (size_t i = 0; i < n; i++) {
-        float t   = (float)i / (float)AUDIO_SAMPLE_RATE;
-        /* Pitch glides down over the sound for a more natural impact/hurt. */
-        float f   = r.freq * (1.0f - 0.4f * (float)i / (float)n);
-        float tone = r.square ? audio_osc_square(t, f) : audio_osc_sine(t, f);
-        float ns   = audio_noise((uint32_t)i, r.seed);
-        float mix  = tone * (1.0f - r.noise_mix) + ns * r.noise_mix;
-        float env  = audio_env_decay(i, n, r.decay) * attack_ramp(i);
-        /* Linear fade-out over the final RELEASE samples. */
-        if (RELEASE > 0 && n >= (size_t)RELEASE && i >= n - (size_t)RELEASE)
-            env *= (float)(n - i) / (float)RELEASE;
-        /* Low peak amplitude (SFX_PEAK): subtle, never a buzzer. */
-        out[i] = to_pcm(mix * env * SFX_PEAK);
+        float t = (float)i / (float)AUDIO_SAMPLE_RATE;
+
+        /* Exponential pitch envelope: f starts high and settles toward the base
+         * times (1 - pitch_drop). A short tau gives a snappy "chirp/thunk". */
+        float prog = expf(-t / (r.pitch_tau > 1e-5f ? r.pitch_tau : 1e-5f));
+        float fscale = (1.0f - r.pitch_drop) + r.pitch_drop * prog;
+        float f0 = r.freq * fscale;
+
+        /* Sum the tonal partials (each a sine; detune adds a slow beating). */
+        float tone = 0.0f;
+        for (int p = 0; p < 3; p++) {
+            if (r.partials[p].level <= 0.0f) continue;
+            float pf = f0 * r.partials[p].mult + r.partials[p].detune;
+            tone += r.partials[p].level * audio_osc_sine(t, pf);
+        }
+        tone /= psum;
+
+        /* Filtered noise bed: average two neighbouring noise samples to soften
+         * the high fizz into a duller, more impact-like rustle. */
+        float ns = 0.5f * (audio_noise((uint32_t)i, r.seed) +
+                           audio_noise((uint32_t)i + 1u, r.seed));
+
+        float mix = tone * (1.0f - r.noise_mix) + ns * r.noise_mix;
+        float env = sfx_envelope(i, n, &r);
+        out[i] = to_pcm(mix * env * r.peak);
     }
     return n;
 }
