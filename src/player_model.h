@@ -20,7 +20,11 @@ _Static_assert(sizeof(PlayerVertex) == 24, "PlayerVertex must be 24 bytes");
 typedef struct {
     float pos[3];   /* feet position in world space */
     float yaw;      /* rotation in radians around Y axis */
-    float tint[4];  /* rgb override colour + a blend strength; {0,0,0,0} = skin as-is */
+    float tint[4];  /* a == 0: real player skin (rgb ignored).
+                     * a  > 0: two-tone mob, rgb = upper/primary colour. */
+    float tint2[3]; /* mob only: lower/secondary two-tone colour (rgb) */
+    float scale[3]; /* per-axis body scale (1,1,1 = default model dims).
+                     * Mobs scale the shared box to their silhouette. */
 } PlayerRenderState;
 
 typedef struct {
