@@ -84,6 +84,7 @@ GameUiState game_ui_toggle_pause(GameUiState s)
         case GAME_PLAYING:   return GAME_PAUSED;
         case GAME_PAUSED:    return GAME_PLAYING;
         case GAME_INVENTORY: return GAME_PLAYING;  /* esc closes inventory */
+        case GAME_OPTIONS:   return GAME_PAUSED;   /* esc backs out of options */
         default:             return s;             /* main menu: no-op */
     }
 }
@@ -99,6 +100,60 @@ GameUiState game_ui_toggle_inventory(GameUiState s)
 
 bool game_ui_cursor_free(GameUiState s)  { return s != GAME_PLAYING; }
 bool game_ui_world_active(GameUiState s) { return s == GAME_PLAYING; }
+
+/* ------------------------------------------------------------------ */
+/*  Options / settings: latched audio state + pure slider math         */
+/* ------------------------------------------------------------------ */
+
+static float g_opt_volume = 0.6f;   /* mirrors audio default; main.c keeps in sync */
+static bool  g_opt_muted  = false;
+static bool  g_opt_music  = true;
+
+void hud_set_audio_state(float volume, bool muted, bool music)
+{
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+    g_opt_volume = volume;
+    g_opt_muted  = muted;
+    g_opt_music  = music;
+}
+
+float hud_get_volume(void) { return g_opt_volume; }
+bool  hud_get_muted(void)  { return g_opt_muted;  }
+bool  hud_get_music(void)  { return g_opt_music;  }
+
+bool hud_toggle_muted(void) { g_opt_muted = !g_opt_muted; return g_opt_muted; }
+bool hud_toggle_music(void) { g_opt_music = !g_opt_music; return g_opt_music; }
+
+/* Options-screen geometry. The volume slider sits at row 0 of the menu stack,
+ * the mute/music toggles below it, then Back. */
+#define OPT_SLIDER_W  BTN_W
+#define OPT_SLIDER_H  18.0f
+
+HudRect hud_volume_slider_rect(float sw, float sh)
+{
+    /* Centred horizontally, aligned with the first menu-button row but using a
+     * thin slider track. */
+    HudRect row = hud_menu_button_rect(0, sw, sh);
+    float y = row.y + (row.h - OPT_SLIDER_H) * 0.5f;
+    return (HudRect){ (sw - OPT_SLIDER_W) * 0.5f, y, OPT_SLIDER_W, OPT_SLIDER_H };
+}
+
+float hud_slider_value_from_x(HudRect track, float px)
+{
+    if (track.w <= 0.0f) return 0.0f;
+    float v = (px - track.x) / track.w;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    return v;
+}
+
+float hud_slider_x_from_value(HudRect track, float v)
+{
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    return track.x + track.w * v;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Layout helpers (pure)                                              */
@@ -231,11 +286,68 @@ static void hud_draw_pause(float sw, float sh)
     draw_dim(sw, sh, 0.55f);
     draw_title("PAUSED", sw, sh);
     draw_button(HUD_ID_RESUME,    hud_menu_button_rect(0, sw, sh), "Resume");
-    draw_button(HUD_ID_SAVE,      hud_menu_button_rect(1, sw, sh), "Save");
-    draw_button(HUD_ID_SAVE_QUIT, hud_menu_button_rect(2, sw, sh), "Save & Quit");
-    draw_button(HUD_ID_QUIT,      hud_menu_button_rect(3, sw, sh), "Quit");
+    draw_button(HUD_ID_OPTIONS,   hud_menu_button_rect(1, sw, sh), "Options");
+    draw_button(HUD_ID_SAVE,      hud_menu_button_rect(2, sw, sh), "Save");
+    draw_button(HUD_ID_SAVE_QUIT, hud_menu_button_rect(3, sw, sh), "Save & Quit");
+    draw_button(HUD_ID_QUIT,      hud_menu_button_rect(4, sw, sh), "Quit");
     vec4 hint = {0.7f, 0.7f, 0.7f, 0.8f};
     draw_centered_label("Esc to resume", 18.0f, sw, sh - 40.0f, hint);
+}
+
+/* A labelled on/off toggle styled like a button. `on` drives the fill colour
+ * and the trailing ON/OFF text. The clickable region is registered by main.c. */
+static void draw_toggle(int id, HudRect r, const char* label, bool on)
+{
+    bool hot = (ui_hovered_element() == id);
+    vec4 border = {0.55f, 0.55f, 0.60f, 0.9f};
+    vec4 fill_on  = {0.20f, 0.40f, 0.24f, 0.95f};
+    vec4 fill_off = {0.16f, 0.17f, 0.20f, 0.92f};
+    vec4 fill_hot = {0.30f, 0.32f, 0.38f, 0.95f};
+    vec4 text   = {1.0f, 1.0f, 1.0f, 1.0f};
+    float* f = hot ? fill_hot : (on ? fill_on : fill_off);
+
+    ui_rect(r.x, r.y, r.w, r.h, border);
+    ui_rect(r.x + 2, r.y + 2, r.w - 4, r.h - 4, f);
+
+    float fs = 20.0f;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s: %s", label, on ? "ON" : "OFF");
+    float tw = ui_text_width(buf, fs);
+    ui_text(r.x + (r.w - tw) * 0.5f, r.y + (r.h - fs) * 0.5f + fs * 0.78f,
+            fs, buf, text);
+}
+
+static void hud_draw_options(float sw, float sh)
+{
+    draw_dim(sw, sh, 0.55f);
+    draw_title("OPTIONS", sw, sh);
+
+    /* Master-volume slider (row 0). */
+    HudRect track = hud_volume_slider_rect(sw, sh);
+    vec4 track_bg = {0.16f, 0.17f, 0.20f, 0.95f};
+    vec4 track_bd = {0.55f, 0.55f, 0.60f, 0.9f};
+    vec4 fillc    = {0.35f, 0.55f, 0.85f, 1.0f};
+    vec4 knobc    = {1.0f, 1.0f, 1.0f, 1.0f};
+    vec4 text     = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    float v = hud_get_volume();
+    ui_rect(track.x - 2, track.y - 2, track.w + 4, track.h + 4, track_bd);
+    ui_rect(track.x, track.y, track.w, track.h, track_bg);
+    ui_rect(track.x, track.y, track.w * v, track.h, fillc);
+    float kx = hud_slider_x_from_value(track, v);
+    ui_rect(kx - 4, track.y - 3, 8, track.h + 6, knobc);
+
+    char vbuf[32];
+    snprintf(vbuf, sizeof(vbuf), "Volume: %d%%", (int)(v * 100.0f + 0.5f));
+    ui_text(track.x, track.y - 10.0f, 18.0f, vbuf, text);
+
+    /* Mute + music toggles (rows 1 and 2), then Back (row 3). */
+    draw_toggle(HUD_ID_MUTE,  hud_menu_button_rect(1, sw, sh), "Mute",  hud_get_muted());
+    draw_toggle(HUD_ID_MUSIC, hud_menu_button_rect(2, sw, sh), "Music", hud_get_music());
+    draw_button(HUD_ID_BACK,  hud_menu_button_rect(3, sw, sh), "Back");
+
+    vec4 hint = {0.7f, 0.7f, 0.7f, 0.8f};
+    draw_centered_label("Esc or Back to return", 18.0f, sw, sh - 40.0f, hint);
 }
 
 static void hud_draw_inventory(const Inventory* inv, float sw, float sh)
@@ -495,6 +607,8 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
     /* Modal overlays drawn last so they sit above the in-world HUD. */
     if (screen == GAME_PAUSED)
         hud_draw_pause(sw, sh);
+    else if (screen == GAME_OPTIONS)
+        hud_draw_options(sw, sh);
     else if (screen == GAME_INVENTORY)
         hud_draw_inventory(inv, sw, sh);
 }

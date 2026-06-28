@@ -297,6 +297,110 @@ static void test_rect_contains_edges(void)
     printf("PASS: test_rect_contains_edges\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  Options / settings screen (pure)                                   */
+/* ------------------------------------------------------------------ */
+
+static void test_options_state_is_a_menu(void)
+{
+    /* The options screen is a menu: cursor free, world frozen. */
+    assert(game_ui_cursor_free(GAME_OPTIONS)  == true);
+    assert(game_ui_world_active(GAME_OPTIONS) == false);
+    /* Esc backs out of options to the pause overlay. */
+    assert(game_ui_toggle_pause(GAME_OPTIONS) == GAME_PAUSED);
+    /* E (inventory) is a no-op while in options. */
+    assert(game_ui_toggle_inventory(GAME_OPTIONS) == GAME_OPTIONS);
+    printf("PASS: test_options_state_is_a_menu\n");
+}
+
+static void test_volume_slider_value_mapping(void)
+{
+    float sw = 1280.0f, sh = 720.0f;
+    HudRect t = hud_volume_slider_rect(sw, sh);
+    assert(t.w > 0.0f && t.h > 0.0f);
+    /* Clicking the left edge maps to 0, the right edge to 1, the centre to ~0.5. */
+    assert(fabsf(hud_slider_value_from_x(t, t.x)            - 0.0f) < 0.001f);
+    assert(fabsf(hud_slider_value_from_x(t, t.x + t.w)      - 1.0f) < 0.001f);
+    assert(fabsf(hud_slider_value_from_x(t, t.x + t.w*0.5f) - 0.5f) < 0.001f);
+    /* Out-of-range cursor positions clamp to [0,1]. */
+    assert(hud_slider_value_from_x(t, t.x - 100.0f) == 0.0f);
+    assert(hud_slider_value_from_x(t, t.x + t.w + 100.0f) == 1.0f);
+    /* Monotonic: moving right never decreases the value. */
+    float prev = -1.0f;
+    for (int i = 0; i <= 10; i++) {
+        float v = hud_slider_value_from_x(t, t.x + t.w * (i / 10.0f));
+        assert(v >= prev && "slider value is monotonic in x");
+        prev = v;
+    }
+    printf("PASS: test_volume_slider_value_mapping\n");
+}
+
+static void test_volume_slider_value_x_roundtrip(void)
+{
+    float sw = 1280.0f, sh = 720.0f;
+    HudRect t = hud_volume_slider_rect(sw, sh);
+    /* x_from_value puts the knob inside the track and round-trips the value. */
+    for (int i = 0; i <= 10; i++) {
+        float v = i / 10.0f;
+        float x = hud_slider_x_from_value(t, v);
+        assert(x >= t.x - 0.001f && x <= t.x + t.w + 0.001f);
+        assert(fabsf(hud_slider_value_from_x(t, x) - v) < 0.001f);
+    }
+    printf("PASS: test_volume_slider_value_x_roundtrip\n");
+}
+
+static void test_options_audio_latch_and_toggle(void)
+{
+    /* The HUD latches the audio settings (it can't call audio.c directly) and
+     * exposes pure toggles for main.c to drive the audio API with. */
+    hud_set_audio_state(0.5f, false, true);
+    assert(fabsf(hud_get_volume() - 0.5f) < 0.001f);
+    assert(hud_get_muted() == false);
+    assert(hud_get_music() == true);
+
+    /* Toggles flip the latched flags and return the new value. */
+    assert(hud_toggle_muted() == true);
+    assert(hud_get_muted() == true);
+    assert(hud_toggle_muted() == false);
+    assert(hud_get_muted() == false);
+
+    assert(hud_toggle_music() == false);
+    assert(hud_get_music() == false);
+    assert(hud_toggle_music() == true);
+    assert(hud_get_music() == true);
+
+    /* Volume latch clamps to [0,1]. */
+    hud_set_audio_state(2.0f, true, false);
+    assert(fabsf(hud_get_volume() - 1.0f) < 0.001f);
+    assert(hud_get_muted() == true);
+    assert(hud_get_music() == false);
+    hud_set_audio_state(-1.0f, false, false);
+    assert(hud_get_volume() == 0.0f);
+    printf("PASS: test_options_audio_latch_and_toggle\n");
+}
+
+static void test_options_button_navigation(void)
+{
+    /* The pause menu has an Options button; clicking it should resolve to the
+     * Options id via the shared hit-test API (mirrors how main.c registers
+     * pause buttons against hud_menu_button_rect). */
+    float sw = 1280.0f, sh = 720.0f;
+    /* Pause layout: Resume, Options, Save, Save&Quit, Quit. Options is row 1. */
+    HudRect opt = hud_menu_button_rect(1, sw, sh);
+    ui_input_begin();
+    ui_add_element(HUD_ID_OPTIONS, opt.x, opt.y, opt.w, opt.h);
+    ui_handle_mouse(opt.x + opt.w * 0.5f, opt.y + opt.h * 0.5f, true);
+    assert(ui_clicked_element() == HUD_ID_OPTIONS && "Options button click resolves");
+
+    /* The options screen has a Back control; clicking it resolves to BACK. */
+    HudRect back = hud_menu_button_rect(4, sw, sh);
+    ui_input_begin();
+    ui_add_element(HUD_ID_BACK, back.x, back.y, back.w, back.h);
+    ui_handle_mouse(back.x + back.w * 0.5f, back.y + back.h * 0.5f, true);
+    assert(ui_clicked_element() == HUD_ID_BACK && "Back button click resolves");
+    printf("PASS: test_options_button_navigation\n");
+}
+
 int main(void)
 {
     test_font_bake_succeeds();
@@ -323,6 +427,11 @@ int main(void)
     test_menu_button_layout();
     test_inventory_slot_layout();
     test_rect_contains_edges();
+    test_options_state_is_a_menu();
+    test_volume_slider_value_mapping();
+    test_volume_slider_value_x_roundtrip();
+    test_options_audio_latch_and_toggle();
+    test_options_button_navigation();
     printf("All ui tests passed.\n");
     return 0;
 }

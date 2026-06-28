@@ -28,6 +28,7 @@
 #include "crafting.h"
 #include "daynight.h"
 #include "worldsave.h"
+#include "audio.h"
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
@@ -143,6 +144,13 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
     }
     if (key == GLFW_KEY_F3 && action == GLFW_PRESS)
         g_show_stats = !g_show_stats;   /* toggle the perf overlay */
+    if (key == GLFW_KEY_M && action == GLFW_PRESS) {
+        /* M is a global mute hotkey. Flip the audio engine's mute and mirror the
+         * new state into the HUD so the Options screen reflects it. */
+        bool m = !audio_get_muted();
+        audio_set_muted(m);
+        hud_set_audio_state(audio_get_master_volume(), m, hud_get_music());
+    }
 }
 
 static bool apply_agent_command(const AgentCommand *cmd, Player *player,
@@ -676,10 +684,22 @@ int main(int argc, char *argv[])
                 HudRect b1 = hud_menu_button_rect(1, sw, sh);
                 HudRect b2 = hud_menu_button_rect(2, sw, sh);
                 HudRect b3 = hud_menu_button_rect(3, sw, sh);
+                HudRect b4 = hud_menu_button_rect(4, sw, sh);
                 ui_add_element(HUD_ID_RESUME,    b0.x, b0.y, b0.w, b0.h);
-                ui_add_element(HUD_ID_SAVE,      b1.x, b1.y, b1.w, b1.h);
-                ui_add_element(HUD_ID_SAVE_QUIT, b2.x, b2.y, b2.w, b2.h);
-                ui_add_element(HUD_ID_QUIT,      b3.x, b3.y, b3.w, b3.h);
+                ui_add_element(HUD_ID_OPTIONS,   b1.x, b1.y, b1.w, b1.h);
+                ui_add_element(HUD_ID_SAVE,      b2.x, b2.y, b2.w, b2.h);
+                ui_add_element(HUD_ID_SAVE_QUIT, b3.x, b3.y, b3.w, b3.h);
+                ui_add_element(HUD_ID_QUIT,      b4.x, b4.y, b4.w, b4.h);
+            } else if (g_ui_state == GAME_OPTIONS) {
+                HudRect tr = hud_volume_slider_rect(sw, sh);
+                /* Pad the slider hit area vertically so it's easy to grab. */
+                ui_add_element(HUD_ID_VOL_SLIDER, tr.x, tr.y - 8.0f, tr.w, tr.h + 16.0f);
+                HudRect b1 = hud_menu_button_rect(1, sw, sh);
+                HudRect b2 = hud_menu_button_rect(2, sw, sh);
+                HudRect b3 = hud_menu_button_rect(3, sw, sh);
+                ui_add_element(HUD_ID_MUTE,  b1.x, b1.y, b1.w, b1.h);
+                ui_add_element(HUD_ID_MUSIC, b2.x, b2.y, b2.w, b2.h);
+                ui_add_element(HUD_ID_BACK,  b3.x, b3.y, b3.w, b3.h);
             } else if (g_ui_state == GAME_INVENTORY) {
                 for (int i = 0; i < HUD_SLOT_COUNT; i++) {
                     HudRect r = hud_inventory_slot_rect(i, sw, sh);
@@ -703,8 +723,33 @@ int main(int argc, char *argv[])
             }
             ui_handle_mouse((float)mx, (float)my, clicked);
 
+            /* Volume slider: drag-while-held, not just edge clicks. While the
+             * cursor hovers the slider track and the button is down, map x ->
+             * volume continuously and push it to the audio engine. */
+            if (g_ui_state == GAME_OPTIONS && lmb == GLFW_PRESS
+                && ui_hovered_element() == HUD_ID_VOL_SLIDER) {
+                HudRect tr = hud_volume_slider_rect(sw, sh);
+                float v = hud_slider_value_from_x(tr, (float)mx);
+                audio_set_master_volume(v);
+                hud_set_audio_state(v, audio_get_muted(), hud_get_music());
+            }
+
             int hit = ui_clicked_element();
-            if (hit == HUD_ID_PLAY || hit == HUD_ID_RESUME) {
+            if (hit == HUD_ID_OPTIONS) {
+                /* Sync the HUD's latched audio state from the engine before
+                 * showing the screen so sliders/toggles render the truth. */
+                hud_set_audio_state(audio_get_master_volume(),
+                                    audio_get_muted(), hud_get_music());
+                ui_set_state(GAME_OPTIONS);
+            } else if (g_ui_state == GAME_OPTIONS && hit == HUD_ID_BACK) {
+                ui_set_state(GAME_PAUSED);
+            } else if (hit == HUD_ID_MUTE) {
+                bool m = hud_toggle_muted();
+                audio_set_muted(m);
+            } else if (hit == HUD_ID_MUSIC) {
+                bool on = hud_toggle_music();
+                audio_set_music(on);
+            } else if (hit == HUD_ID_PLAY || hit == HUD_ID_RESUME) {
                 ui_set_state(GAME_PLAYING);
             } else if (hit == HUD_ID_SAVE) {
                 /* Trigger a mid-game world flush on the server thread. */
