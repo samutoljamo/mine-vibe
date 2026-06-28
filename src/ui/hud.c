@@ -39,6 +39,16 @@ void hud_set_survival(int food, int air)
     g_hud_air  = air;
 }
 
+/* Latest server-reported armour total (points). Drawn as a 10-icon bar above
+ * the hearts; each icon represents 2 points (matching the heart granularity). */
+static int g_hud_armor_points = 0;
+
+void hud_set_armor(const ItemId* worn, int points)
+{
+    (void)worn;   /* the bar is driven by the points total */
+    g_hud_armor_points = points < 0 ? 0 : points;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Game-UI state machine (pure)                                       */
 /* ------------------------------------------------------------------ */
@@ -370,6 +380,24 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
         vec4 full  = {0.85f, 0.10f, 0.10f, 1.0f};
         vec4 half  = {0.85f, 0.10f, 0.10f, 1.0f};
         vec4 empty = {0.20f, 0.20f, 0.20f, 0.6f};
+
+        /* Armour bar — 10 icons = 20 points, drawn one row above the hearts,
+         * left-aligned with them. Each icon = 2 armour points (half icon = 1).
+         * Hidden when the player wears no armour. */
+        if (g_hud_armor_points > 0) {
+            int icons = 10;
+            float ay0 = hy0 - HSZ - 4.0f;
+            vec4 afull  = {0.78f, 0.80f, 0.88f, 1.0f};  /* steel grey */
+            vec4 aempty = {0.20f, 0.20f, 0.20f, 0.6f};
+            for (int i = 0; i < icons; i++) {
+                float x = hx0 + i * (HSZ + HGAP);
+                int p_here = g_hud_armor_points - i * 2;   /* 2 points per icon */
+                ui_rect(x, ay0, HSZ, HSZ, aempty);
+                if (p_here >= 2)      ui_rect(x, ay0, HSZ, HSZ, afull);
+                else if (p_here == 1) ui_rect(x, ay0, HSZ * 0.5f, HSZ, afull);
+            }
+        }
+
         for (int i = 0; i < hearts; i++) {
             float x = hx0 + i * (HSZ + HGAP);
             int hp_here = player_health - i * 2;   /* 2 hp per heart */

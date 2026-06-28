@@ -530,10 +530,16 @@ int main(int argc, char *argv[])
             } else if (hit == HUD_ID_QUIT) {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             } else if (hit >= HUD_ID_SLOT0 && hit < HUD_ID_SLOT0 + HUD_SLOT_COUNT) {
-                /* Clicking an inventory slot selects it (groundwork for
-                 * crafting / item movement). */
-                if (g_client)
-                    g_client->inventory.selected = hit - HUD_ID_SLOT0;
+                /* Clicking an inventory slot: if it holds an armour piece,
+                 * equip it (server-authoritative); otherwise just select it. */
+                if (g_client) {
+                    int slot = hit - HUD_ID_SLOT0;
+                    const InventorySlot* is = &g_client->inventory.slots[slot];
+                    if (is->count > 0 && item_is_armor(is->item))
+                        client_send_equip(g_client, (uint8_t)slot);
+                    else
+                        g_client->inventory.selected = slot;
+                }
             } else if (hit >= HUD_ID_CRAFT0
                        && hit < HUD_ID_CRAFT0 + g_craft_count) {
                 /* Clicking a crafting row sends a server-authoritative craft

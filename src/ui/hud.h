@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../block.h"
+#include "../item.h"
 
 #define HUD_SLOT_COUNT 6
 
@@ -141,6 +142,12 @@ bool hud_rect_contains(HudRect r, float px, float py);
 /* Latch the screen to draw. Called from main.c each frame (or on change). */
 void    hud_set_screen(GameUiState s);
 GameUiState hud_get_screen(void);
+
+/* Latch the latest server-reported armour set so hud_build can draw the armour
+ * bar above the hearts. `worn` is ARMOR_SLOT_COUNT item ids (BLOCK_AIR = empty);
+ * `points` is the clamped total armour points. The client calls this from the
+ * PKT_ARMOR handler. Passing NULL clears the bar. */
+void    hud_set_armor(const ItemId* worn, int points);
 
 /* Forward declarations to avoid circular includes. */
 struct Inventory;

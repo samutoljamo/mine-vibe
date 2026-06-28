@@ -33,6 +33,8 @@ typedef struct {
     bool               position_received;   /* set true on first PKT_POSITION; gates break/place */
     ReliableChannel    reliable;
     Inventory          inventory;
+    ItemId             armor[ARMOR_SLOT_COUNT]; /* worn armour per slot; BLOCK_AIR = empty */
+    uint16_t           armor_dur[ARMOR_SLOT_COUNT]; /* remaining durability of each worn piece */
     int16_t            health;
     double             last_attack_time;    /* rate-limit player→mob attacks (Task 8) */
 
