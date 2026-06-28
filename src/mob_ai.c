@@ -40,15 +40,27 @@ MobType mob_ai_herd_type(uint32_t rng) {
 int mob_loot(MobType type, MobLootDrop out[MOB_LOOT_MAX]) {
     int n = 0;
     switch (type) {
-    case MOB_COW:
-        /* Beef is not modelled yet; leather is. */
-        out[n].item = ITEM_LEATHER; out[n].count = 1; n++;
+    case MOB_PIG:
+        out[n].item = ITEM_RAW_PORK;    out[n].count = 1; n++;
         break;
-    case MOB_PIG:      /* pork      — item not modelled yet */
-    case MOB_CHICKEN:  /* chicken + feather — not modelled  */
-    case MOB_ZOMBIE:   /* rotten flesh      — not modelled  */
-    case MOB_SKELETON: /* bone + arrow      — not modelled  */
-    case MOB_CREEPER:  /* gunpowder         — not modelled  */
+    case MOB_COW:
+        out[n].item = ITEM_RAW_BEEF;    out[n].count = 1; n++;
+        out[n].item = ITEM_LEATHER;     out[n].count = 1; n++;
+        break;
+    case MOB_CHICKEN:
+        out[n].item = ITEM_RAW_CHICKEN; out[n].count = 1; n++;
+        out[n].item = ITEM_FEATHER;     out[n].count = 1; n++;
+        break;
+    case MOB_ZOMBIE:
+        out[n].item = ITEM_ROTTEN_FLESH; out[n].count = 1; n++;
+        break;
+    case MOB_SKELETON:
+        out[n].item = ITEM_BONE;        out[n].count = 1; n++;
+        out[n].item = ITEM_ARROW;       out[n].count = 1; n++;
+        break;
+    case MOB_CREEPER:
+        out[n].item = ITEM_GUNPOWDER;   out[n].count = 1; n++;
+        break;
     default:
         break;
     }

@@ -65,17 +65,40 @@ enum {
     ITEM_STICK = ITEM_MATERIAL_FIRST,
     ITEM_LEATHER,        /* armour crafting material (leather tier) */
     ITEM_IRON_INGOT,     /* armour crafting material (iron tier); smelted from ore */
+    ITEM_FEATHER,        /* chicken drop; future arrow/fletching material */
+    ITEM_BONE,           /* skeleton drop; future bonemeal/taming material */
+    ITEM_ARROW,          /* skeleton drop; future ranged ammo */
+    ITEM_GUNPOWDER,      /* creeper drop; future explosives material */
 
     ITEM_MATERIAL_END,
     ITEM_MATERIAL_LAST  = ITEM_MATERIAL_END - 1,
     ITEM_MATERIAL_COUNT = ITEM_MATERIAL_END - ITEM_MATERIAL_FIRST,
+
+    /* Food items. Edible: each carries a hunger-restore value (see
+     * item_hunger_restore). Not placeable, not tools. Raw meats restore less
+     * than their cooked counterparts; rotten flesh restores a little but is the
+     * zombie drop. The actual "eat -> restore hunger" server wiring is a
+     * follow-up; these only add the item DATA today. */
+    ITEM_FOOD_FIRST = ITEM_MATERIAL_END,
+
+    ITEM_RAW_PORK = ITEM_FOOD_FIRST,
+    ITEM_COOKED_PORK,
+    ITEM_RAW_BEEF,
+    ITEM_COOKED_BEEF,
+    ITEM_RAW_CHICKEN,
+    ITEM_COOKED_CHICKEN,
+    ITEM_ROTTEN_FLESH,
+
+    ITEM_FOOD_END,
+    ITEM_FOOD_LAST  = ITEM_FOOD_END - 1,
+    ITEM_FOOD_COUNT = ITEM_FOOD_END - ITEM_FOOD_FIRST,
 
     /* Armour items. Layout is tier-major (leather, iron) × slot
      * (helmet, chestplate, leggings, boots). Not placeable, not tools; they
      * carry an armour-points value and durability and live in dedicated
      * equipment slots (see ArmorSlot). The exact numbering is not relied on
      * outside item.c; use the named constants. */
-    ITEM_ARMOR_FIRST = ITEM_MATERIAL_END,
+    ITEM_ARMOR_FIRST = ITEM_FOOD_END,
 
     ITEM_LEATHER_HELMET = ITEM_ARMOR_FIRST,
     ITEM_LEATHER_CHESTPLATE,
@@ -97,6 +120,11 @@ enum {
 /* True for non-block, non-tool crafting materials (e.g. STICK, LEATHER). */
 static inline bool item_is_material(uint16_t id) {
     return id >= ITEM_MATERIAL_FIRST && id <= ITEM_MATERIAL_LAST;
+}
+
+/* True for edible food items (raw/cooked meats, rotten flesh). */
+static inline bool item_is_food(uint16_t id) {
+    return id >= ITEM_FOOD_FIRST && id <= ITEM_FOOD_LAST;
 }
 
 /* True for wearable armour items. */
@@ -143,6 +171,7 @@ typedef struct ItemDef {
     uint8_t      atlas_tile;      /* atlas tile index for the tool icon (tools only) */
     int8_t       armor_slot;      /* ArmorSlot for armour items, ARMOR_SLOT_NONE otherwise */
     uint8_t      armor_points;    /* defence points for armour items, 0 otherwise */
+    uint8_t      hunger_restore;  /* hunger points restored when eaten (food items), 0 otherwise */
 } ItemDef;
 
 /* ------------------------------------------------------------------ */
@@ -173,6 +202,11 @@ const ItemDef* item_get_def(ItemId id);
 
 /* Max stack size for an item: tools are unstackable (1), blocks stack high. */
 uint8_t item_stack_max(ItemId id);
+
+/* Hunger points a food item restores when eaten; 0 for non-food items. Pure
+ * lookup over the ItemDef table. The server-side eating wiring that consumes
+ * this is a follow-up; this exposes the data. */
+int item_hunger_restore(ItemId id);
 
 /* Representative RGB for an item icon. Block items defer to
  * block_representative_color; tools use a material-tier tint. Lets the UI draw

@@ -143,6 +143,73 @@ static void test_unbreakable_stays_unbreakable(void) {
     printf("PASS: unbreakable_stays_unbreakable\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  Food + new loot materials                                          */
+/* ------------------------------------------------------------------ */
+
+static void test_food_ids_distinct_and_in_range(void) {
+    ItemId foods[] = {
+        ITEM_RAW_PORK, ITEM_COOKED_PORK,
+        ITEM_RAW_BEEF, ITEM_COOKED_BEEF,
+        ITEM_RAW_CHICKEN, ITEM_COOKED_CHICKEN,
+        ITEM_ROTTEN_FLESH,
+    };
+    size_t n = sizeof(foods) / sizeof(foods[0]);
+    for (size_t i = 0; i < n; i++) {
+        /* In range and classified as food (not block/tool/material/armour). */
+        assert(foods[i] < ITEM_COUNT);
+        assert(item_is_food(foods[i]));
+        assert(!item_is_block(foods[i]));
+        assert(!item_is_tool(foods[i]));
+        assert(!item_is_material(foods[i]));
+        assert(!item_is_armor(foods[i]));
+        /* Pairwise distinct ids. */
+        for (size_t j = i + 1; j < n; j++)
+            assert(foods[i] != foods[j]);
+        /* Named def + edible. */
+        const ItemDef* d = item_get_def(foods[i]);
+        assert(d->name != NULL);
+        assert(d->hunger_restore > 0);
+        assert(item_hunger_restore(foods[i]) == d->hunger_restore);
+    }
+    printf("PASS: food_ids_distinct_and_in_range\n");
+}
+
+static void test_cooked_food_restores_more_than_raw(void) {
+    assert(item_hunger_restore(ITEM_COOKED_PORK)    > item_hunger_restore(ITEM_RAW_PORK));
+    assert(item_hunger_restore(ITEM_COOKED_BEEF)    > item_hunger_restore(ITEM_RAW_BEEF));
+    assert(item_hunger_restore(ITEM_COOKED_CHICKEN) > item_hunger_restore(ITEM_RAW_CHICKEN));
+    /* Rotten flesh is edible but a poor food. */
+    assert(item_hunger_restore(ITEM_ROTTEN_FLESH) > 0);
+    assert(item_hunger_restore(ITEM_ROTTEN_FLESH) <= item_hunger_restore(ITEM_RAW_BEEF));
+    printf("PASS: cooked_food_restores_more_than_raw\n");
+}
+
+static void test_non_food_has_no_hunger(void) {
+    assert(item_hunger_restore(ITEM_IRON_PICKAXE) == 0);
+    assert(item_hunger_restore(item_from_block(BLOCK_STONE)) == 0);
+    assert(item_hunger_restore(ITEM_BONE) == 0);
+    assert(item_hunger_restore(ITEM_FEATHER) == 0);
+    assert(item_hunger_restore(ITEM_ARROW) == 0);
+    assert(item_hunger_restore(ITEM_GUNPOWDER) == 0);
+    assert(!item_is_food(ITEM_BONE));
+    printf("PASS: non_food_has_no_hunger\n");
+}
+
+static void test_new_materials_distinct_and_named(void) {
+    ItemId mats[] = { ITEM_FEATHER, ITEM_BONE, ITEM_ARROW, ITEM_GUNPOWDER };
+    size_t n = sizeof(mats) / sizeof(mats[0]);
+    for (size_t i = 0; i < n; i++) {
+        assert(mats[i] < ITEM_COUNT);
+        assert(item_is_material(mats[i]));
+        assert(!item_is_food(mats[i]));
+        assert(item_get_def(mats[i])->name != NULL);
+        for (size_t j = i + 1; j < n; j++)
+            assert(mats[i] != mats[j]);
+    }
+    printf("PASS: new_materials_distinct_and_named\n");
+}
+
 int main(void) {
     test_block_ids_map_directly();
     test_tools_are_above_block_range();
@@ -154,6 +221,10 @@ int main(void) {
     test_category_matching();
     test_break_time_passing_a_block_item_is_base();
     test_unbreakable_stays_unbreakable();
+    test_food_ids_distinct_and_in_range();
+    test_cooked_food_restores_more_than_raw();
+    test_non_food_has_no_hunger();
+    test_new_materials_distinct_and_named();
     printf("test_item: all passed\n");
     return 0;
 }

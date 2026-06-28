@@ -66,6 +66,35 @@ static const char* g_material_names[ITEM_MATERIAL_COUNT] = {
     [ITEM_STICK      - ITEM_MATERIAL_FIRST] = "stick",
     [ITEM_LEATHER    - ITEM_MATERIAL_FIRST] = "leather",
     [ITEM_IRON_INGOT - ITEM_MATERIAL_FIRST] = "iron ingot",
+    [ITEM_FEATHER    - ITEM_MATERIAL_FIRST] = "feather",
+    [ITEM_BONE       - ITEM_MATERIAL_FIRST] = "bone",
+    [ITEM_ARROW      - ITEM_MATERIAL_FIRST] = "arrow",
+    [ITEM_GUNPOWDER  - ITEM_MATERIAL_FIRST] = "gunpowder",
+};
+
+/* Atlas tile for each non-block crafting material (icon index in the atlas). */
+static const uint8_t g_material_atlas[ITEM_MATERIAL_COUNT] = {
+    [ITEM_STICK      - ITEM_MATERIAL_FIRST] = 28,
+    [ITEM_LEATHER    - ITEM_MATERIAL_FIRST] = 29,
+    [ITEM_IRON_INGOT - ITEM_MATERIAL_FIRST] = 30,
+    [ITEM_FEATHER    - ITEM_MATERIAL_FIRST] = 39,
+    [ITEM_BONE       - ITEM_MATERIAL_FIRST] = 40,
+    [ITEM_ARROW      - ITEM_MATERIAL_FIRST] = 41,
+    [ITEM_GUNPOWDER  - ITEM_MATERIAL_FIRST] = 42,
+};
+
+/* Food metadata, indexed by food slot (id - ITEM_FOOD_FIRST). hunger_restore
+ * mirrors vanilla's rough ordering: cooked > raw, rotten flesh is a weak food.
+ * atlas tiles follow the materials/armour block (43..49). */
+static const ItemDef g_food_defs[ITEM_FOOD_COUNT] = {
+    /*                                  name              is_tool kind      material      dur atlas slot             pts hunger */
+    [ITEM_RAW_PORK       - ITEM_FOOD_FIRST] = { "raw porkchop",    false, TOOL_NONE, MATERIAL_NONE, 0, 43, ARMOR_SLOT_NONE, 0, 3 },
+    [ITEM_COOKED_PORK    - ITEM_FOOD_FIRST] = { "cooked porkchop", false, TOOL_NONE, MATERIAL_NONE, 0, 44, ARMOR_SLOT_NONE, 0, 8 },
+    [ITEM_RAW_BEEF       - ITEM_FOOD_FIRST] = { "raw beef",        false, TOOL_NONE, MATERIAL_NONE, 0, 45, ARMOR_SLOT_NONE, 0, 3 },
+    [ITEM_COOKED_BEEF    - ITEM_FOOD_FIRST] = { "steak",           false, TOOL_NONE, MATERIAL_NONE, 0, 46, ARMOR_SLOT_NONE, 0, 8 },
+    [ITEM_RAW_CHICKEN    - ITEM_FOOD_FIRST] = { "raw chicken",     false, TOOL_NONE, MATERIAL_NONE, 0, 47, ARMOR_SLOT_NONE, 0, 2 },
+    [ITEM_COOKED_CHICKEN - ITEM_FOOD_FIRST] = { "cooked chicken",  false, TOOL_NONE, MATERIAL_NONE, 0, 48, ARMOR_SLOT_NONE, 0, 6 },
+    [ITEM_ROTTEN_FLESH   - ITEM_FOOD_FIRST] = { "rotten flesh",    false, TOOL_NONE, MATERIAL_NONE, 0, 49, ARMOR_SLOT_NONE, 0, 2 },
 };
 
 const ItemDef* item_get_def(ItemId id) {
@@ -73,11 +102,14 @@ const ItemDef* item_get_def(ItemId id) {
         return &g_tool_defs[id - ITEM_TOOL_FIRST];
     if (item_is_armor(id))
         return &g_armor_defs[id - ITEM_ARMOR_FIRST];
+    if (item_is_food(id))
+        return &g_food_defs[id - ITEM_FOOD_FIRST];
     static ItemDef def;
     if (item_is_material(id)) {
         /* Crafting materials: non-tool, non-block. Stackable, no durability. */
         def = (ItemDef){0};
         def.name       = g_material_names[id - ITEM_MATERIAL_FIRST];
+        def.atlas_tile = g_material_atlas[id - ITEM_MATERIAL_FIRST];
         def.armor_slot = ARMOR_SLOT_NONE;
         return &def;
     }
@@ -124,13 +156,35 @@ uint8_t item_stack_max(ItemId id) {
     return item_is_tool(id) ? 1 : 64;
 }
 
+int item_hunger_restore(ItemId id) {
+    if (!item_is_food(id)) return 0;
+    return g_food_defs[id - ITEM_FOOD_FIRST].hunger_restore;
+}
+
 void item_representative_color(ItemId id, uint8_t* r, uint8_t* g, uint8_t* b) {
     if (item_is_material(id)) {
         switch (id) {
             case ITEM_STICK:      *r = 120; *g = 82;  *b = 44;  break; /* wooden stick */
             case ITEM_LEATHER:    *r = 150; *g = 102; *b = 60;  break; /* tan hide */
             case ITEM_IRON_INGOT: *r = 216; *g = 216; *b = 220; break; /* iron grey */
+            case ITEM_FEATHER:    *r = 235; *g = 235; *b = 240; break; /* white plume */
+            case ITEM_BONE:       *r = 230; *g = 226; *b = 205; break; /* bone white */
+            case ITEM_ARROW:      *r = 150; *g = 120; *b = 80;  break; /* shaft + flint */
+            case ITEM_GUNPOWDER:  *r = 60;  *g = 60;  *b = 64;  break; /* dark grey dust */
             default:              *r = 200; *g = 120; *b = 200; break; /* flag unknown */
+        }
+        return;
+    }
+    if (item_is_food(id)) {
+        switch (id) {
+            case ITEM_RAW_PORK:       *r = 235; *g = 150; *b = 150; break; /* pink raw */
+            case ITEM_COOKED_PORK:    *r = 190; *g = 120; *b = 70;  break; /* browned */
+            case ITEM_RAW_BEEF:       *r = 200; *g = 70;  *b = 70;  break; /* red raw */
+            case ITEM_COOKED_BEEF:    *r = 130; *g = 80;  *b = 50;  break; /* seared */
+            case ITEM_RAW_CHICKEN:    *r = 240; *g = 200; *b = 180; break; /* pale raw */
+            case ITEM_COOKED_CHICKEN: *r = 205; *g = 160; *b = 95;  break; /* golden */
+            case ITEM_ROTTEN_FLESH:   *r = 110; *g = 90;  *b = 70;  break; /* greenish-brown */
+            default:                  *r = 200; *g = 120; *b = 200; break;
         }
         return;
     }
