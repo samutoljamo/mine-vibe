@@ -264,6 +264,11 @@ int main(int argc, char *argv[])
     bool client_mode  = false;
     const char* connect_ip = "127.0.0.1";
     uint16_t    port       = NET_DEFAULT_PORT;
+    /* Headless visual capture: render screenshot_frame frames (to let nearby
+     * chunks stream in + mesh), dump one PNG, then exit cleanly. Lets automated
+     * tooling/CI catch rendering regressions in a single self-terminating run. */
+    const char* screenshot_path  = NULL;
+    int         screenshot_frame = 240;
 
     /* Graphics/perf settings, defaulting to values that run well on
      * integrated GPUs. Override via CLI flags below. */
@@ -298,6 +303,11 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "--stats") == 0) {
             g_show_stats = true;          /* start with the perf overlay on */
+        }
+        else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+            screenshot_path = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                screenshot_frame = atoi(argv[++i]);  /* optional frame count */
         }
     }
 
@@ -634,6 +644,7 @@ int main(int argc, char *argv[])
     int frame_count = 0;
     double fps_timer = last_time;
     uint64_t tick = 0;
+    uint64_t total_frames = 0;   /* monotonic; drives --screenshot timing */
 
     /* Rolling perf stats: frametime ring buffer drives the FPS/frametime
      * readout; the renderer mirrors visible-chunk and draw-call counts into it
@@ -654,6 +665,13 @@ int main(int argc, char *argv[])
 
         bool dump_frame = false;
         char dump_path[256] = {0};
+        /* Headless screenshot: once enough frames have rendered for nearby
+         * chunks to stream in, dump one frame; exit happens after the draw. */
+        if (screenshot_path && total_frames == (uint64_t)screenshot_frame) {
+            dump_frame = true;
+            strncpy(dump_path, screenshot_path, 255);
+            dump_path[255] = '\0';
+        }
         if (agent_mode) {
             AgentCommand cmd;
             g_player.agent_jump = false;  /* reset per-frame edge-triggered input */
@@ -1090,7 +1108,13 @@ int main(int argc, char *argv[])
             tick++;
         }
 
+        /* Headless screenshot: the frame requested above has now been drawn
+         * and the PNG written — exit cleanly so the run self-terminates. */
+        if (screenshot_path && total_frames >= (uint64_t)screenshot_frame)
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+
         /* FPS counter */
+        total_frames++;
         frame_count++;
         if (now - fps_timer >= 2.0) {
             char title[128];
