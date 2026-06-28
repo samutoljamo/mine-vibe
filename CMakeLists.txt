@@ -344,7 +344,7 @@ target_include_directories(test_mesher PRIVATE
     ${vulkanmemoryallocator_SOURCE_DIR}/include
 )
 target_compile_definitions(test_mesher PRIVATE VK_NO_PROTOTYPES)
-target_link_libraries(test_mesher PRIVATE cglm Vulkan::Headers)
+target_link_libraries(test_mesher PRIVATE cglm Vulkan::Headers Threads::Threads)
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_mesher PRIVATE m)
 endif()

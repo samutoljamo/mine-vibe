@@ -5,6 +5,9 @@
 #include <assert.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "platform_thread.h"
 
 static void test_solid_chunk_mesh(void)
 {
@@ -456,6 +459,88 @@ static void test_greedy_random_volume_valid(void)
     printf("PASS: test_greedy_random_volume_valid\n");
 }
 
+/* (g) THREAD SAFETY: mesher_build runs concurrently on multiple chunk-worker
+ * threads in the real game. If its scratch buffers are shared `static` (not
+ * _Thread_local), concurrent calls corrupt each other's rectangle merges,
+ * producing garbled meshes — invisible to every single-threaded test above but
+ * the actual cause of on-screen terrain explosion. This test meshes the SAME
+ * chunk from many threads and asserts every result is byte-identical to a
+ * single-threaded reference. */
+typedef struct {
+    const Chunk* chunk;
+    const BlockVertex* ref_v; uint32_t ref_vc;
+    const uint32_t* ref_i;    uint32_t ref_ic;
+    int iterations;
+    atomic_int* failures;
+} ThreadArg;
+
+static void* mesh_worker(void* p)
+{
+    ThreadArg* ta = (ThreadArg*)p;
+    MeshData md; mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    for (int it = 0; it < ta->iterations; it++) {
+        md.vertex_count = 0; md.index_count = 0;
+        mesher_build(ta->chunk, &nb, NULL, &md);
+        if (md.vertex_count != ta->ref_vc || md.index_count != ta->ref_ic ||
+            memcmp(md.vertices, ta->ref_v, ta->ref_vc * sizeof(BlockVertex)) != 0 ||
+            memcmp(md.indices,  ta->ref_i, ta->ref_ic * sizeof(uint32_t)) != 0) {
+            atomic_fetch_add(ta->failures, 1);
+            break;
+        }
+    }
+    mesh_data_free(&md);
+    return NULL;
+}
+
+static void test_mesher_thread_safe(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    const BlockID types[3] = { BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS };
+    for (int y = 40; y < 90; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++) {
+                uint32_t h = (uint32_t)(x*73856093 ^ y*19349663 ^ z*83492791);
+                h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+                if ((h & 3u) != 0u) chunk_set_block(c, x, y, z, types[h % 3u]);
+            }
+    atomic_store(&c->state, CHUNK_GENERATED);
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_skylight(c, x, y, z, 15);
+
+    /* Single-threaded reference. */
+    MeshData ref; mesh_data_init(&ref);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &ref);
+    assert(ref.vertex_count > 0);
+    BlockVertex* ref_v = malloc(ref.vertex_count * sizeof(BlockVertex));
+    uint32_t*    ref_i = malloc(ref.index_count  * sizeof(uint32_t));
+    memcpy(ref_v, ref.vertices, ref.vertex_count * sizeof(BlockVertex));
+    memcpy(ref_i, ref.indices,  ref.index_count  * sizeof(uint32_t));
+
+    enum { NT = 8 };
+    atomic_int failures; atomic_store(&failures, 0);
+    PT_Thread th[NT];
+    ThreadArg args[NT];
+    for (int t = 0; t < NT; t++) {
+        args[t] = (ThreadArg){ c, ref_v, ref.vertex_count, ref_i, ref.index_count,
+                               60, &failures };
+        pt_thread_create(&th[t], mesh_worker, &args[t]);
+    }
+    for (int t = 0; t < NT; t++) pt_thread_join(th[t]);
+
+    int f = atomic_load(&failures);
+    printf("  concurrent mesh mismatches across %d threads = %d (must be 0)\n", NT, f);
+    assert(f == 0);
+
+    free(ref_v); free(ref_i);
+    mesh_data_free(&ref);
+    chunk_destroy(c);
+    printf("PASS: test_mesher_thread_safe\n");
+}
+
 int main(void)
 {
     test_solid_chunk_mesh();
@@ -469,5 +554,6 @@ int main(void)
     test_greedy_fewer_than_naive();
     test_greedy_geometry_valid();
     test_greedy_random_volume_valid();
+    test_mesher_thread_safe();
     return 0;
 }

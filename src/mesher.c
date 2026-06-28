@@ -478,9 +478,13 @@ void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
 
     static const int dims[3] = { CHUNK_X, CHUNK_Y, CHUNK_Z };
 
-    /* Reusable per-slice descriptor mask and "used" bitmap. */
-    static FaceDesc mask[MAX_DIM * MAX_DIM];
-    static uint8_t  used[MAX_DIM * MAX_DIM];
+    /* Reusable per-slice descriptor mask and "used" bitmap.
+     * MUST be _Thread_local: mesher_build runs concurrently on multiple chunk
+     * worker threads (world.c worker_func). Plain `static` here is shared
+     * mutable state — the threads race on it and produce corrupted rectangle
+     * merges (exploded/garbled terrain). Each thread needs its own scratch. */
+    static _Thread_local FaceDesc mask[MAX_DIM * MAX_DIM];
+    static _Thread_local uint8_t  used[MAX_DIM * MAX_DIM];
 
     for (int face = 0; face < 6; face++) {
         int na = normal_axis[face];
