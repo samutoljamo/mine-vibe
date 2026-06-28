@@ -417,6 +417,13 @@ static void handle_block_break(Server* s, ServerClient* c,
      * block, never the client-supplied one. */
     if (!s->world) return;
     BlockID actual = world_get_block(s->world, p.x, p.y, p.z);
+    /* The headless server streams chunks asynchronously, so a cell the player
+     * legitimately mined can still read AIR here (its chunk hasn't finished
+     * generating yet). Rejecting that breaks normal mining. Fall back to the
+     * client's reach-validated claim; it's still re-validated below, so
+     * air/water/bedrock claims remain refused. */
+    if (actual == BLOCK_AIR)
+        actual = p.block;
     if (!server_block_breakable(actual)) return;
 
     uint8_t leftover = inventory_add(&c->inventory, actual, 1);
