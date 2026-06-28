@@ -58,6 +58,26 @@ static GameUiState g_screen = GAME_MAIN_MENU;
 void        hud_set_screen(GameUiState s) { g_screen = s; }
 GameUiState hud_get_screen(void)          { return g_screen; }
 
+/* Main-menu sub-page (root buttons vs. the Load-World list) + the latched list
+ * of world names to show. Names are copied so the caller's buffer can change. */
+static MenuPage g_menu_page = MENU_PAGE_ROOT;
+void     hud_set_menu_page(MenuPage p) { g_menu_page = p; }
+MenuPage hud_get_menu_page(void)       { return g_menu_page; }
+
+#define HUD_WORLD_LIST_MAX 64
+static char g_world_names[HUD_WORLD_LIST_MAX][64];
+static int  g_world_count = 0;
+
+void hud_set_world_list(const char* const* names, int count)
+{
+    if (count < 0) count = 0;
+    if (count > HUD_WORLD_LIST_MAX) count = HUD_WORLD_LIST_MAX;
+    for (int i = 0; i < count; i++)
+        snprintf(g_world_names[i], sizeof(g_world_names[i]), "%s",
+                 names[i] ? names[i] : "");
+    g_world_count = count;
+}
+
 GameUiState game_ui_toggle_pause(GameUiState s)
 {
     switch (s) {
@@ -176,19 +196,44 @@ static void hud_draw_main_menu(float sw, float sh)
     vec4 bg = {0.06f, 0.07f, 0.10f, 1.0f};
     ui_rect(0, 0, sw, sh, bg);
     draw_title("MINECRAFT", sw, sh);
-    draw_button(HUD_ID_PLAY, hud_menu_button_rect(0, sw, sh), "Play");
-    draw_button(HUD_ID_QUIT, hud_menu_button_rect(1, sw, sh), "Quit");
+
+    if (g_menu_page == MENU_PAGE_LOAD) {
+        /* World list: one clickable row per saved world, then Back. */
+        if (g_world_count == 0) {
+            vec4 dim = {0.7f, 0.7f, 0.7f, 0.85f};
+            draw_centered_label("No saved worlds yet", 20.0f, sw,
+                                sh * 0.5f + MENU_TOP_OFF, dim);
+            draw_button(HUD_ID_BACK, hud_menu_button_rect(1, sw, sh), "Back");
+        } else {
+            for (int i = 0; i < g_world_count; i++)
+                draw_button(HUD_ID_WORLD0 + i,
+                            hud_menu_button_rect(i, sw, sh), g_world_names[i]);
+            draw_button(HUD_ID_BACK,
+                        hud_menu_button_rect(g_world_count, sw, sh), "Back");
+        }
+        vec4 hint = {0.7f, 0.7f, 0.7f, 0.8f};
+        draw_centered_label("Click a world to load it", 18.0f, sw,
+                            sh - 40.0f, hint);
+        return;
+    }
+
+    /* Root page. */
+    draw_button(HUD_ID_NEW_WORLD,  hud_menu_button_rect(0, sw, sh), "New World");
+    draw_button(HUD_ID_LOAD_WORLD, hud_menu_button_rect(1, sw, sh), "Load World");
+    draw_button(HUD_ID_QUIT,       hud_menu_button_rect(2, sw, sh), "Quit");
     vec4 hint = {0.7f, 0.7f, 0.7f, 0.8f};
-    draw_centered_label("Click Play to enter the world", 18.0f, sw,
-                        sh - 40.0f, hint);
+    draw_centered_label("New World to generate, Load World to continue", 18.0f,
+                        sw, sh - 40.0f, hint);
 }
 
 static void hud_draw_pause(float sw, float sh)
 {
     draw_dim(sw, sh, 0.55f);
     draw_title("PAUSED", sw, sh);
-    draw_button(HUD_ID_RESUME, hud_menu_button_rect(0, sw, sh), "Resume");
-    draw_button(HUD_ID_QUIT,   hud_menu_button_rect(1, sw, sh), "Quit");
+    draw_button(HUD_ID_RESUME,    hud_menu_button_rect(0, sw, sh), "Resume");
+    draw_button(HUD_ID_SAVE,      hud_menu_button_rect(1, sw, sh), "Save");
+    draw_button(HUD_ID_SAVE_QUIT, hud_menu_button_rect(2, sw, sh), "Save & Quit");
+    draw_button(HUD_ID_QUIT,      hud_menu_button_rect(3, sw, sh), "Quit");
     vec4 hint = {0.7f, 0.7f, 0.7f, 0.8f};
     draw_centered_label("Esc to resume", 18.0f, sw, sh - 40.0f, hint);
 }

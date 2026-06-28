@@ -68,12 +68,19 @@ typedef struct {
 } Server;
 
 /* Blocking server loop — call from a dedicated thread or main().
- * port: UDP port to bind. max_clients: runtime cap.
+ * port: UDP port to bind. max_clients: runtime cap. seed: worldgen seed.
+ * save_path: overlay file to load/flush; if NULL, falls back to
+ *   SERVER_SAVE_FILE (single hardcoded world, legacy behaviour).
  * Runs until server.running is set false (or fatal error). */
-void server_run(uint16_t port, int max_clients, int seed);
+void server_run(uint16_t port, int max_clients, int seed, const char* save_path);
 
 /* Signal the running server loop (on its own thread in host mode) to exit, so
  * the main thread can join it cleanly on shutdown. Thread-safe. */
 void server_request_stop(void);
+
+/* Request a mid-game world flush from another thread (the UI's Save button).
+ * The server loop notices the flag and forces an overlay save next tick.
+ * Thread-safe; mirrors server_request_stop. */
+void server_request_save(void);
 
 #endif /* SERVER_H */

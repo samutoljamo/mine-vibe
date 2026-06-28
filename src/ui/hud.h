@@ -86,13 +86,34 @@ typedef enum {
  * inventory slots share one id space; slot ids start at HUD_ID_SLOT0. */
 enum {
     HUD_ID_NONE = -1,
-    HUD_ID_PLAY = 1000,   /* main menu: Play   */
+    HUD_ID_PLAY = 1000,   /* main menu: Play (legacy; superseded by New/Load) */
     HUD_ID_QUIT,          /* main menu / pause: Quit */
     HUD_ID_RESUME,        /* pause: Resume     */
     HUD_ID_CLOSE,         /* inventory: close  */
+    HUD_ID_NEW_WORLD,     /* main menu: New World   */
+    HUD_ID_LOAD_WORLD,    /* main menu: Load World (opens the world list) */
+    HUD_ID_BACK,          /* world list: back to main menu */
+    HUD_ID_SAVE,          /* pause: Save            */
+    HUD_ID_SAVE_QUIT,     /* pause: Save & Quit     */
     HUD_ID_SLOT0 = 2000,  /* inventory/hotbar slots: HUD_ID_SLOT0 + i */
     HUD_ID_CRAFT0 = 3000, /* inventory crafting-panel rows: HUD_ID_CRAFT0 + i */
+    HUD_ID_WORLD0 = 4000, /* load-world list rows: HUD_ID_WORLD0 + i */
 };
+
+/* The main menu has an extra "Load World" sub-screen. It isn't a GameUiState
+ * (those gate cursor/world-input); instead hud.c latches a small page flag so
+ * the main-menu draw path renders either the buttons or the world list. */
+typedef enum {
+    MENU_PAGE_ROOT = 0,   /* New World / Load World / Quit */
+    MENU_PAGE_LOAD,       /* clickable list of saved worlds + Back */
+} MenuPage;
+
+void     hud_set_menu_page(MenuPage p);
+MenuPage hud_get_menu_page(void);
+
+/* Latch the names shown on the Load-World page. `names` is borrowed only for
+ * the duration of the call (copied internally). Pass count<=0 to clear. */
+void hud_set_world_list(const char* const* names, int count);
 
 /* Max crafting recipe rows the inventory panel lays out / hit-tests. Kept here
  * so main.c (registration) and hud.c (drawing) agree without including
