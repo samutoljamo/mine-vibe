@@ -124,6 +124,46 @@ static void test_loot_only_existing_items(void) {
     printf("PASS: loot_only_existing_items\n");
 }
 
+/* Helper: does this mob's loot contain `item`? */
+static int loot_has(MobType type, ItemId item) {
+    MobLootDrop out[MOB_LOOT_MAX];
+    int n = mob_loot(type, out);
+    for (int i = 0; i < n; i++)
+        if (out[i].item == item) return 1;
+    return 0;
+}
+
+static void test_loot_per_mob_type(void) {
+    /* Pig -> raw pork. */
+    assert(loot_has(MOB_PIG, ITEM_RAW_PORK));
+    /* Cow -> raw beef + leather. */
+    assert(loot_has(MOB_COW, ITEM_RAW_BEEF));
+    assert(loot_has(MOB_COW, ITEM_LEATHER));
+    /* Chicken -> raw chicken + feather. */
+    assert(loot_has(MOB_CHICKEN, ITEM_RAW_CHICKEN));
+    assert(loot_has(MOB_CHICKEN, ITEM_FEATHER));
+    /* Zombie -> rotten flesh. */
+    assert(loot_has(MOB_ZOMBIE, ITEM_ROTTEN_FLESH));
+    /* Skeleton -> bone + arrow. */
+    assert(loot_has(MOB_SKELETON, ITEM_BONE));
+    assert(loot_has(MOB_SKELETON, ITEM_ARROW));
+    /* Creeper -> gunpowder. */
+    assert(loot_has(MOB_CREEPER, ITEM_GUNPOWDER));
+    printf("PASS: loot_per_mob_type\n");
+}
+
+static void test_every_mob_drops_something(void) {
+    MobType all[MOB_TYPE_COUNT] = {
+        MOB_ZOMBIE, MOB_SKELETON, MOB_CREEPER, MOB_PIG, MOB_COW, MOB_CHICKEN
+    };
+    for (int t = 0; t < MOB_TYPE_COUNT; t++) {
+        MobLootDrop out[MOB_LOOT_MAX];
+        int n = mob_loot(all[t], out);
+        assert(n >= 1 && n <= MOB_LOOT_MAX);
+    }
+    printf("PASS: every_mob_drops_something\n");
+}
+
 static void test_loot_determinism(void) {
     MobLootDrop a[MOB_LOOT_MAX], b[MOB_LOOT_MAX];
     int na = mob_loot(MOB_COW, a);
@@ -147,6 +187,8 @@ int main(void) {
     test_herd_type_is_passive();
     test_loot_cow_drops_leather();
     test_loot_only_existing_items();
+    test_loot_per_mob_type();
+    test_every_mob_drops_something();
     test_loot_determinism();
     printf("All mob_ai tests passed.\n");
     return 0;

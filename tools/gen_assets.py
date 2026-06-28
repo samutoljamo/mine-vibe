@@ -378,6 +378,132 @@ def draw_boots(tier, size=16):
     _fill_rect(img, 3, size - 4, size - 3, size - 2, col)  # soles
     return img
 
+# ── mob-loot materials + foods ──────────────────────────────────────────────
+#
+# Drawn on transparent 16×16 tiles so they read on the hotbar over any
+# background. Materials (feather/bone/arrow/gunpowder) and foods (raw/cooked
+# meats + rotten flesh).
+
+def draw_feather(size=16):
+    """A pale plume: a diagonal quill with a soft vane."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    quill = (210, 210, 215, 255)
+    vane  = (240, 240, 245, 255)
+    for i in range(2, size - 2):
+        x = i
+        y = size - 1 - i
+        if 0 <= x < size and 0 <= y < size:
+            img.putpixel((x, y), quill)
+        # vane to one side of the shaft, thinning toward the tip
+        w = max(1, (size - 2 - i) // 3)
+        for d in range(1, w + 1):
+            px, py = x - d, y - d
+            if 0 <= px < size and 0 <= py < size:
+                img.putpixel((px, py), vane)
+    return img
+
+def draw_bone(size=16):
+    """A bone: a pale shaft with knobbed ends, drawn diagonally."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    col = (230, 226, 205, 255)
+    # shaft
+    for i in range(4, size - 4):
+        x = i
+        y = size - 1 - i
+        for (dx, dy) in ((0, 0), (1, 0)):
+            px, py = x + dx, y + dy
+            if 0 <= px < size and 0 <= py < size:
+                img.putpixel((px, py), col)
+    # knobs at both ends
+    for (cx, cy) in ((4, size - 5), (size - 5, 4)):
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                px, py = cx + dx, cy + dy
+                if 0 <= px < size and 0 <= py < size:
+                    img.putpixel((px, py), col)
+    return img
+
+def draw_arrow(size=16):
+    """An arrow: brown shaft, grey flint tip, pale fletching."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    shaft = (140, 100, 60, 255)
+    tip   = (170, 170, 176, 255)
+    fletch = (225, 225, 230, 255)
+    for i in range(2, size - 2):
+        x = i
+        y = size - 1 - i
+        if 0 <= x < size and 0 <= y < size:
+            img.putpixel((x, y), shaft)
+    # tip near upper-right
+    for (cx, cy) in ((size - 3, 2), (size - 4, 3), (size - 3, 3), (size - 4, 2)):
+        if 0 <= cx < size and 0 <= cy < size:
+            img.putpixel((cx, cy), tip)
+    # fletching near lower-left
+    for (cx, cy) in ((3, size - 4), (4, size - 3), (2, size - 3)):
+        if 0 <= cx < size and 0 <= cy < size:
+            img.putpixel((cx, cy), fletch)
+    return img
+
+def draw_gunpowder(size=16):
+    """A pile of dark grey dust with lighter speckles."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    rng = random.Random(909)
+    cx, cy = size // 2, size // 2 + 2
+    for y in range(size):
+        for x in range(size):
+            d = ((x - cx) ** 2 + ((y - cy) * 1.4) ** 2) ** 0.5
+            if d < 6:
+                v = rng.randint(45, 75)
+                img.putpixel((x, y), (v, v, v + 4, 255))
+    for _ in range(8):
+        px, py = rng.randint(cx - 5, cx + 5), rng.randint(cy - 4, cy + 4)
+        if 0 <= px < size and 0 <= py < size:
+            img.putpixel((px, py), (110, 110, 116, 255))
+    return img
+
+def _draw_meat(base, cooked, size=16):
+    """A rounded chunk of meat. `base`/`cooked` are flesh colours; cooked tints
+    the surface darker/browner."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    cx, cy = size // 2, size // 2
+    for y in range(size):
+        for x in range(size):
+            d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+            if d <= 5.5:
+                col = cooked if d > 3.5 else base
+                img.putpixel((x, y), _noise(col[0], col[1], col[2], 255, x, y, 10))
+    return img
+
+def draw_raw_pork(size=16):
+    return _draw_meat((235, 150, 150), (220, 130, 130), size)
+
+def draw_cooked_pork(size=16):
+    return _draw_meat((190, 120, 70), (150, 92, 52), size)
+
+def draw_raw_beef(size=16):
+    return _draw_meat((200, 70, 70), (170, 55, 55), size)
+
+def draw_cooked_beef(size=16):
+    return _draw_meat((140, 88, 56), (110, 66, 42), size)
+
+def draw_raw_chicken(size=16):
+    return _draw_meat((240, 200, 180), (225, 180, 160), size)
+
+def draw_cooked_chicken(size=16):
+    return _draw_meat((210, 165, 100), (180, 135, 78), size)
+
+def draw_rotten_flesh(size=16):
+    """A sickly greenish-brown lump of flesh."""
+    img = _draw_meat((120, 100, 78), (95, 80, 60), size)
+    # a few green rot speckles
+    rng = random.Random(666)
+    cx, cy = size // 2, size // 2
+    for _ in range(6):
+        px, py = rng.randint(cx - 4, cx + 4), rng.randint(cy - 4, cy + 4)
+        if 0 <= px < size and 0 <= py < size and img.getpixel((px, py))[3] > 0:
+            img.putpixel((px, py), (95, 120, 70, 255))
+    return img
+
 TILE_GENERATORS = {
     0:  draw_stone,
     1:  draw_dirt,
@@ -421,6 +547,19 @@ TILE_GENERATORS = {
     36: lambda: draw_chestplate('iron'),
     37: lambda: draw_leggings('iron'),
     38: lambda: draw_boots('iron'),
+    # Mob-loot crafting materials (free atlas indices after armour).
+    39: draw_feather,
+    40: draw_bone,
+    41: draw_arrow,
+    42: draw_gunpowder,
+    # Mob-loot foods (raw/cooked meats + rotten flesh).
+    43: draw_raw_pork,
+    44: draw_cooked_pork,
+    45: draw_raw_beef,
+    46: draw_cooked_beef,
+    47: draw_raw_chicken,
+    48: draw_cooked_chicken,
+    49: draw_rotten_flesh,
 }
 
 TILE_NAMES = {
@@ -437,6 +576,9 @@ TILE_NAMES = {
     33: "leather_leggings", 34: "leather_boots",
     35: "iron_helmet", 36: "iron_chestplate",
     37: "iron_leggings", 38: "iron_boots",
+    39: "feather", 40: "bone", 41: "arrow", 42: "gunpowder",
+    43: "raw_pork", 44: "cooked_pork", 45: "raw_beef", 46: "cooked_beef",
+    47: "raw_chicken", 48: "cooked_chicken", 49: "rotten_flesh",
 }
 
 # ── player skin ───────────────────────────────────────────────────────────────
