@@ -20,6 +20,7 @@
 
 #include "audio.h"
 #include "audio_backend.h"
+#include "music.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -88,22 +89,23 @@ typedef struct {
 
 static SfxRecipe sfx_recipe(SoundId id)
 {
-    /* All SFX lean on sine tones (square reserved for a little grit on impacts)
-     * at modest amplitude so they read as soft "sounds" rather than buzzers. */
+    /* All SFX lean on sine tones at LOW amplitude with short durations and a
+     * little noise, so they read as subtle, soft cues rather than buzzers. The
+     * per-sample amplitude is further scaled in audio_gen_sfx (see SFX_PEAK). */
     switch (id) {
-        /* Dull crunchy thud: low sine body + a good helping of noise, fast decay. */
-        case SFX_BLOCK_BREAK: return (SfxRecipe){ 0.22f, 120.0f, 6.0f, 0.55f, 0, 0x1001u };
-        /* Soft click: short noisy blip, very fast decay. */
-        case SFX_BLOCK_PLACE: return (SfxRecipe){ 0.12f, 220.0f, 9.0f, 0.45f, 0, 0x2002u };
-        /* Footstep: brief muffled noise. */
-        case SFX_STEP:        return (SfxRecipe){ 0.10f,  90.0f, 12.0f, 0.75f, 0, 0x3003u };
-        /* Player hurt: descending sine tone, mid decay. */
-        case SFX_HURT:        return (SfxRecipe){ 0.30f, 330.0f, 5.0f, 0.12f, 0, 0x4004u };
-        /* Mob hurt: lower/grittier than player hurt — a touch of square. */
-        case SFX_MOB_HURT:    return (SfxRecipe){ 0.28f, 180.0f, 5.0f, 0.30f, 1, 0x5005u };
-        /* Eat: soft sine warble, gentle decay. */
-        case SFX_EAT:         return (SfxRecipe){ 0.25f, 260.0f, 4.0f, 0.10f, 0, 0x6006u };
-        default:              return (SfxRecipe){ 0.10f, 200.0f, 8.0f, 0.45f, 0, 0x7007u };
+        /* Block break: soft low thud, a touch of noise, quick decay. */
+        case SFX_BLOCK_BREAK: return (SfxRecipe){ 0.14f, 130.0f, 7.0f, 0.35f, 0, 0x1001u };
+        /* Block place: gentle short click, very fast decay, mostly tone. */
+        case SFX_BLOCK_PLACE: return (SfxRecipe){ 0.09f, 240.0f, 11.0f, 0.25f, 0, 0x2002u };
+        /* Footstep: very brief, muffled, low noise blip. */
+        case SFX_STEP:        return (SfxRecipe){ 0.07f, 100.0f, 14.0f, 0.55f, 0, 0x3003u };
+        /* Player hurt: short descending sine, mid decay, almost no noise. */
+        case SFX_HURT:        return (SfxRecipe){ 0.18f, 320.0f, 6.0f, 0.08f, 0, 0x4004u };
+        /* Mob hurt: lower than player hurt, a hint of noise (no harsh square). */
+        case SFX_MOB_HURT:    return (SfxRecipe){ 0.17f, 190.0f, 6.0f, 0.20f, 0, 0x5005u };
+        /* Eat: soft short sine warble. */
+        case SFX_EAT:         return (SfxRecipe){ 0.14f, 270.0f, 5.0f, 0.06f, 0, 0x6006u };
+        default:              return (SfxRecipe){ 0.08f, 200.0f, 10.0f, 0.30f, 0, 0x7007u };
     }
 }
 
@@ -116,6 +118,10 @@ static float attack_ramp(size_t i)
     if (i >= (size_t)ATTACK) return 1.0f;
     return (float)i / (float)ATTACK;
 }
+
+/* Peak amplitude for SFX (fraction of full scale). Kept low so effects are
+ * gentle cues that sit under the music. ~0.3. */
+#define SFX_PEAK 0.30f
 
 size_t audio_gen_sfx(SoundId id, int16_t* out, size_t cap)
 {
@@ -140,50 +146,45 @@ size_t audio_gen_sfx(SoundId id, int16_t* out, size_t cap)
         /* Linear fade-out over the final RELEASE samples. */
         if (RELEASE > 0 && n >= (size_t)RELEASE && i >= n - (size_t)RELEASE)
             env *= (float)(n - i) / (float)RELEASE;
-        /* ~0.5 amplitude headroom: gentle, never a buzzer. */
-        out[i] = to_pcm(mix * env * 0.5f);
+        /* Low peak amplitude (SFX_PEAK): subtle, never a buzzer. */
+        out[i] = to_pcm(mix * env * SFX_PEAK);
     }
     return n;
 }
 
-/* ---- Procedural music: a slow looping arpeggio over a soft pad. --------- */
+/* ---- Procedural music: render the declarative song (see music.c). -------
+ *
+ * The actual music is described as data (tempo + tracks of notes) in music.c
+ * and rendered by the pure sequencer there. audio_gen_music() is a thin int16
+ * adapter: it renders the float song into a small scratch buffer and converts.
+ * The engine renders the whole loop once at init and loops it, so the per-call
+ * cost only matters for the one-time fill. */
 
-/* A minor pentatonic-ish arpeggio. Frequencies in Hz. */
-static const float MUSIC_NOTES[] = {
-    220.0f, 261.63f, 329.63f, 392.0f, 329.63f, 261.63f  /* A C E G E C */
-};
-#define MUSIC_NOTE_COUNT (sizeof(MUSIC_NOTES)/sizeof(MUSIC_NOTES[0]))
-/* Seconds per note — slow/ambient. */
-#define MUSIC_NOTE_SECONDS 0.55f
+/* Overall music level — real music now, so keep it quiet under the SFX. */
+#define MUSIC_LEVEL 0.55f
 
 size_t audio_music_loop_samples(void)
 {
-    return (size_t)(MUSIC_NOTE_SECONDS * AUDIO_SAMPLE_RATE) * MUSIC_NOTE_COUNT;
+    return music_song_samples(music_default_song(), AUDIO_SAMPLE_RATE);
 }
 
 size_t audio_gen_music(int16_t* out, size_t cap, uint64_t start)
 {
     if (!out || cap == 0) return 0;
 
-    size_t loop      = audio_music_loop_samples();
-    size_t note_len  = (size_t)(MUSIC_NOTE_SECONDS * AUDIO_SAMPLE_RATE);
+    const Song* song = music_default_song();
 
-    for (size_t k = 0; k < cap; k++) {
-        size_t s   = (size_t)((start + k) % loop);     /* position in the loop */
-        size_t ni  = (note_len ? (s / note_len) : 0) % MUSIC_NOTE_COUNT;
-        size_t off = note_len ? (s % note_len) : 0;
-        float  t   = (float)off / (float)AUDIO_SAMPLE_RATE;
-
-        float note = MUSIC_NOTES[ni];
-        /* Per-note attack so each pluck eases in from zero (no click at note
-         * boundaries), then a gentle decay across the note. */
-        float nenv = audio_env_decay(off, note_len, 2.2f) * attack_ramp(off);
-        float arp  = audio_osc_sine(t, note) * nenv;
-        /* ... over a quiet drone an octave below for body. */
-        float gt   = (float)((start + k) % loop) / (float)AUDIO_SAMPLE_RATE;
-        float pad  = audio_osc_sine(gt, MUSIC_NOTES[0] * 0.5f) * 0.22f;
-
-        out[k] = to_pcm((arp * 0.5f + pad) * 0.45f);   /* keep music quiet */
+    /* Render in modest chunks of float into the stack, then convert to int16. */
+    enum { CHUNK = 1024 };
+    float fbuf[CHUNK];
+    size_t done = 0;
+    while (done < cap) {
+        size_t n = cap - done;
+        if (n > CHUNK) n = CHUNK;
+        music_render(song, fbuf, n, start + done, AUDIO_SAMPLE_RATE);
+        for (size_t i = 0; i < n; i++)
+            out[done + i] = to_pcm(fbuf[i] * MUSIC_LEVEL);
+        done += n;
     }
     return cap;
 }
@@ -269,7 +270,61 @@ static struct {
     uint64_t             play_counts[SFX_COUNT];
     bool                 music_on;
     uint64_t             music_pos;       /* absolute sample cursor for music */
+    float                master_volume;   /* linear 0..1, applied to all gains */
+    bool                 muted;           /* forces effective gain to 0 */
+    bool                 vol_inited;      /* master_volume/muted have defaults */
 } g_audio;
+
+/* Default master volume — comfortable but not blaring. */
+#define AUDIO_DEFAULT_VOLUME 0.6f
+
+/* Volume/mute live independently of audio_init() (the UI may set them before or
+ * after device bring-up, and audio_init() memsets the engine struct). Apply the
+ * defaults exactly once, the first time any volume function touches them. */
+static void ensure_volume_defaults(void)
+{
+    if (!g_audio.vol_inited) {
+        g_audio.master_volume = AUDIO_DEFAULT_VOLUME;
+        g_audio.muted         = false;
+        g_audio.vol_inited    = true;
+    }
+}
+
+float audio_effective_gain(float base_gain)
+{
+    ensure_volume_defaults();
+    if (g_audio.muted) return 0.0f;
+    float g = base_gain * g_audio.master_volume;
+    if (g < 0.0f) g = 0.0f;
+    if (g > 1.0f) g = 1.0f;
+    return g;
+}
+
+void audio_set_master_volume(float v)
+{
+    ensure_volume_defaults();
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    g_audio.master_volume = v;
+}
+
+float audio_get_master_volume(void)
+{
+    ensure_volume_defaults();
+    return g_audio.master_volume;
+}
+
+void audio_set_muted(bool muted)
+{
+    ensure_volume_defaults();
+    g_audio.muted = muted;
+}
+
+bool audio_get_muted(void)
+{
+    ensure_volume_defaults();
+    return g_audio.muted;
+}
 
 uint64_t audio_play_count(SoundId id)
 {
@@ -287,7 +342,20 @@ const int16_t* audio_sound_pcm(SoundId id, size_t* out_samples)
 void audio_init(void)
 {
     if (g_audio.initialized) return;     /* idempotent */
+
+    /* Preserve volume/mute across (re)init — they are user/UI settings that
+     * live independently of device bring-up, and the memset below would wipe
+     * them. */
+    ensure_volume_defaults();
+    float saved_vol   = g_audio.master_volume;
+    bool  saved_muted = g_audio.muted;
+
     memset(&g_audio, 0, sizeof(g_audio));
+
+    g_audio.master_volume = saved_vol;
+    g_audio.muted         = saved_muted;
+    g_audio.vol_inited    = true;
+    g_audio.music_on      = true;        /* music defaults ON (quiet) */
 
     /* Synthesize each SFX once into its slot. */
     for (int id = 0; id < SFX_COUNT; id++) {
@@ -333,6 +401,9 @@ static void submit_sound(SoundId id, float gain)
     if (!g_audio.initialized || (unsigned)id >= SFX_COUNT) return;
     SoundSlot* s = &g_audio.slots[id];
     if (!s->pcm || s->samples == 0) return;
+    /* Apply master volume + mute on top of the per-sound gain. */
+    gain = audio_effective_gain(gain);
+    if (gain <= 0.0f) return;   /* muted / fully attenuated — nothing to play */
     if (g_audio.backend && g_audio.backend->submit_pcm)
         g_audio.backend->submit_pcm(s->pcm, s->samples, gain, false);
 }
@@ -385,8 +456,9 @@ void audio_update(const float listener[3])
         static int16_t chunk[CHUNK];
         size_t n = audio_gen_music(chunk, CHUNK, g_audio.music_pos);
         g_audio.music_pos += n;
-        if (g_audio.backend && g_audio.backend->submit_pcm)
-            g_audio.backend->submit_pcm(chunk, n, 0.5f, false);
+        float mg = audio_effective_gain(0.5f);   /* music base gain * master */
+        if (mg > 0.0f && g_audio.backend && g_audio.backend->submit_pcm)
+            g_audio.backend->submit_pcm(chunk, n, mg, false);
     }
 
     if (g_audio.backend && g_audio.backend->update) g_audio.backend->update();

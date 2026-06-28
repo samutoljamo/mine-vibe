@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdint.h>
 #include "../src/audio.h"
+#include "../src/music.h"
 
 /* ---- Tiny WAV writer (mono s16) for eyeball/`xxd`/`file` sanity checks ----
  * Not part of the assertions; purely a debug artifact under /tmp so a human
@@ -149,6 +150,105 @@ static void test_music_generation(void) {
     printf("PASS: music_generation\n");
 }
 
+/* ---- Music DSL: semitone math, note math, oscillators ------------------- */
+
+static void test_music_semitone_to_freq(void) {
+    /* A4 (semitone 0) is exactly 440 Hz. */
+    assert(fabsf(music_semitone_to_freq(0) - 440.0f) < 0.001f);
+    /* An octave up doubles; an octave down halves. */
+    assert(fabsf(music_semitone_to_freq(12) - 880.0f) < 0.01f);
+    assert(fabsf(music_semitone_to_freq(-12) - 220.0f) < 0.01f);
+    assert(fabsf(music_semitone_to_freq(24) - 1760.0f) < 0.05f);
+    /* Equal temperament: 12 semitone steps multiply back to a clean octave. */
+    float f = 440.0f;
+    for (int s = 0; s < 12; s++)
+        f *= music_semitone_to_freq(1) / 440.0f;  /* ratio per semitone */
+    assert(fabsf(f - 880.0f) < 0.5f);
+    /* Three semitones up from A is C (~523.25/2 -> 261.63 at A3... check ratio).
+     * A + 3 semitones = C: 440 * 2^(3/12) ~= 523.25 ... that's C5. */
+    assert(fabsf(music_semitone_to_freq(3) - 523.251f) < 0.1f);
+    printf("PASS: music_semitone_to_freq\n");
+}
+
+static void test_music_note_math(void) {
+    int sr = AUDIO_SAMPLE_RATE;
+    /* At 120 BPM, one beat = 0.5s => sr/2 samples. */
+    assert(music_beats_to_samples(1.0f, 120.0f, sr) == (size_t)(sr / 2));
+    /* Two beats = 1s. */
+    assert(music_beats_to_samples(2.0f, 120.0f, sr) == (size_t)sr);
+    /* At 60 BPM one beat = 1s. */
+    assert(music_beats_to_samples(1.0f, 60.0f, sr) == (size_t)sr);
+    /* Half a beat at 120 BPM = 0.25s (allow ±1 for rounding). */
+    {
+        long got = (long)music_beats_to_samples(0.5f, 120.0f, sr);
+        assert(labs(got - (long)(sr / 4)) <= 1);
+    }
+    /* Oscillators stay in range and are the right shape. */
+    for (int i = 0; i < 500; i++) {
+        float t = i / (float)sr;
+        float s = music_osc(WAVE_SINE, t, 440.0f);
+        float tri = music_osc(WAVE_TRIANGLE, t, 440.0f);
+        assert(s >= -1.0001f && s <= 1.0001f);
+        assert(tri >= -1.0001f && tri <= 1.0001f);
+    }
+    printf("PASS: music_note_math\n");
+}
+
+static void test_music_render_song(void) {
+    const Song* song = music_default_song();
+    assert(song && song->track_count >= 3);   /* lead + bass + pad at least */
+
+    size_t loop = music_song_samples(song, AUDIO_SAMPLE_RATE);
+    assert(loop > AUDIO_SAMPLE_RATE);          /* a few seconds long */
+    assert(loop == audio_music_loop_samples()); /* engine agrees on loop len */
+
+    /* Render the whole loop as float; finite + in range + carries signal. */
+    float* buf = (float*)malloc(sizeof(float) * loop);
+    assert(buf);
+    size_t got = music_render(song, buf, loop, 0, AUDIO_SAMPLE_RATE);
+    assert(got == loop);
+    int nonzero = 0;
+    float peak = 0.0f;
+    for (size_t i = 0; i < loop; i++) {
+        assert(buf[i] == buf[i]);                  /* not NaN */
+        assert(buf[i] >= -1.0001f && buf[i] <= 1.0001f);
+        if (buf[i] != 0.0f) nonzero = 1;
+        if (fabsf(buf[i]) > peak) peak = fabsf(buf[i]);
+    }
+    assert(nonzero);
+    assert(peak > 0.05f);     /* audible */
+    assert(peak <= 1.0f);     /* mixed without clipping */
+    free(buf);
+    printf("PASS: music_render_song\n");
+}
+
+/* The int16 engine music buffer must loop SEAMLESSLY: the sample just after the
+ * loop end equals the sample at the loop start (continuity across the join). */
+static void test_music_loops_seamlessly(void) {
+    size_t loop = audio_music_loop_samples();
+    assert(loop > 0);
+
+    /* First samples of the loop. */
+    int16_t head[256];
+    audio_gen_music(head, 256, 0);
+    /* Samples straddling the loop boundary: the last few of one loop and the
+     * first few of the next must be continuous (gen tiles by absolute pos). */
+    int16_t join[256];
+    audio_gen_music(join, 256, loop - 128);
+
+    /* join[128] is the sample at absolute position `loop`, which is position 0
+     * of the next loop -> must equal head[0]. join[255] == head[127]. */
+    assert(join[128] == head[0]);
+    assert(join[255] == head[127]);
+
+    /* And the step across the boundary is small (no discontinuity/click): the
+     * jump from the last sample of the loop to the first must be modest. */
+    int16_t boundary = join[127];   /* abs pos loop-1 */
+    int step = abs((int)head[0] - (int)boundary);
+    assert(step < 4000);            /* << full scale: continuous, click-free */
+    printf("PASS: music_loops_seamlessly\n");
+}
+
 /* ---- In-range / finite / no-click invariants ---------------------------- */
 
 static void test_buffers_in_range_and_finite(void) {
@@ -243,6 +343,67 @@ static void test_mix_clamp_and_wav_dump(void) {
     printf("PASS: mix_clamp_and_wav_dump\n");
 }
 
+/* ---- SFX are soft + short + click-free ---------------------------------- */
+
+static void test_sfx_soft_and_short(void) {
+    /* Soft: peak amplitude well below full scale (~0.3 target, allow margin).
+     * Short: each SFX is under ~0.25s. Click-free: starts and ends near zero. */
+    const float MAX_DUR = 0.26f;   /* seconds */
+    const int   SOFT_PEAK = (int)(0.45f * 32767.0f);  /* generous ceiling */
+    for (int id = 0; id < SFX_COUNT; id++) {
+        int16_t buf[AUDIO_SAMPLE_RATE];
+        size_t n = audio_gen_sfx((SoundId)id, buf, sizeof buf / sizeof buf[0]);
+        assert(n > 4);
+        /* Short. */
+        assert((float)n / (float)AUDIO_SAMPLE_RATE <= MAX_DUR);
+        /* Soft peak. */
+        int peak = 0;
+        for (size_t i = 0; i < n; i++)
+            if (abs(buf[i]) > peak) peak = abs(buf[i]);
+        assert(peak <= SOFT_PEAK);
+        assert(peak > 200);   /* but still audible */
+        /* Click-free onset + tail (ramped to/from zero). */
+        assert(abs(buf[0]) < 800);
+        assert(abs(buf[n - 1]) < 800);
+    }
+    printf("PASS: sfx_soft_and_short\n");
+}
+
+/* ---- Master volume + mute ----------------------------------------------- */
+
+static void test_master_volume_and_mute(void) {
+    /* Default master volume is ~0.6. */
+    float def = audio_get_master_volume();
+    assert(def > 0.55f && def < 0.65f);
+
+    /* Effective gain scales the base gain by the master volume. */
+    audio_set_master_volume(0.5f);
+    assert(fabsf(audio_get_master_volume() - 0.5f) < 1e-6f);
+    assert(fabsf(audio_effective_gain(1.0f) - 0.5f) < 1e-6f);   /* ~half */
+    assert(fabsf(audio_effective_gain(0.5f) - 0.25f) < 1e-6f);
+
+    /* Out-of-range volume clamps to [0,1]. */
+    audio_set_master_volume(5.0f);
+    assert(fabsf(audio_get_master_volume() - 1.0f) < 1e-6f);
+    audio_set_master_volume(-1.0f);
+    assert(fabsf(audio_get_master_volume() - 0.0f) < 1e-6f);
+
+    /* Mute forces effective gain to silence regardless of volume. */
+    audio_set_master_volume(0.8f);
+    audio_set_muted(true);
+    assert(audio_get_muted());
+    assert(audio_effective_gain(1.0f) == 0.0f);   /* silent */
+    assert(audio_effective_gain(0.5f) == 0.0f);
+    /* Unmuting restores the scaled gain. */
+    audio_set_muted(false);
+    assert(!audio_get_muted());
+    assert(fabsf(audio_effective_gain(1.0f) - 0.8f) < 1e-6f);
+
+    /* Restore default for any later tests. */
+    audio_set_master_volume(0.6f);
+    printf("PASS: master_volume_and_mute\n");
+}
+
 /* ---- Sound-id table ----------------------------------------------------- */
 
 static void test_sound_id_table(void) {
@@ -299,7 +460,13 @@ int main(void) {
     test_sfx_generation();
     test_sfx_respects_capacity();
     test_music_generation();
+    test_music_semitone_to_freq();
+    test_music_note_math();
+    test_music_render_song();
+    test_music_loops_seamlessly();
     test_buffers_in_range_and_finite();
+    test_sfx_soft_and_short();
+    test_master_volume_and_mute();
     test_mix_clamp_and_wav_dump();
     test_sound_id_table();
     test_lifecycle_null_backend();
