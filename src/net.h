@@ -23,6 +23,7 @@ typedef enum {
     PKT_MOB_STATE       = 11, /* server → all:  mob snapshot broadcast        */
     PKT_MOB_ATTACK      = 12, /* client → server: melee a mob by id           */
     PKT_PLAYER_HEALTH   = 13, /* server → one:  authoritative health + death  */
+    PKT_CRAFT           = 14, /* client → server: craft a recipe by index     */
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -34,7 +35,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 4
+#define NET_PROTOCOL_VERSION 5
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -383,6 +384,30 @@ static inline void net_read_inventory(const uint8_t* buf, InventoryPacket* p)
         p->slots[i].count      = net_read_u8 (buf, &off);
         p->slots[i].durability = net_read_u16(buf, &off);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/*  PKT_CRAFT — client → server, 10 wire bytes (8 header + u16 recipe)  */
+/*                                                                     */
+/*  The client asks the server to craft the recipe at `recipe_index`    */
+/*  (its position in the shared crafting table, see crafting.h). The     */
+/*  server validates the player holds the inputs, consumes them, adds    */
+/*  the output, and replies with a fresh PKT_INVENTORY. Sent reliably    */
+/*  so a dropped request doesn't silently lose a craft.                 */
+/* ------------------------------------------------------------------ */
+static inline size_t net_write_craft(uint8_t* buf, const PacketHeader* hdr,
+                                     uint16_t recipe_index) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u16(buf, &off, recipe_index);
+    return off;
+}
+
+static inline void net_read_craft(const uint8_t* buf, PacketHeader* hdr,
+                                  uint16_t* recipe_index) {
+    size_t off = 0;
+    net_read_header(buf, &off, hdr);
+    *recipe_index = net_read_u16(buf, &off);
 }
 
 /* ------------------------------------------------------------------ */

@@ -42,4 +42,13 @@ bool    inventory_consume(Inventory* inv, int slot);
  * slots and empty slots are left untouched and return false. */
 bool    inventory_damage_tool(Inventory* inv, int slot);
 
+/* Total count of `item` held across all slots (saturates well below overflow
+ * for any realistic inventory). Used by crafting to test affordability. */
+uint16_t inventory_count(const Inventory* inv, ItemId item);
+
+/* Remove exactly `count` of `item`, draining matching stacks across slots.
+ * Returns true and applies the removal only if at least `count` are present;
+ * otherwise returns false and leaves the inventory untouched (atomic). */
+bool    inventory_remove(Inventory* inv, ItemId item, uint8_t count);
+
 #endif

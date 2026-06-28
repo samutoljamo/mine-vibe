@@ -169,6 +169,39 @@ static void test_damage_block_slot_is_noop(void) {
     assert(inv.slots[0].count == 5);   /* untouched */
 }
 
+/* --- inventory_count / inventory_remove (used by crafting) --- */
+
+static void test_count_sums_across_slots(void) {
+    Inventory inv; inventory_init(&inv);
+    inventory_add(&inv, BLOCK_STONE, 64);
+    inventory_add(&inv, BLOCK_STONE, 10);   /* second stack */
+    assert(inventory_count(&inv, BLOCK_STONE) == 74);
+    assert(inventory_count(&inv, BLOCK_DIRT) == 0);
+    assert(inventory_count(&inv, BLOCK_AIR) == 0);
+}
+
+static void test_remove_drains_across_slots(void) {
+    Inventory inv; inventory_init(&inv);
+    inventory_add(&inv, BLOCK_STONE, 64);
+    inventory_add(&inv, BLOCK_STONE, 10);   /* 74 total across 2 slots */
+    assert(inventory_remove(&inv, BLOCK_STONE, 70));
+    assert(inventory_count(&inv, BLOCK_STONE) == 4);
+}
+
+static void test_remove_insufficient_is_atomic_noop(void) {
+    Inventory inv; inventory_init(&inv);
+    inventory_add(&inv, BLOCK_STONE, 5);
+    assert(!inventory_remove(&inv, BLOCK_STONE, 6));
+    assert(inventory_count(&inv, BLOCK_STONE) == 5);   /* untouched */
+}
+
+static void test_remove_exact_empties_slot(void) {
+    Inventory inv; inventory_init(&inv);
+    inventory_add(&inv, BLOCK_STONE, 5);
+    assert(inventory_remove(&inv, BLOCK_STONE, 5));
+    assert(inv.slots[0].item == BLOCK_AIR && inv.slots[0].count == 0);
+}
+
 int main(void) {
     test_init_is_empty();
     test_add_into_empty();
@@ -188,6 +221,10 @@ int main(void) {
     test_tools_do_not_stack();
     test_damage_tool_decrements_then_breaks();
     test_damage_block_slot_is_noop();
+    test_count_sums_across_slots();
+    test_remove_drains_across_slots();
+    test_remove_insufficient_is_atomic_noop();
+    test_remove_exact_empties_slot();
     printf("test_inventory: all passed\n");
     return 0;
 }

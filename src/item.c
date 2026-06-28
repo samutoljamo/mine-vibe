@@ -39,14 +39,25 @@ static ItemDef make_block_def(ItemId id) {
     return d;
 }
 
+/* Names for non-block crafting materials (indexed by id - ITEM_MATERIAL_FIRST). */
+static const char* g_material_names[ITEM_MATERIAL_COUNT] = {
+    [ITEM_STICK - ITEM_MATERIAL_FIRST] = "stick",
+};
+
 const ItemDef* item_get_def(ItemId id) {
     if (item_is_tool(id))
         return &g_tool_defs[id - ITEM_TOOL_FIRST];
+    static ItemDef def;
+    if (item_is_material(id)) {
+        /* Crafting materials: non-tool, non-block. Stackable, no durability. */
+        def = (ItemDef){0};
+        def.name = g_material_names[id - ITEM_MATERIAL_FIRST];
+        return &def;
+    }
     /* Block items and any out-of-range id: synthesize a non-tool def.
      * Static storage so callers can hold the pointer for the call's duration. */
-    static ItemDef block_def;
-    block_def = make_block_def(id);
-    return &block_def;
+    def = make_block_def(id);
+    return &def;
 }
 
 uint8_t item_stack_max(ItemId id) {
@@ -54,6 +65,13 @@ uint8_t item_stack_max(ItemId id) {
 }
 
 void item_representative_color(ItemId id, uint8_t* r, uint8_t* g, uint8_t* b) {
+    if (item_is_material(id)) {
+        switch (id) {
+            case ITEM_STICK: *r = 120; *g = 82; *b = 44; break;  /* wooden stick */
+            default:         *r = 200; *g = 120; *b = 200; break; /* flag unknown */
+        }
+        return;
+    }
     if (!item_is_tool(id)) {
         block_representative_color(item_as_block(id), r, g, b);
         return;

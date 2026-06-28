@@ -56,8 +56,25 @@ enum {
     ITEM_TOOL_LAST  = ITEM_TOOL_END - 1,
     ITEM_TOOL_COUNT = ITEM_TOOL_END - ITEM_TOOL_FIRST,
 
-    ITEM_COUNT = ITEM_TOOL_END,
+    /* Non-block crafting materials. These live above the tool range and below
+     * ITEM_COUNT; they are not placeable (item_is_block is false) and not
+     * tools (item_is_tool is false), so they only flow through crafting and
+     * the inventory. STICK is the first such material; add more here. */
+    ITEM_MATERIAL_FIRST = ITEM_TOOL_END,
+
+    ITEM_STICK = ITEM_MATERIAL_FIRST,
+
+    ITEM_MATERIAL_END,
+    ITEM_MATERIAL_LAST  = ITEM_MATERIAL_END - 1,
+    ITEM_MATERIAL_COUNT = ITEM_MATERIAL_END - ITEM_MATERIAL_FIRST,
+
+    ITEM_COUNT = ITEM_MATERIAL_END,
 };
+
+/* True for non-block, non-tool crafting materials (e.g. STICK). */
+static inline bool item_is_material(uint16_t id) {
+    return id >= ITEM_MATERIAL_FIRST && id <= ITEM_MATERIAL_LAST;
+}
 
 /* Immutable per-item metadata. For block items most tool fields are zeroed
  * (TOOL_NONE / MATERIAL_NONE / durability 0). For tools, `block` is unused. */

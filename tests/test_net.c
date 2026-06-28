@@ -187,6 +187,19 @@ static void test_legacy_connect_request_reads_version_zero(void) {
     printf("PASS: legacy_connect_request_reads_version_zero\n");
 }
 
+static void test_craft_roundtrip(void) {
+    uint8_t buf[64];
+    PacketHeader hdr = { .type = PKT_CRAFT, .player_id = 7 };
+    size_t off = net_write_craft(buf, &hdr, 5);
+    assert(off == HEADER_WIRE_SIZE + 2);
+
+    PacketHeader h; uint16_t idx;
+    net_read_craft(buf, &h, &idx);
+    assert(h.type == PKT_CRAFT && h.player_id == 7);
+    assert(idx == 5);
+    printf("PASS: craft_roundtrip\n");
+}
+
 static void test_disconnect_reason_roundtrip(void) {
     uint8_t buf[64];
     size_t off = 0;
@@ -301,6 +314,7 @@ int main(void)
     test_player_health_roundtrip();
     test_connect_request_carries_version();
     test_legacy_connect_request_reads_version_zero();
+    test_craft_roundtrip();
     test_disconnect_reason_roundtrip();
     test_fragment_roundtrip();
     test_fragment_out_of_order();

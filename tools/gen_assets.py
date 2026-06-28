@@ -305,6 +305,12 @@ def draw_shovel(tier, size=16):
                 img.putpixel((x, y), head)
     return img
 
+def draw_stick(size=16):
+    """A single diagonal wooden stick — the crafting material icon."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    _draw_handle(img, size)
+    return img
+
 TILE_GENERATORS = {
     0:  draw_stone,
     1:  draw_dirt,
@@ -335,6 +341,8 @@ TILE_GENERATORS = {
     25: lambda: draw_pickaxe('iron'),
     26: lambda: draw_axe('iron'),
     27: lambda: draw_shovel('iron'),
+    # Crafting materials (free atlas indices after the tools).
+    28: draw_stick,
 }
 
 TILE_NAMES = {
@@ -346,6 +354,7 @@ TILE_NAMES = {
     19: "wood_pickaxe",  20: "wood_axe",  21: "wood_shovel",
     22: "stone_pickaxe", 23: "stone_axe", 24: "stone_shovel",
     25: "iron_pickaxe",  26: "iron_axe",  27: "iron_shovel",
+    28: "stick",
 }
 
 # ── player skin ───────────────────────────────────────────────────────────────
