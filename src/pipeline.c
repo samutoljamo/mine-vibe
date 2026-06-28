@@ -64,6 +64,12 @@ VkShaderModule pipeline_load_shader_module(VkDevice device, const char* path)
     return mod;
 }
 
+VkShaderModule pipeline_create_shader_module(VkDevice device,
+                                             const uint8_t* code, size_t size)
+{
+    return create_shader_module(device, code, size);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Descriptor set layout                                             */
 /* ------------------------------------------------------------------ */

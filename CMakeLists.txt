@@ -271,6 +271,7 @@ add_executable(test_ui
     src/item.c
     src/crafting.c
     src/pipeline.c
+    src/shaders_generated.c
     tests/renderer_stubs.c
 )
 target_include_directories(test_ui PRIVATE

@@ -26,4 +26,10 @@ bool pipeline_create_descriptor_layout(VkDevice device, VkDescriptorSetLayout* o
  * Returns VK_NULL_HANDLE on failure. Caller must vkDestroyShaderModule. */
 VkShaderModule pipeline_load_shader_module(VkDevice device, const char* path);
 
+/* Creates a VkShaderModule from in-memory SPIR-V bytes (e.g. a baked
+ * shaders_generated.c array). Returns VK_NULL_HANDLE on failure.
+ * Caller must vkDestroyShaderModule. */
+VkShaderModule pipeline_create_shader_module(VkDevice device,
+                                             const uint8_t* code, size_t size);
+
 #endif

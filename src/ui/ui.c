@@ -1,6 +1,7 @@
 #include "../renderer.h"
 #include "ui.h"
 #include "../pipeline.h"
+#include "../assets.h"
 #include "../block.h"
 #include "font_data.h"
 
@@ -466,10 +467,12 @@ void ui_init(struct Renderer* r)
     }
 
     /* ---- Pipeline ---- */
-    VkShaderModule vert_mod = pipeline_load_shader_module(r->device,
-        "build/shaders/ui.vert.spv");
-    VkShaderModule frag_mod = pipeline_load_shader_module(r->device,
-        "build/shaders/ui.frag.spv");
+    /* Baked SPIR-V — keeps the binary self-contained (no build/shaders/*.spv
+     * at runtime). */
+    VkShaderModule vert_mod = pipeline_create_shader_module(r->device,
+        g_ui_vert_spv, g_ui_vert_spv_size);
+    VkShaderModule frag_mod = pipeline_create_shader_module(r->device,
+        g_ui_frag_spv, g_ui_frag_spv_size);
 
     VkPipelineShaderStageCreateInfo stages[2] = {
         { .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,

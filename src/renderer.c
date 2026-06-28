@@ -635,11 +635,12 @@ static bool create_outline_pipeline(Renderer* r)
         return false;
     }
 
-    /* Load shader modules from compiled SPV (matches UI pipeline pattern). */
-    VkShaderModule vs_mod = pipeline_load_shader_module(r->device,
-        "build/shaders/outline.vert.spv");
-    VkShaderModule fs_mod = pipeline_load_shader_module(r->device,
-        "build/shaders/outline.frag.spv");
+    /* Create shader modules from baked SPIR-V (self-contained binary; no
+     * dependency on build/shaders/*.spv at runtime). */
+    VkShaderModule vs_mod = pipeline_create_shader_module(r->device,
+        g_outline_vert_spv, g_outline_vert_spv_size);
+    VkShaderModule fs_mod = pipeline_create_shader_module(r->device,
+        g_outline_frag_spv, g_outline_frag_spv_size);
     if (vs_mod == VK_NULL_HANDLE || fs_mod == VK_NULL_HANDLE) {
         if (vs_mod) vkDestroyShaderModule(r->device, vs_mod, NULL);
         if (fs_mod) vkDestroyShaderModule(r->device, fs_mod, NULL);

@@ -15,6 +15,18 @@ extern const uint8_t g_player_vert_spv[];
 extern const size_t  g_player_vert_spv_size;
 extern const uint8_t g_player_frag_spv[];
 extern const size_t  g_player_frag_spv_size;
+extern const uint8_t g_ui_vert_spv[];
+extern const size_t  g_ui_vert_spv_size;
+extern const uint8_t g_ui_frag_spv[];
+extern const size_t  g_ui_frag_spv_size;
+extern const uint8_t g_hud_vert_spv[];
+extern const size_t  g_hud_vert_spv_size;
+extern const uint8_t g_hud_frag_spv[];
+extern const size_t  g_hud_frag_spv_size;
+extern const uint8_t g_outline_vert_spv[];
+extern const size_t  g_outline_vert_spv_size;
+extern const uint8_t g_outline_frag_spv[];
+extern const size_t  g_outline_frag_spv_size;
 
 #define ATLAS_SIZE       256
 #define ATLAS_MIP_LEVELS 4   /* 256 -> 128 -> 64 -> 32; keeps bleeding minimal */

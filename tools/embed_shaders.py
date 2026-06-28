@@ -14,6 +14,12 @@ SHADERS = [
     ('build/shaders/block.frag.spv',   'g_block_frag_spv'),
     ('build/shaders/player.vert.spv',  'g_player_vert_spv'),
     ('build/shaders/player.frag.spv',  'g_player_frag_spv'),
+    ('build/shaders/ui.vert.spv',      'g_ui_vert_spv'),
+    ('build/shaders/ui.frag.spv',      'g_ui_frag_spv'),
+    ('build/shaders/hud.vert.spv',     'g_hud_vert_spv'),
+    ('build/shaders/hud.frag.spv',     'g_hud_frag_spv'),
+    ('build/shaders/outline.vert.spv', 'g_outline_vert_spv'),
+    ('build/shaders/outline.frag.spv', 'g_outline_frag_spv'),
 ]
 
 def spv_to_c(path, name):
