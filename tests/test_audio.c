@@ -8,10 +8,22 @@
 #include "../src/audio.h"
 #include "../src/music.h"
 
+/* Resolve a writable temp directory portably: $TMPDIR/$TMP/$TEMP if set
+ * (covers Windows, which has no /tmp), else /tmp on POSIX. Returns into `out`
+ * a "<dir>/<name>" path. */
+static void temp_path(char* out, size_t out_sz, const char* name)
+{
+    const char* dir = getenv("TMPDIR");
+    if (!dir || !*dir) dir = getenv("TMP");
+    if (!dir || !*dir) dir = getenv("TEMP");
+    if (!dir || !*dir) dir = "/tmp";
+    snprintf(out, out_sz, "%s/%s", dir, name);
+}
+
 /* ---- Tiny WAV writer (mono s16) for eyeball/`xxd`/`file` sanity checks ----
- * Not part of the assertions; purely a debug artifact under /tmp so a human
- * (with no speakers in CI) can confirm the headers and levels look like audio
- * rather than noise. Returns bytes written (0 on failure). */
+ * Not part of the assertions; purely a debug artifact in the temp dir so a
+ * human (with no speakers in CI) can confirm the headers and levels look like
+ * audio rather than noise. Returns bytes written (0 on failure). */
 static size_t write_wav_mono_s16(const char* path, const int16_t* pcm,
                                  size_t samples, uint32_t rate)
 {
@@ -294,8 +306,10 @@ static void test_mix_clamp_and_wav_dump(void) {
     size_t sn = 0;
     const int16_t* sfx = audio_sound_pcm(SFX_BLOCK_BREAK, &sn);
     assert(sfx && sn > 0);
-    size_t wrote = write_wav_mono_s16("/tmp/audio_sfx_block_break.wav",
-                                      sfx, sn, AUDIO_SAMPLE_RATE);
+    char wav_sfx[1024], wav_mix[1024];
+    temp_path(wav_sfx, sizeof(wav_sfx), "audio_sfx_block_break.wav");
+    temp_path(wav_mix, sizeof(wav_mix), "audio_mixed_1s.wav");
+    size_t wrote = write_wav_mono_s16(wav_sfx, sfx, sn, AUDIO_SAMPLE_RATE);
     assert(wrote == 44 + sn * sizeof(int16_t));   /* 44-byte header + data */
 
     /* --- ~1s mixed dump: music + several overlapping SFX at full gain,
@@ -330,12 +344,11 @@ static void test_mix_clamp_and_wav_dump(void) {
     assert(peak > 1000);
     assert(peak <= 32767);
 
-    wrote = write_wav_mono_s16("/tmp/audio_mixed_1s.wav",
-                               mixed, OUT, AUDIO_SAMPLE_RATE);
+    wrote = write_wav_mono_s16(wav_mix, mixed, OUT, AUDIO_SAMPLE_RATE);
     assert(wrote == 44 + (size_t)OUT * sizeof(int16_t));
 
-    printf("INFO: wrote /tmp/audio_sfx_block_break.wav (%zu samples) and "
-           "/tmp/audio_mixed_1s.wav (peak=%d/32767)\n", sn, peak);
+    printf("INFO: wrote %s (%zu samples) and %s (peak=%d/32767)\n",
+           wav_sfx, sn, wav_mix, peak);
 
     free(music);
     free(mixed);
