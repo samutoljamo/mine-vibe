@@ -187,6 +187,7 @@ add_executable(minecraft
     src/mob_ai.c
     src/mob_render.c
     src/inventory.c
+    src/container.c
     src/item.c
     src/crafting.c
     src/survival.c
@@ -400,6 +401,21 @@ add_executable(test_inventory
 )
 target_include_directories(test_inventory PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME inventory COMMAND test_inventory)
+
+# Chest container model: stacking/overflow/leftover, take/remove, and transfer
+# to/from an Inventory reusing the inventory stacking rules (pure, no Vulkan/GLFW).
+add_executable(test_container
+    tests/test_container.c
+    src/container.c
+    src/inventory.c
+    src/item.c
+    src/block.c
+)
+target_include_directories(test_container PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_container PRIVATE m)
+endif()
+add_test(NAME container COMMAND test_container)
 
 add_executable(test_raycast
     tests/test_raycast.c
@@ -691,7 +707,7 @@ add_test(NAME worldqueue COMMAND test_worldqueue)
 
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
-          test_inventory test_raycast test_ore test_audio test_hardness test_biome
+          test_inventory test_container test_raycast test_ore test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
           test_crafting test_item test_armor test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
