@@ -192,6 +192,7 @@ add_executable(minecraft
     src/mining.c
     src/crafting.c
     src/combat.c
+    src/smelting.c
     src/survival.c
     src/raycast.c
     src/assets_generated.c
@@ -450,6 +451,14 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_crafting PRIVATE m)
 endif()
 add_test(NAME crafting COMMAND test_crafting)
+
+# Smelting recipe table + furnace state tick (pure, no Vulkan/GLFW required)
+add_executable(test_smelting tests/test_smelting.c src/smelting.c src/item.c src/block.c)
+target_include_directories(test_smelting PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smelting PRIVATE m)
+endif()
+add_test(NAME smelting COMMAND test_smelting)
 
 # Item model + tool break-time / durability math (pure, no Vulkan/GLFW required)
 add_executable(test_item tests/test_item.c src/item.c src/block.c)
@@ -729,7 +738,7 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_container test_raycast test_ore test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
-          test_crafting test_item test_mining test_armor test_combat test_worldsave
+          test_crafting test_smelting test_item test_mining test_armor test_combat test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
           test_frustum test_chunkmap)
     msvc_enable_c11_atomics(${t})
