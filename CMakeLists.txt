@@ -165,6 +165,7 @@ add_executable(minecraft
     src/worldsave.c
     src/player.c
     src/physics.c
+    src/physics_world.c
     src/block_physics.c
     src/ui/hud.c
     src/ui/ui.c
@@ -539,10 +540,85 @@ add_executable(test_worldsave tests/test_worldsave.c src/worldsave.c)
 target_include_directories(test_worldsave PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME worldsave COMMAND test_worldsave)
 
+# Physics collision core (pure: AABB/voxel sweep via BlockQueryFn callback,
+# no World/thread machinery). physics.c includes world.h which transitively
+# pulls in Vulkan headers, hence the VK_NO_PROTOTYPES + Vulkan::Headers wiring.
+add_executable(test_physics
+    tests/test_physics.c
+    src/physics.c
+    src/block.c
+)
+target_include_directories(test_physics PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_physics PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_physics PRIVATE cglm Vulkan::Headers)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_physics PRIVATE m)
+endif()
+add_test(NAME physics COMMAND test_physics)
+
+# Chunk block/meta/light storage (plain memory: get/set round-trips, index
+# math, bounds, lazy alloc, nibble packing). chunk.h includes chunk_mesh.h
+# which pulls in Vulkan headers, hence the VK_NO_PROTOTYPES wiring.
+add_executable(test_chunk
+    tests/test_chunk.c
+    src/chunk.c
+    src/block.c
+)
+target_include_directories(test_chunk PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_chunk PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_chunk PRIVATE cglm Vulkan::Headers Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_chunk PRIVATE m)
+endif()
+add_test(NAME chunk COMMAND test_chunk)
+
+# Player state transitions (agent-mode init/eye/dip + free-mode noclip motion +
+# fixed-timestep accumulator clamp). player.c links physics.c + camera.c and
+# references GLFW symbols (only called on the non-agent path), so glfw is linked
+# like test_ui. Vulkan headers come in transitively via world.h.
+add_executable(test_player
+    tests/test_player.c
+    src/player.c
+    src/physics.c
+    src/physics_world.c
+    src/camera.c
+    src/block.c
+)
+# physics_world.c provides physics_move (used by player.c) and calls
+# world_get_block; test_player supplies its own world_get_block stub (a flat
+# floor) so no real world.c / thread machinery is pulled in.
+target_include_directories(test_player PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_player PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_player PRIVATE glfw volk cglm Vulkan::Headers ${CMAKE_DL_LIBS})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_player PRIVATE m)
+endif()
+add_test(NAME player COMMAND test_player)
+
+# World worker-thread work queue (pure intrusive FIFO extracted to workqueue.h:
+# enqueue/dequeue ordering, single-element boundary, interleaved traffic,
+# drain/refill cycles). Header-only, no deps.
+add_executable(test_worldqueue tests/test_worldqueue.c)
+target_include_directories(test_worldqueue PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME worldqueue COMMAND test_worldqueue)
+
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_raycast test_ore test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
-          test_crafting test_item test_armor test_worldsave)
+          test_crafting test_item test_armor test_worldsave
+          test_physics test_chunk test_player test_worldqueue)
     msvc_enable_c11_atomics(${t})
 endforeach()
