@@ -46,6 +46,48 @@ Builds are also produced on every push/PR by CI and attached to each run as
 --server               # dedicated (headless) server
 ```
 
+## Multiplayer
+
+The same authoritative server powers singleplayer and multiplayer. One player
+**hosts** and others **join**; the host streams the world to each client
+(server-authoritative — clients don't generate terrain themselves).
+
+```
+# Host (machine A):
+./minecraft --host
+
+# Join (machine B), pointing at A's address:
+./minecraft --client <A-ip-address>
+
+# Or run a dedicated headless server:
+./minecraft --server
+```
+
+Default UDP port: **25565**.
+
+### Over a LAN
+
+Use the host's local IP (e.g. `192.168.1.x`): `./minecraft --client 192.168.1.42`.
+Make sure the host's firewall allows inbound UDP on port 25565.
+
+### Over the internet
+
+The netcode is plain UDP/IPv4, so it works over the internet — but a host on a
+typical home connection is behind NAT, so one of these is needed:
+
+- **Easiest — a mesh VPN (recommended):** install
+  [Tailscale](https://tailscale.com/) or [ZeroTier](https://www.zerotier.com/)
+  on both machines, then connect to the host's VPN IP:
+  `./minecraft --client 100.x.y.z`. The VPN handles NAT traversal and encrypts
+  traffic — no router config, behaves just like LAN.
+- **Manual port-forwarding:** forward **UDP 25565** on the host's router to the
+  host machine, then have others connect to the host's **public IPv4** address.
+
+**Current limitations** (on the roadmap): `--client` takes a literal IPv4
+address only (no hostnames/DNS or IPv6 yet), there's no automatic NAT
+traversal/UPnP, and traffic is unencrypted and unauthenticated — fine for
+playing with friends, not for exposing a server on a hostile network.
+
 ## Building from source
 
 All `cmake`/`make` commands must run inside the `cyberismo` distrobox (it has
