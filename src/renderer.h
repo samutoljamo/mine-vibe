@@ -30,16 +30,20 @@ typedef struct ChunkMesh ChunkMesh;
  *   msaa            : requested MSAA sample count (1|2|4|8...); clamped to
  *                     device caps at init. 1 = MSAA off (no resolve pass).
  *   aniso           : requested anisotropic-filtering level (1|4|8|16);
- *                     clamped to device caps. 1 = anisotropy off. */
+ *                     clamped to device caps. 1 = anisotropy off.
+ *   present         : requested present mode; FIFO by default (iGPU-friendly),
+ *                     falls back to FIFO if unavailable. */
 typedef struct RenderSettings {
-    int render_distance;
-    int msaa;
-    int aniso;
+    int             render_distance;
+    int             msaa;
+    int             aniso;
+    PresentModePref present;
 } RenderSettings;
 
 /* Sensible defaults for an integrated GPU. */
 static inline RenderSettings render_settings_default(void) {
-    RenderSettings s = { .render_distance = 12, .msaa = 1, .aniso = 4 };
+    RenderSettings s = { .render_distance = 12, .msaa = 1, .aniso = 4,
+                         .present = PRESENT_PREF_FIFO };
     return s;
 }
 
@@ -65,6 +69,11 @@ typedef struct Renderer {
      * + MSAA color images), and all pipelines that draw into the world
      * render pass. The UI pass remains single-sampled. */
     VkSampleCountFlagBits       sample_count;
+
+    /* Requested present mode (from RenderSettings.present). Stashed at init so
+     * swapchain recreation (resize) reuses the same preference. Resolved to an
+     * actually-supported mode inside swapchain_create (FIFO fallback). */
+    PresentModePref             present_pref;
 
     /* Anisotropic-filtering level for the atlas sampler, resolved from the
      * requested RenderSettings.aniso clamped to device caps. 1.0 = off. */
