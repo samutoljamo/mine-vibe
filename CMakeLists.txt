@@ -189,6 +189,7 @@ add_executable(minecraft
     src/inventory.c
     src/item.c
     src/crafting.c
+    src/combat.c
     src/survival.c
     src/raycast.c
     src/assets_generated.c
@@ -450,6 +451,15 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME armor COMMAND test_armor)
 
+# Combat model: weapon damage (sword>tool>fist, tier scaling), attack cooldown
+# ordering, and armour damage-reduction wrapper (pure, no Vulkan/GLFW required).
+add_executable(test_combat tests/test_combat.c src/combat.c src/item.c src/block.c)
+target_include_directories(test_combat PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_combat PRIVATE m)
+endif()
+add_test(NAME combat COMMAND test_combat)
+
 # Audio engine: pure procedural PCM/envelope generators, the sound-id table,
 # and null-backend lifecycle safety (no Vulkan/GLFW/audio device required).
 add_executable(test_audio tests/test_audio.c src/audio.c src/music.c src/audio_backend_null_msvc.c)
@@ -693,7 +703,7 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_raycast test_ore test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
-          test_crafting test_item test_armor test_worldsave
+          test_crafting test_item test_armor test_combat test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
           test_frustum test_chunkmap)
     msvc_enable_c11_atomics(${t})
