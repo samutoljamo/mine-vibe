@@ -6,6 +6,10 @@
 #include "../src/player.h"   /* JUMP_VEL, needed by mob.h tunables */
 #include "../src/mob.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #define EPS 1e-4f
 static int feq(float a, float b) { return fabsf(a - b) < EPS; }
 
@@ -194,6 +198,99 @@ static void test_creeper_detonation(void) {
     printf("PASS: creeper_detonation\n");
 }
 
+/* ---- Passive mobs (pig/cow/chicken): classification, stats, wander, flee ---- */
+
+static void test_passive_classification(void) {
+    /* Hostiles are not passive. */
+    assert(mob_is_passive(MOB_ZOMBIE)   == false);
+    assert(mob_is_passive(MOB_SKELETON) == false);
+    assert(mob_is_passive(MOB_CREEPER)  == false);
+    /* Farm animals are passive. */
+    assert(mob_is_passive(MOB_PIG)     == true);
+    assert(mob_is_passive(MOB_COW)     == true);
+    assert(mob_is_passive(MOB_CHICKEN) == true);
+    printf("PASS: passive_classification\n");
+}
+
+static void test_passive_stats_non_hostile(void) {
+    MobType ts[3] = { MOB_PIG, MOB_COW, MOB_CHICKEN };
+    for (int i = 0; i < 3; i++) {
+        MobStats st = mob_stats(ts[i]);
+        assert(st.passive == true);
+        assert(st.health > 0);
+        assert(st.speed > 0.0f);
+        /* Passive => no attacking at all. */
+        assert(st.attack_damage == 0);
+        assert(st.ranged   == false);
+        assert(st.explodes == false);
+    }
+    /* Hostiles report passive == false. */
+    assert(mob_stats(MOB_ZOMBIE).passive   == false);
+    assert(mob_stats(MOB_SKELETON).passive == false);
+    assert(mob_stats(MOB_CREEPER).passive  == false);
+
+    /* Spawn uses per-type health for passive mobs too. */
+    MobSet s; mob_set_init(&s);
+    Mob* cow = mob_set_spawn(&s, MOB_COW, (vec3){0,64,0});
+    assert(cow && cow->health == mob_stats(MOB_COW).health);
+    printf("PASS: passive_stats_non_hostile\n");
+}
+
+static void test_passive_never_targets(void) {
+    /* A passive mob standing right next to a player must not acquire it. */
+    Mob m; memset(&m, 0, sizeof(m));
+    m.type = MOB_PIG;
+    glm_vec3_copy((vec3){0,64,0}, m.position);
+    MobTargetInfo p = { .player_id = 7 };
+    glm_vec3_copy((vec3){1,64,0}, p.position);  /* point-blank */
+    assert(mob_acquire_target(&m, &p, 1) == 0);
+
+    /* Even with a pre-set target (defensive), passive drops it. */
+    m.target_player = 7;
+    assert(mob_acquire_target(&m, &p, 1) == 0);
+
+    /* Sanity: a hostile in the same spot DOES target. */
+    Mob z; memset(&z, 0, sizeof(z));
+    z.type = MOB_ZOMBIE;
+    glm_vec3_copy((vec3){0,64,0}, z.position);
+    assert(mob_acquire_target(&z, &p, 1) == 7);
+    printf("PASS: passive_never_targets\n");
+}
+
+static void test_wander_determinism_and_bounds(void) {
+    /* Same (id, time) => same heading; pure, no globals. */
+    float a = mob_wander_step(3, 12.0f);
+    float b = mob_wander_step(3, 12.0f);
+    assert(feq(a, b));
+
+    /* Heading is a bounded angle in [-PI, PI]. */
+    for (uint16_t id = 1; id <= 20; id++) {
+        for (int k = 0; k < 16; k++) {
+            float t = (float)k * 2.137f;
+            float h = mob_wander_step(id, t);
+            assert(h >= -(float)M_PI - EPS && h <= (float)M_PI + EPS);
+        }
+    }
+
+    /* Heading varies by id and over time (not a constant). */
+    assert(!feq(mob_wander_step(1, 5.0f), mob_wander_step(2, 5.0f)) ||
+           !feq(mob_wander_step(1, 5.0f), mob_wander_step(3, 5.0f)));
+    assert(!feq(mob_wander_step(4, 0.0f), mob_wander_step(4, 50.0f)));
+    printf("PASS: wander_determinism_and_bounds\n");
+}
+
+static void test_flee_on_hit(void) {
+    /* Just hit (panic timer fresh) => fleeing. */
+    assert(mob_flees_when_hit(MOB_PIG, MOB_PANIC_TIME) == true);
+    assert(mob_flees_when_hit(MOB_COW, 0.5f)           == true);
+    /* Panic elapsed => calm again. */
+    assert(mob_flees_when_hit(MOB_CHICKEN, 0.0f)  == false);
+    assert(mob_flees_when_hit(MOB_PIG, -0.1f)     == false);
+    /* Hostiles don't "flee" via this helper (they fight back). */
+    assert(mob_flees_when_hit(MOB_ZOMBIE, MOB_PANIC_TIME) == false);
+    printf("PASS: flee_on_hit\n");
+}
+
 int main(void) {
     test_spawn_assigns_unique_ids();
     test_acquire_target_nearest_in_range();
@@ -207,6 +304,11 @@ int main(void) {
     test_per_type_stats();
     test_skeleton_retreat_and_shoot();
     test_creeper_detonation();
+    test_passive_classification();
+    test_passive_stats_non_hostile();
+    test_passive_never_targets();
+    test_wander_determinism_and_bounds();
+    test_flee_on_hit();
     printf("All mob tests passed.\n");
     return 0;
 }

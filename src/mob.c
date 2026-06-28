@@ -3,6 +3,10 @@
 #include <math.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 void mob_set_init(MobSet* s) { memset(s, 0, sizeof(*s)); }
 
 Mob* mob_set_get(MobSet* s, uint16_t id) {
@@ -56,6 +60,7 @@ MobStats mob_stats(MobType type) {
             .attack_interval = SKELETON_ATTACK_INTERVAL,
             .ranged   = true,
             .explodes = false,
+            .passive  = false,
         };
     case MOB_CREEPER:
         return (MobStats){
@@ -66,6 +71,20 @@ MobStats mob_stats(MobType type) {
             .attack_interval = 0.0f,
             .ranged   = false,
             .explodes = true,
+            .passive  = false,
+        };
+    /* Passive farm animals: wander, never attack. */
+    case MOB_PIG:
+        return (MobStats){
+            .health = PIG_HEALTH, .speed = PASSIVE_SPEED, .passive = true,
+        };
+    case MOB_COW:
+        return (MobStats){
+            .health = COW_HEALTH, .speed = PASSIVE_SPEED, .passive = true,
+        };
+    case MOB_CHICKEN:
+        return (MobStats){
+            .health = CHICKEN_HEALTH, .speed = PASSIVE_SPEED, .passive = true,
         };
     case MOB_ZOMBIE:
     default:
@@ -77,8 +96,34 @@ MobStats mob_stats(MobType type) {
             .attack_interval = MOB_ATTACK_INTERVAL,
             .ranged   = false,
             .explodes = false,
+            .passive  = false,
         };
     }
+}
+
+bool mob_is_passive(MobType type) {
+    return mob_stats(type).passive;
+}
+
+/* Deterministic, smooth, bounded wander heading. Mixes the mob id into the
+ * phase/frequency so each animal drifts independently, and folds the result
+ * into [-PI, PI]. Pure: a function of (id, time) only — no global RNG/clock. */
+float mob_wander_step(uint16_t mob_id, float time_s) {
+    /* Per-mob phase + two slightly different frequencies → an aperiodic-looking
+     * but fully deterministic drift. Scaled by PI so the sum lands in range
+     * before folding, then folded to guarantee [-PI, PI]. */
+    float phase = (float)mob_id * 1.61803399f;          /* golden-ratio spread */
+    float a = sinf(time_s * 0.37f + phase);
+    float b = sinf(time_s * 0.13f + phase * 2.0f);
+    float h = (a + b) * 0.5f * (float)M_PI;             /* in [-PI, PI] */
+    /* Fold defensively in case of fp rounding at the extremes. */
+    while (h >  (float)M_PI) h -= 2.0f * (float)M_PI;
+    while (h < -(float)M_PI) h += 2.0f * (float)M_PI;
+    return h;
+}
+
+bool mob_flees_when_hit(MobType type, float panic_timer) {
+    return mob_is_passive(type) && panic_timer > 0.0f;
 }
 
 bool skeleton_wants_to_retreat(float dist) {
@@ -98,6 +143,8 @@ bool creeper_should_detonate(float dist, float fuse_timer) {
 }
 
 uint16_t mob_acquire_target(const Mob* m, const MobTargetInfo* players, int count) {
+    /* Passive farm animals never acquire (or retain) a target. */
+    if (mob_is_passive(m->type)) return 0;
     /* Keep current target while within deaggro range (hysteresis). */
     if (m->target_player != 0) {
         for (int i = 0; i < count; i++) {
