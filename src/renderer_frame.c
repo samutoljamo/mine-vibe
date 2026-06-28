@@ -70,6 +70,8 @@ void renderer_draw_frame(Renderer* r,
     r->outline_vert_count = 0;
     /* Per-frame perf counters (read back by the caller for the stats HUD). */
     r->stat_visible_chunks = 0;
+    r->stat_culled_chunks  = 0;
+    r->stat_total_chunks   = 0;
     r->stat_draw_calls     = 0;
     if (target && target->hit) {
         renderer_outline_emit_block(r, target->x, target->y, target->z);
@@ -180,8 +182,10 @@ void renderer_draw_frame(Renderer* r,
                 continue;
 
             /* Frustum cull */
-            if (!frustum_test_aabb(&frustum, m->aabb_min, m->aabb_max))
+            if (!frustum_test_aabb(&frustum, m->aabb_min, m->aabb_max)) {
+                r->stat_culled_chunks++;   /* candidate rejected by frustum */
                 continue;
+            }
 
             /* Push chunk offset */
             ChunkPushConstants pc;
@@ -242,8 +246,11 @@ void renderer_draw_frame(Renderer* r,
     /* Performance overlay (top-left). Mirror this frame's renderer counters
      * into the caller-owned PerfStats so the FPS/frametime rolling average and
      * the chunk/draw counts render together. */
+    r->stat_total_chunks = r->stat_visible_chunks + r->stat_culled_chunks;
     if (r->show_stats && r->stats_overlay) {
         r->stats_overlay->visible_chunks = r->stat_visible_chunks;
+        r->stats_overlay->culled_chunks  = r->stat_culled_chunks;
+        r->stats_overlay->total_chunks   = r->stat_total_chunks;
         r->stats_overlay->draw_calls     = r->stat_draw_calls;
         hud_draw_stats(r->stats_overlay, sw, sh);
     }

@@ -155,8 +155,13 @@ typedef struct Renderer {
     /* Per-frame perf counters, written by renderer_draw_frame each frame and
      * read back by the caller for the stats overlay. visible_chunks counts the
      * chunk meshes that survived frustum culling and were drawn; draw_calls
-     * counts every draw command (chunks, players, outline) issued this frame. */
+     * counts every draw command (chunks, players, outline) issued this frame.
+     * culled_chunks counts the uploaded chunk meshes rejected by the frustum
+     * test; total_chunks = visible + culled (the candidate set considered this
+     * frame), so the overlay can show how effective frustum culling is. */
     uint32_t         stat_visible_chunks;
+    uint32_t         stat_culled_chunks;
+    uint32_t         stat_total_chunks;
     uint32_t         stat_draw_calls;
 
     /* Stats overlay control, set by the caller (main.c) before each draw.

@@ -1183,10 +1183,15 @@ int main(int argc, char *argv[])
         /* Perf stats to stdout ~1/s (rolling average; independent of the 2s
          * title cadence above). Emitted whenever the overlay is enabled. */
         if (g_show_stats && now - stats_print_timer >= 1.0) {
-            printf("[stats] FPS %.1f  frametime %.2f ms  chunks %u  draws %u\n",
+            printf("[stats] FPS %.1f  frametime %.2f ms  chunks %u  "
+                   "culled %u/%u (%.0f%%)  draws %u\n",
                    perf_stats_avg_fps(&perf),
                    perf_stats_avg_frametime_ms(&perf),
-                   perf.visible_chunks, perf.draw_calls);
+                   perf.visible_chunks,
+                   perf.culled_chunks, perf.total_chunks,
+                   perf.total_chunks ? (100.0f * (float)perf.culled_chunks
+                                        / (float)perf.total_chunks) : 0.0f,
+                   perf.draw_calls);
             fflush(stdout);
             stats_print_timer = now;
         }
