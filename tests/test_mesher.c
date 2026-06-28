@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include "mesher.h"
 #include "chunk.h"
 #include "block.h"
@@ -157,6 +158,163 @@ static void test_smooth_light_partial(void)
     printf("PASS: test_smooth_light_partial\n");
 }
 
+/* ---- Greedy meshing tests ----------------------------------------------- */
+
+/* Count emitted quads whose 4 vertices all carry the given normal id. A quad
+ * is 4 consecutive vertices (emit order is per-quad). */
+static uint32_t count_quads_for_normal(const MeshData* md, uint8_t normal)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i + 4 <= md->vertex_count; i += 4) {
+        if (md->vertices[i].normal == normal &&
+            md->vertices[i+1].normal == normal &&
+            md->vertices[i+2].normal == normal &&
+            md->vertices[i+3].normal == normal)
+            n++;
+    }
+    return n;
+}
+
+static uint32_t total_quads(const MeshData* md)
+{
+    return md->vertex_count / 4;
+}
+
+/* (a) A solid flat single-layer plane of one block type, fully sky-lit, must
+ * merge its top (+Y) face into exactly ONE quad — not 16*16 = 256. */
+static void test_greedy_flat_plane_top_merges_to_one(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    const int Y = 64;
+    for (int z = 0; z < CHUNK_Z; z++)
+        for (int x = 0; x < CHUNK_X; x++)
+            chunk_set_block(c, x, Y, z, BLOCK_STONE);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    /* Uniform sky so AO and light are identical across the whole top face. */
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_skylight(c, x, y, z, 15);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    uint32_t top = count_quads_for_normal(&md, 2 /* +Y */);
+    printf("  flat-plane +Y quads = %u (naive would be 256)\n", top);
+    assert(top == 1);
+
+    /* Bottom face (-Y) is also a uniform 16x16 plane (nothing below) -> 1. */
+    uint32_t bot = count_quads_for_normal(&md, 3 /* -Y */);
+    assert(bot == 1);
+
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_greedy_flat_plane_top_merges_to_one\n");
+}
+
+/* (b) A checkerboard of two block types on one plane must NOT over-merge:
+ * adjacent cells differ in texture so no horizontal merge is valid. The +Y
+ * faces remain individual quads (16*16 = 256 of them since every cell is
+ * filled but alternates type). */
+static void test_greedy_checkerboard_no_overmerge(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    const int Y = 64;
+    for (int z = 0; z < CHUNK_Z; z++)
+        for (int x = 0; x < CHUNK_X; x++)
+            chunk_set_block(c, x, Y, z,
+                            ((x + z) & 1) ? BLOCK_STONE : BLOCK_DIRT);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_skylight(c, x, y, z, 15);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    uint32_t top = count_quads_for_normal(&md, 2 /* +Y */);
+    printf("  checkerboard +Y quads = %u (must stay 256)\n", top);
+    assert(top == CHUNK_X * CHUNK_Z);
+
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_greedy_checkerboard_no_overmerge\n");
+}
+
+/* (c) Identical block type but differing per-vertex light must prevent merge.
+ * Build a flat plane where half the columns are bright and half are dark; the
+ * +Y face cannot merge across the light boundary. */
+static void test_greedy_light_prevents_merge(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    const int Y = 64;
+    for (int z = 0; z < CHUNK_Z; z++)
+        for (int x = 0; x < CHUNK_X; x++)
+            chunk_set_block(c, x, Y, z, BLOCK_STONE);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    /* Left half (x<8) sky=15, right half (x>=8) sky=4. The air cell above
+     * each top face (y=Y+1) drives the +Y face light. */
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_skylight(c, x, y, z, x < 8 ? 15 : 4);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    uint32_t top = count_quads_for_normal(&md, 2 /* +Y */);
+    printf("  split-light +Y quads = %u (must be > 1)\n", top);
+    assert(top > 1);   /* cannot collapse to a single quad across the seam */
+
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_greedy_light_prevents_merge\n");
+}
+
+/* (d) For a solid filled region the greedy quad count must be STRICTLY LESS
+ * than the naive per-face count. Naive: every exposed face = 1 quad. */
+static void test_greedy_fewer_than_naive(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    /* A solid 16x16x8 slab fully lit. */
+    for (int y = 60; y < 68; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_block(c, x, y, z, BLOCK_STONE);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_skylight(c, x, y, z, 15);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    /* Naive exposed-face count for this slab:
+     *  top  16x16, bottom 16x16, and 4 sides each 16 wide x 8 tall. */
+    uint32_t naive = 16*16 + 16*16 + 4 * (16 * 8);
+    uint32_t greedy = total_quads(&md);
+    printf("  slab greedy quads = %u, naive = %u\n", greedy, naive);
+    assert(greedy < naive);
+
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_greedy_fewer_than_naive\n");
+}
+
 int main(void)
 {
     test_solid_chunk_mesh();
@@ -164,5 +322,9 @@ int main(void)
     test_ao_with_neighbor_on_top();
     test_smooth_light_uniform();
     test_smooth_light_partial();
+    test_greedy_flat_plane_top_merges_to_one();
+    test_greedy_checkerboard_no_overmerge();
+    test_greedy_light_prevents_merge();
+    test_greedy_fewer_than_naive();
     return 0;
 }
