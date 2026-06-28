@@ -134,6 +134,14 @@ float ui_text_width(const char* text, float size);
 /* Draw a baked isometric block icon at (x, y) with the given square pixel size. */
 void  ui_block_icon(ItemId id, float x, float y, float size);
 
+/* Pure capacity predicate for the per-frame geometry buffers. Returns true iff
+ * appending `add_verts` vertices and `add_indices` indices to buffers that
+ * already hold `cur_verts`/`cur_indices` would stay within UI_MAX_VERTS /
+ * UI_MAX_INDICES. No Vulkan/global state — used by the emit path to guard the
+ * fixed-capacity arrays and unit-tested directly. */
+bool  ui_geom_fits(uint32_t cur_verts, uint32_t add_verts,
+                   uint32_t cur_indices, uint32_t add_indices);
+
 /* ------------------------------------------------------------------ */
 /*  Layout (Plan 2 — stubs now, full impl in Plan 2)                  */
 /* ------------------------------------------------------------------ */
