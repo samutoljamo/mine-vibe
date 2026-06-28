@@ -32,6 +32,10 @@ typedef enum {
                                * NAT pinholes open and lets each peer detect a
                                * dead remote (no traffic for N seconds). Sent
                                * UNRELIABLE on a periodic timer (protocol v9).  */
+    PKT_EAT             = 20, /* client → server: eat the food item in a hotbar
+                               * slot. Server validates it is a food item and the
+                               * player isn't full, then consumes 1 + restores
+                               * hunger and resyncs inventory + health (v10).    */
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -43,7 +47,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 9
+#define NET_PROTOCOL_VERSION 10
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -712,6 +716,40 @@ static inline void net_read_equip(const uint8_t* buf, PacketHeader* hdr,
 /* Bounds-checked parse (9 wire bytes). */
 static inline int net_parse_equip(const uint8_t* buf, size_t len,
                                   PacketHeader* hdr, uint8_t* slot) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *slot = net_reader_u8(&r);
+    return net_reader_ok(&r);
+}
+
+/* ------------------------------------------------------------------ */
+/*  PKT_EAT — client → server, 9 wire bytes (8 header + u8 slot, v10).  */
+/*                                                                     */
+/*  Asks the server to eat the food item held in inventory slot `slot`. */
+/*  The server validates the slot holds a food item and the player is   */
+/*  not already at full hunger; on success it decrements the stack by 1, */
+/*  restores hunger, and replies with fresh PKT_INVENTORY +             */
+/*  PKT_PLAYER_HEALTH snapshots. Sent reliably so a dropped request      */
+/*  doesn't silently lose the eat. Same wire shape as PKT_EQUIP.        */
+/* ------------------------------------------------------------------ */
+static inline size_t net_write_eat(uint8_t* buf, const PacketHeader* hdr,
+                                   uint8_t slot) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u8(buf, &off, slot);
+    return off;
+}
+
+static inline void net_read_eat(const uint8_t* buf, PacketHeader* hdr,
+                                uint8_t* slot) {
+    size_t off = 0;
+    net_read_header(buf, &off, hdr);
+    *slot = net_read_u8(buf, &off);
+}
+
+/* Bounds-checked parse (9 wire bytes). */
+static inline int net_parse_eat(const uint8_t* buf, size_t len,
+                                PacketHeader* hdr, uint8_t* slot) {
     NetReader r = net_reader_init(buf, len);
     net_reader_header(&r, hdr);
     *slot = net_reader_u8(&r);

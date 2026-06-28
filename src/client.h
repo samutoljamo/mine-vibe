@@ -157,6 +157,12 @@ void client_send_craft(Client* c, uint16_t recipe_index);
  * PKT_INVENTORY + PKT_ARMOR snapshots. */
 void client_send_equip(Client* c, uint8_t slot);
 
+/* Send a reliable eat request: eat the food item held in inventory slot `slot`.
+ * The server validates it is a food item and the player isn't full, consumes
+ * one, restores hunger, and replies with fresh PKT_INVENTORY + PKT_PLAYER_HEALTH
+ * snapshots. */
+void client_send_eat(Client* c, uint8_t slot);
+
 /* Process all inbound messages from the net thread.
  * Returns number of PKT_WORLD_STATE packets processed. */
 int client_poll(Client* c);

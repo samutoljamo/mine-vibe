@@ -82,6 +82,51 @@ static void test_eat(void) {
     printf("PASS: eat\n");
 }
 
+/* ---- eating rule (server-authoritative wiring helpers) ---- */
+static void test_can_eat(void) {
+    const float MAX = (float)SURVIVAL_MAX_FOOD;
+    /* Food + hunger below max -> may eat. */
+    assert(survival_can_eat(true, 0.0f, MAX));
+    assert(survival_can_eat(true, MAX - 1.0f, MAX));
+    /* Full hunger -> refuse even a food item (don't waste it). */
+    assert(survival_can_eat(true, MAX, MAX) == false);
+    assert(survival_can_eat(true, MAX + 5.0f, MAX) == false);
+    /* Non-food item -> never eatable, regardless of hunger. */
+    assert(survival_can_eat(false, 0.0f, MAX) == false);
+    assert(survival_can_eat(false, MAX, MAX) == false);
+    printf("PASS: can_eat\n");
+}
+
+static void test_apply_food(void) {
+    SurvivalState s;
+    /* Partial restore from a hungry state. */
+    survival_init(&s);
+    s.food = 5.0f; s.saturation = 0.0f;
+    assert(survival_apply_food(&s, 6) == true);
+    assert(fclose_eq(s.food, 11.0f));
+    assert(s.saturation <= s.food + 1e-4f);
+
+    /* Clamp at the max: a big restore tops out at SURVIVAL_MAX_FOOD. */
+    survival_init(&s);
+    s.food = 18.0f; s.saturation = 0.0f;
+    assert(survival_apply_food(&s, 20) == true);
+    assert(fclose_eq(s.food, (float)SURVIVAL_MAX_FOOD));
+    assert(s.saturation <= s.food + 1e-4f);
+
+    /* Already full -> no-op, returns false. */
+    survival_init(&s);
+    s.food = (float)SURVIVAL_MAX_FOOD; s.saturation = 5.0f;
+    assert(survival_apply_food(&s, 8) == false);
+    assert(fclose_eq(s.food, (float)SURVIVAL_MAX_FOOD));
+
+    /* Non-positive restore (e.g. non-food item slipped through) -> no-op. */
+    survival_init(&s);
+    s.food = 5.0f;
+    assert(survival_apply_food(&s, 0) == false);
+    assert(fclose_eq(s.food, 5.0f));
+    printf("PASS: apply_food\n");
+}
+
 /* ---- regen ---- */
 static void test_regen(void) {
     float timer = 0.0f, exh = 0.0f;
@@ -170,6 +215,8 @@ int main(void) {
     test_exhaustion_move();
     test_apply_exhaustion();
     test_eat();
+    test_can_eat();
+    test_apply_food();
     test_regen();
     test_starve();
     test_drown();

@@ -460,6 +460,40 @@ static void handle_equip(Server* s, ServerClient* c,
     server_send_armor(s, c);
 }
 
+/* Server-authoritative eating (PKT_EAT): the player asks to eat the food item
+ * held in hotbar `slot`. Validated via the pure survival_can_eat rule — the slot
+ * must hold a food item AND the player must not already be at full hunger (so a
+ * food item is never wasted). On success: consume one from the stack, restore
+ * hunger by the item's item_hunger_restore, and resync the inventory + health
+ * (which carries the new hunger to the HUD). Any failure is a silent no-op so a
+ * stale/malicious client can't desync state. */
+static void handle_eat(Server* s, ServerClient* c,
+                       const uint8_t* data, size_t len) {
+    PacketHeader h; uint8_t slot;
+    if (!net_parse_eat(data, len, &h, &slot)) {
+        server_drop_malformed("eat");
+        return;
+    }
+    bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+    if (!is_new) return;
+    c->last_recv_time = net_time();
+
+    if (slot >= INVENTORY_SLOTS) return;
+    InventorySlot* inv = &c->inventory.slots[slot];
+    if (inv->count == 0) return;
+
+    if (!survival_can_eat(item_is_food(inv->item), c->survival.food,
+                          (float)SURVIVAL_MAX_FOOD))
+        return;                                  /* not food, or already full */
+
+    if (!survival_apply_food(&c->survival, item_hunger_restore(inv->item)))
+        return;                                  /* nothing restored (no-op) */
+
+    inventory_consume(&c->inventory, slot);
+    c->needs_health_sync = true;                 /* push updated hunger this tick */
+    server_send_inventory(s, c);
+}
+
 /* --- Pure block-edit validation predicates (no world/server state) --- */
 
 /* A block can be broken (and dropped into inventory) if it is a real, solid
@@ -1331,6 +1365,7 @@ static void server_tick(Server* s, int tick_num)
             else if (type == PKT_MOB_ATTACK)   handle_mob_attack(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_CRAFT)        handle_craft(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_EQUIP)        handle_equip(s, c, msg->data, (size_t)msg->len);
+            else if (type == PKT_EAT)          handle_eat(s, c, msg->data, (size_t)msg->len);
         }
         free(msg);
     }

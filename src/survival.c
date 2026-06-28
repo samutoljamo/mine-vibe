@@ -63,6 +63,20 @@ bool survival_eat(float* food, float* saturation,
     return true;
 }
 
+bool survival_can_eat(bool is_food, float food, float max_food)
+{
+    return is_food && food < max_food;
+}
+
+bool survival_apply_food(SurvivalState* s, int hunger_restore)
+{
+    if (hunger_restore <= 0) return false;
+    /* Grant saturation equal to the hunger restored; survival_eat clamps food to
+     * the max and caps saturation at the new food level. */
+    return survival_eat(&s->food, &s->saturation,
+                        (float)hunger_restore, (float)hunger_restore);
+}
+
 int survival_regen_step(float food, int health, float* regen_timer,
                         float* exhaustion, float dt)
 {
