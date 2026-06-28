@@ -767,12 +767,35 @@ int ui_clicked_element(void) { return g_clicked; }
 /*  Draw primitives                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Pure capacity predicate (see ui.h). uint64 arithmetic so a wild caller count
+ * can't wrap the comparison. */
+bool ui_geom_fits(uint32_t cur_verts, uint32_t add_verts,
+                  uint32_t cur_indices, uint32_t add_indices)
+{
+    return (uint64_t)cur_verts   + add_verts   <= UI_MAX_VERTS &&
+           (uint64_t)cur_indices + add_indices <= UI_MAX_INDICES;
+}
+
 static void emit_quad(float px, float py, float pw, float ph,
                       float u0, float v0, float u1, float v1,
                       float r, float g, float b, float a)
 {
-    if (g_vert_count + 4 > UI_MAX_VERTS)   return;
-    if (g_idx_count  + 6 > UI_MAX_INDICES) return;
+    if (!ui_geom_fits(g_vert_count, 4, g_idx_count, 6)) {
+        /* Overflow of the fixed-capacity UI geometry buffers. Drop this quad
+         * rather than overrun g_verts/g_indices, and report once so the cause
+         * is visible without spamming the log every frame. */
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            fprintf(stderr,
+                    "[ui] geometry buffer overflow: dropping quad "
+                    "(verts %u+4 > %d cap, or indices %u+6 > %d cap); "
+                    "further UI primitives this/subsequent frames may be "
+                    "clipped. This warning is shown once.\n",
+                    g_vert_count, UI_MAX_VERTS, g_idx_count, UI_MAX_INDICES);
+        }
+        return;
+    }
 
     float x0 = (px        / g_screen_w) * 2.0f - 1.0f;
     float y0 = (py        / g_screen_h) * 2.0f - 1.0f;

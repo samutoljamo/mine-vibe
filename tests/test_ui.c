@@ -48,6 +48,34 @@ static void test_text_width_longer_is_wider(void)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Geometry capacity guard (pure)                                     */
+/* ------------------------------------------------------------------ */
+
+static void test_geom_fits_within_capacity(void)
+{
+    /* Empty buffers: a single quad (4 verts, 6 indices) fits. */
+    assert(ui_geom_fits(0, 4, 0, 6) && "quad fits in empty buffers");
+    /* Exactly filling the buffers is allowed (boundary inclusive). */
+    assert(ui_geom_fits(UI_MAX_VERTS - 4, 4, UI_MAX_INDICES - 6, 6) &&
+           "appending up to the exact capacity must fit");
+    printf("PASS: test_geom_fits_within_capacity\n");
+}
+
+static void test_geom_fits_rejects_overflow(void)
+{
+    /* One vertex too many. */
+    assert(!ui_geom_fits(UI_MAX_VERTS - 3, 4, 0, 6) &&
+           "vertex overflow must be rejected");
+    /* One index too many (vertices fine). */
+    assert(!ui_geom_fits(0, 4, UI_MAX_INDICES - 5, 6) &&
+           "index overflow must be rejected");
+    /* Already full buffers reject any append. */
+    assert(!ui_geom_fits(UI_MAX_VERTS, 4, UI_MAX_INDICES, 6) &&
+           "full buffers reject further appends");
+    printf("PASS: test_geom_fits_rejects_overflow\n");
+}
+
+/* ------------------------------------------------------------------ */
 /*  Input handler tests                                                */
 /* ------------------------------------------------------------------ */
 
@@ -304,6 +332,8 @@ int main(void)
     test_text_width_positive();
     test_text_width_scales();
     test_text_width_longer_is_wider();
+    test_geom_fits_within_capacity();
+    test_geom_fits_rejects_overflow();
     test_hittest_inside();
     test_hittest_outside();
     test_hittest_edges();
