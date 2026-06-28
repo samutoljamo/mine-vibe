@@ -314,6 +314,57 @@ static void test_inventory_slot_layout(void)
     printf("PASS: test_inventory_slot_layout\n");
 }
 
+static void test_hotbar_slot_layout(void)
+{
+    float sw = 1280.0f, sh = 720.0f;
+    HudRect prev = hud_hotbar_slot_rect(0, sw, sh);
+    assert(prev.w > 0.0f && prev.h > 0.0f);
+    for (int i = 1; i < HUD_SLOT_COUNT; i++) {
+        HudRect r = hud_hotbar_slot_rect(i, sw, sh);
+        assert(r.x > prev.x && "hotbar slots run left to right");
+        assert(r.x >= prev.x + prev.w && "hotbar slots do not overlap");
+        assert(fabsf(r.y - prev.y) < 0.001f && "hotbar slots share a row");
+        prev = r;
+    }
+    /* Row is horizontally centred. */
+    HudRect first = hud_hotbar_slot_rect(0, sw, sh);
+    HudRect last  = hud_hotbar_slot_rect(HUD_SLOT_COUNT - 1, sw, sh);
+    float row_mid = (first.x + (last.x + last.w)) * 0.5f;
+    assert(fabsf(row_mid - sw * 0.5f) < 0.5f);
+    /* Anchored near the bottom of the screen. */
+    assert(first.y + first.h < sh && "hotbar fits on screen");
+    assert(first.y > sh * 0.5f && "hotbar sits in the lower half");
+    /* The centre of slot 0 hit-tests inside slot 0 and not slot 1. */
+    HudRect s1 = hud_hotbar_slot_rect(1, sw, sh);
+    assert(hud_rect_contains(first, first.x + first.w * 0.5f, first.y + first.h * 0.5f));
+    assert(!hud_rect_contains(s1, first.x + first.w * 0.5f, first.y + first.h * 0.5f));
+    printf("PASS: test_hotbar_slot_layout\n");
+}
+
+static void test_bar_fill_fraction(void)
+{
+    /* Endpoints. */
+    assert(hud_bar_fill(0, 20)  == 0.0f);
+    assert(hud_bar_fill(20, 20) == 1.0f);
+    /* Midpoint. */
+    assert(fabsf(hud_bar_fill(10, 20) - 0.5f) < 0.001f);
+    assert(fabsf(hud_bar_fill(5, 20)  - 0.25f) < 0.001f);
+    /* Clamps below 0 and above 1. */
+    assert(hud_bar_fill(-5, 20) == 0.0f && "negative value clamps to 0");
+    assert(hud_bar_fill(40, 20) == 1.0f && "over-max value clamps to 1");
+    /* Degenerate max never produces NaN / negative. */
+    assert(hud_bar_fill(5, 0)  == 0.0f && "zero max yields empty bar");
+    assert(hud_bar_fill(5, -3) == 0.0f && "negative max yields empty bar");
+    /* Monotonic non-decreasing in value. */
+    float prev = -1.0f;
+    for (int v = 0; v <= 20; v++) {
+        float f = hud_bar_fill(v, 20);
+        assert(f >= prev && "bar fill is monotonic in value");
+        prev = f;
+    }
+    printf("PASS: test_bar_fill_fraction\n");
+}
+
 static void test_rect_contains_edges(void)
 {
     HudRect r = { 10.0f, 20.0f, 30.0f, 40.0f };
@@ -456,6 +507,8 @@ int main(void)
     test_cursor_and_world_active();
     test_menu_button_layout();
     test_inventory_slot_layout();
+    test_hotbar_slot_layout();
+    test_bar_fill_fraction();
     test_rect_contains_edges();
     test_options_state_is_a_menu();
     test_volume_slider_value_mapping();

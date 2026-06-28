@@ -157,6 +157,17 @@ HudRect hud_menu_button_rect(int index, float sw, float sh);
  * screen's grid. */
 HudRect hud_inventory_slot_rect(int i, float sw, float sh);
 
+/* In-world hotbar slot rect for slot `i` (0..HUD_SLOT_COUNT-1), anchored to the
+ * bottom-centre of the screen. Pure; shared by the draw path so the icon, count
+ * and selection highlight all share one geometry. */
+HudRect hud_hotbar_slot_rect(int i, float sw, float sh);
+
+/* Clamped fill fraction [0,1] of a bar/indicator given a current `value` and a
+ * positive `max`. value<=0 -> 0, value>=max -> 1, otherwise value/max. A
+ * non-positive `max` yields 0 (degenerate bar, never negative/NaN). Pure;
+ * drives the health/hunger/armour fill widths so the math is unit-testable. */
+float hud_bar_fill(int value, int max);
+
 /* Crafting-panel row rect for the `i`-th listed (affordable) recipe in the
  * inventory screen. Rows stack vertically below the slot grid. Pure; shared by
  * main.c (hit-test registration) and hud.c (drawing) so clicks line up. */

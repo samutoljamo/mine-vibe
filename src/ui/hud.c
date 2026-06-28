@@ -176,6 +176,25 @@ HudRect hud_inventory_slot_rect(int i, float sw, float sh)
     return (HudRect){ x, y0, INV_SLOT, INV_SLOT };
 }
 
+/* In-world hotbar geometry: a centred row anchored to the bottom edge. */
+HudRect hud_hotbar_slot_rect(int i, float sw, float sh)
+{
+    int n = HUD_SLOT_COUNT;
+    float total_w = n * SLOT_SIZE + (n - 1) * SLOT_GAP;
+    float x0 = (sw - total_w) * 0.5f;
+    float y0 = sh - SLOT_SIZE - 12.0f;
+    float x  = x0 + (float)i * (SLOT_SIZE + SLOT_GAP);
+    return (HudRect){ x, y0, (float)SLOT_SIZE, (float)SLOT_SIZE };
+}
+
+float hud_bar_fill(int value, int max)
+{
+    if (max <= 0)     return 0.0f;
+    if (value <= 0)   return 0.0f;
+    if (value >= max) return 1.0f;
+    return (float)value / (float)max;
+}
+
 /* Crafting panel geometry. Rows sit below the inventory slot row. */
 #define CRAFT_ROW_W   320.0f
 #define CRAFT_ROW_H    30.0f
@@ -493,37 +512,58 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
 
     if (inv) {
 
-    /* Hotbar layout. */
+    /* Hotbar layout (geometry from the shared pure helper so the click/icon/
+     * highlight all line up). */
     int n = HUD_SLOT_COUNT;
-    float total_w = n * SLOT_SIZE + (n - 1) * SLOT_GAP;
-    float hx = (sw - total_w) * 0.5f;
-    float hy = sh - SLOT_SIZE - 12.0f;
+    HudRect h0 = hud_hotbar_slot_rect(0, sw, sh);
+    HudRect hL = hud_hotbar_slot_rect(n - 1, sw, sh);
+    float hy = h0.y;
 
     vec4 fill         = {0.15f, 0.15f, 0.15f, 0.75f};
-    vec4 border_sel   = {1.0f,  1.0f,  1.0f,  1.0f};
+    vec4 panel_bg     = {0.04f, 0.04f, 0.05f, 0.55f};
+    vec4 border_sel   = {1.0f,  0.95f, 0.35f, 1.0f};   /* warm accent on selection */
+    vec4 sel_glow     = {1.0f,  0.95f, 0.35f, 0.22f};  /* soft halo behind selected slot */
     vec4 border_unsel = {0.4f,  0.4f,  0.4f,  0.75f};
     vec4 text_white   = {1.0f,  1.0f,  1.0f,  1.0f};
+    vec4 text_shadow  = {0.0f,  0.0f,  0.0f,  0.85f};
+
+    /* Backing strip behind the whole row so slots read clearly over terrain. */
+    {
+        float pad = 4.0f;
+        ui_rect(h0.x - pad, hy - pad,
+                (hL.x + hL.w) - h0.x + 2 * pad, h0.h + 2 * pad, panel_bg);
+    }
 
     for (int i = 0; i < n; i++) {
-        float sx = hx + i * (SLOT_SIZE + SLOT_GAP);
-        vec4* border = (i == inv->selected) ? &border_sel : &border_unsel;
-        ui_rect(sx, hy, SLOT_SIZE, SLOT_SIZE, *border);
-        ui_rect(sx + SLOT_BORDER, hy + SLOT_BORDER,
-                SLOT_SIZE - 2 * SLOT_BORDER, SLOT_SIZE - 2 * SLOT_BORDER, fill);
+        HudRect r = hud_hotbar_slot_rect(i, sw, sh);
+        bool sel = (i == inv->selected);
+
+        /* Selected slot gets a soft halo behind it + a thicker bright border so
+         * the active slot is unmistakable at a glance. */
+        if (sel) {
+            float g = 3.0f;
+            ui_rect(r.x - g, r.y - g, r.w + 2 * g, r.h + 2 * g, sel_glow);
+        }
+        int bw = sel ? (SLOT_BORDER + 1) : SLOT_BORDER;
+        vec4* border = sel ? &border_sel : &border_unsel;
+        ui_rect(r.x, r.y, r.w, r.h, *border);
+        ui_rect(r.x + bw, r.y + bw, r.w - 2 * bw, r.h - 2 * bw, fill);
 
         const InventorySlot* s = &inv->slots[i];
         if (s->count == 0) continue;
 
-        /* Block icon, inset by 4 pixels. */
-        ui_block_icon(s->item, sx + 4, hy + 4, SLOT_SIZE - 8);
+        /* Item icon (samples the atlas tile for the slot's ItemId — same path the
+         * inventory screen uses), inset by 4 pixels. */
+        ui_block_icon(s->item, r.x + 4, r.y + 4, r.w - 8);
 
-        /* Count, only if > 1, bottom-right of slot. */
+        /* Count, only if > 1, bottom-right of slot (shadowed for legibility). */
         if (s->count > 1) {
             char buf[8];
             snprintf(buf, sizeof(buf), "%d", s->count);
             float tw = ui_text_width(buf, 12.0f);
-            ui_text(sx + SLOT_SIZE - tw - 3, hy + SLOT_SIZE - 14,
-                    12.0f, buf, text_white);
+            float tx = r.x + r.w - tw - 3, ty = r.y + r.h - 14;
+            ui_text(tx + 1, ty + 1, 12.0f, buf, text_shadow);
+            ui_text(tx, ty, 12.0f, buf, text_white);
         }
     }
 
@@ -564,6 +604,19 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
         }
         (void)half;
 
+        /* Continuous health gauge directly under the hearts: a dark track with a
+         * red fill proportional to hp/20. Reinforces the per-heart readout with a
+         * single clear bar (fill fraction from the pure hud_bar_fill helper). */
+        {
+            const float BAR_H = 3.0f, BAR_PAD = 2.0f;
+            float by = hy0 + HSZ + BAR_PAD;
+            vec4 track = {0.10f, 0.10f, 0.10f, 0.7f};
+            vec4 fillh = {0.85f, 0.10f, 0.10f, 1.0f};
+            float frac = hud_bar_fill(player_health, 20);
+            ui_rect(hx0, by, total, BAR_H, track);
+            ui_rect(hx0, by, total * frac, BAR_H, fillh);
+        }
+
         /* Hunger bar — 10 drumsticks = 20 food, mirrored on the right edge of
          * the heart row, filling from the right inward (vanilla layout). */
         {
@@ -583,6 +636,17 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
                 else if (f_here == 1) ui_rect(x + HSZ * 0.5f, hy0, HSZ * 0.5f, HSZ, dhalf);
             }
             (void)dhalf;
+
+            /* Continuous hunger gauge under the drumsticks, filling from the
+             * right to mirror the icon row. Fraction from hud_bar_fill. */
+            const float BAR_H = 3.0f, BAR_PAD = 2.0f;
+            float by = hy0 + HSZ + BAR_PAD;
+            vec4 track = {0.10f, 0.10f, 0.10f, 0.7f};
+            vec4 fillf = {0.55f, 0.35f, 0.10f, 1.0f};
+            float frac = hud_bar_fill(g_hud_food, 20);
+            ui_rect(dx0, by, total_d, BAR_H, track);
+            float fw = total_d * frac;
+            ui_rect(dx0 + (total_d - fw), by, fw, BAR_H, fillf);
         }
 
         /* Oxygen bubbles — only while underwater (air < full). 10 bubbles = 20.
