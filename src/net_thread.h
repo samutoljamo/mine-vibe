@@ -12,7 +12,9 @@
 #include "platform_thread.h"
 #include <stdatomic.h>
 
-#define NET_THREAD_MAX_MSG 512   /* max bytes per queued message */
+/* Max bytes per queued message. Must be >= RELIABLE_MAX_PAYLOAD (chunk-stream
+ * fragments are sent on the reliable channel) and <= NET_MAX_PACKET. */
+#define NET_THREAD_MAX_MSG 1400
 
 /* A message in either queue */
 typedef struct NetMsg {

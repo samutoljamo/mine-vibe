@@ -85,17 +85,30 @@ chunk map.
   no-ops anyway, but we skip to avoid the redundant relight) — it still needs
   them only to wake block physics, which it does.
 
-## Mode 2 — Remote client: RLE chunk streaming (PARTIAL — see status)
+## Mode 2 — Remote client: RLE chunk streaming (DONE)
 
-### Wire additions (protocol v7)
+### Wire additions (protocol v8)
 
-- `PKT_CHUNK_DATA` (server → client, reliable + fragmented via
-  `reliable_send_fragmented`, since a 64 KiB column far exceeds one datagram):
-  payload `{ cx:i32, cz:i32, rle_len:u32, rle_payload }` where `rle_payload`
-  is the RLE-compressed `BlockID[CHUNK_BLOCKS]` column.
-- `PKT_CHUNK_UNLOAD` (server → client, reliable): `{ cx:i32, cz:i32 }` — tells
-  the client to drop a now-distant chunk.
-- `NET_PROTOCOL_VERSION` bumped 6 → 7.
+- `PKT_CONNECT_REQUEST` gains a trailing `u8 shared_world` flag (after the
+  version): the integrated host that renders the server world in-process sets it
+  so the server **does not** stream chunks to it; a true remote client clears it
+  and is streamed. Legacy/short reads default to 0 (remote).
+- `PKT_CHUNK_DATA` (server → one): the chunkwire body `{ cx:i32, cz:i32,
+  rle_len:u32, rle... }` is split into **one or more fragments**, each an
+  ORDINARY reliable packet carrying a `{ msg_id:u16, index:u16, total:u16 }`
+  subheader after the 8-byte packet header. Each fragment is independently
+  acked + retransmitted by the existing reliable layer (we deliberately do NOT
+  use the unacked magic-byte `reliable_send_fragmented` path — chunk delivery
+  must be reliable). The client reassembles per `msg_id` at
+  `CHUNK_DATA_FRAG_BYTES` stride, then RLE-decodes.
+- `PKT_CHUNK_UNLOAD` (server → one, reliable): `{ cx:i32, cz:i32 }`.
+- **Transport sizing:** `RELIABLE_MAX_PAYLOAD` 256 → **1200**, `RELIABLE_WINDOW`
+  32 → **64**, `NET_THREAD_MAX_MSG` 512 → **1400**. A real RLE terrain column is
+  ~6-8 KiB (NOT a few hundred bytes — terrain has dirt/grass/stone transitions,
+  ores and trees, so it does not compress to almost nothing), i.e. ~6-7
+  fragments at 1186 data bytes/fragment. The bigger payload keeps a whole
+  column's fragments inside the reliable window so none get evicted.
+- `NET_PROTOCOL_VERSION` bumped 7 → **8**.
 
 ### RLE format (`src/chunkwire.{c,h}` — pure, tested)
 
@@ -123,23 +136,75 @@ size_t chunkwire_rle_bound(size_t n); /* worst-case encoded size for buffer sizi
 Chunk (de)serialize helpers build/parse the `PKT_CHUNK_DATA` body around the
 RLE payload (`chunkwire_encode_chunk` / `chunkwire_decode_chunk`).
 
-### Server side
+### On-demand server world authority (`world_ensure_chunk`)
 
-`Server` tracks, per client, the set of chunk coords already sent
-(`loaded[]`). Each tick, for the client's render distance around its position,
-the server: ensures the chunk is generated (reusing `world_update`'s pipeline /
-an on-demand generate), encodes it, and sends it (throttled to a few per tick).
-Far chunks get `PKT_CHUNK_UNLOAD` and are dropped from the set.
+`world_ensure_chunk(World*, cx, cz)` synchronously generates a column on the
+calling (server) thread — worldgen + overlay replay — and inserts it at
+`CHUNK_GENERATED`. It is idempotent and thread-safe (see locking below).
+`handle_block_break` / `handle_block_place` now call it before reading the
+target cell, so block-edit validation consults the TRUE block instead of the
+old fail-open AIR band-aid. `world_copy_chunk_blocks` reads a full column
+through it for streaming.
+
+### Map-mutex locking (host shared-world safety)
+
+`World` gained a `map_mutex` guarding all STRUCTURAL map mutations. In host
+shared-world mode the server thread (`world_ensure_chunk`) and the main/render
+thread (`world_update`) both mutate the chunk map, and a `chunk_map_put` can
+trigger a rehash that reallocs the entries array — so a lock-free probe could
+crash. The lock serializes them:
+- `world_update` holds it across its whole structural body.
+- `world_ensure_chunk` / `world_insert_network_chunk` / `world_evict_chunk` hold
+  it for their put/remove.
+- `world_get_block` / `world_set_block` / `world_get_meta` / `world_set_meta`
+  take it around the map lookup (the block-byte read/write itself stays
+  lock-free; a chunk pointer is stable once published until removed under the
+  lock). This also closes a pre-existing latent rehash race.
+
+### Server push loop (`server_stream_chunks`)
+
+Per **remote** client (the shared-world host is skipped via the connect flag),
+`ServerClient` tracks the set of chunk coords already streamed (`streamed[]`).
+Each tick the pure `chunk_stream_diff` (see TDD) computes, against the client's
+last-known position and the server world's render distance:
+- the nearest-first set of in-range, not-yet-sent columns (capped at
+  `SERVER_STREAM_BUDGET = 4` per tick so a joiner doesn't flood the link), and
+- the set of already-sent columns now out of range.
+For each new column it `world_copy_chunk_blocks` (on-demand gen) → chunkwire
+encode → fragment → `send_reliable`, and records it. Departed columns get
+`PKT_CHUNK_UNLOAD` and leave the set. A pathological incompressible column that
+would exceed `SERVER_STREAM_MAX_FRAGS = 48` fragments is skipped (logged); real
+terrain never approaches this.
 
 ### Client side
 
-The remote client **stops seed-generating**: its `World` is created in a
-"network-fed" mode where `world_update` does *not* submit `WORK_GENERATE` for
-missing chunks. On `PKT_CHUNK_DATA` it decodes the column, fills the chunk's
-blocks, marks it `GENERATED`, and lets the existing lighting+mesh pipeline run.
-`PKT_BLOCK_CHANGE` applies on top exactly as today.
+The remote client's `World` is created in **network-fed** mode
+(`world_set_network_fed`): `world_update` skips Step 3 (`WORK_GENERATE`), so it
+never regenerates terrain from the seed. On `PKT_CHUNK_DATA` (reassembled +
+RLE-decoded) a callback calls `world_insert_network_chunk`, which fills the
+column's blocks and marks it `CHUNK_GENERATED` so the existing lighting + mesh
+pipeline lights and meshes it. `PKT_CHUNK_UNLOAD` calls `world_evict_chunk`
+(frees the GPU mesh). `PKT_BLOCK_CHANGE` applies on top exactly as before. The
+loading loop pumps `client_poll` so chunks actually arrive during load. The
+host/singleplayer shared-world path is unchanged (network-fed stays off).
 
 ## TDD
+
+`tests/test_chunk_stream.c` (pure, links only `chunk_stream.c`) covers the
+streaming-policy core `chunk_stream_diff`:
+
+- fresh client gets the full circular disc (no budget cap);
+- send list is nearest-first (non-decreasing squared distance, center first);
+- budget cap emits only the K nearest pending columns; streaming across calls
+  (recording sent each time) covers the whole disc with no duplicates;
+- stationary + fully streamed is idempotent (no sends, no unloads);
+- moving by one chunk sends exactly the new leading edge and unloads the
+  trailing edge (verified against a reference disc-difference, no overlap);
+- teleport unloads the whole old set and queues the whole new disc;
+- tiny output caps clamp without overrun and stay nearest-first.
+
+`tests/test_net.c` adds a `PKT_CHUNK_DATA` fragment-subheader + `PKT_CHUNK_UNLOAD`
+round-trip and the v8 connect `shared_world` flag round-trip.
 
 `tests/test_chunkwire.c` (pure, links only `chunkwire.c`):
 
@@ -156,13 +221,35 @@ Integration (host shared-world, remote streaming) is verified by a clean build
 
 ## Status
 
-- **Host / singleplayer shared world: DONE** — fully implemented + builds; the
-  one-world invariant and no-double-generate are argued above.
+- **Host / singleplayer shared world: DONE** — unchanged by this work; verified
+  the map-mutex additions don't regress it (agent/host smoke test runs 400+
+  ticks, server marks it "shared-world host", no streaming to it).
 - **RLE module + tests: DONE** — pure, round-trip tested.
-- **Wire packets + version bump: DONE** (`PKT_CHUNK_DATA`, `PKT_CHUNK_UNLOAD`,
-  v7).
-- **Remote streaming end-to-end (server push loop + client receive/apply):
-  PARTIAL / TODO** — wire format, RLE, and (de)serialize are in place and
-  tested; the server per-client chunk push loop and client network-fed world
-  mode are the remaining integration work, tracked as a follow-up bead. Remote
-  multiplayer still works via the legacy seed-gen + block-delta path until then.
+- **On-demand server world authority (`world_ensure_chunk`) + real validation:
+  DONE** — the AIR fail-open band-aid is gone; break/place ensure-then-validate.
+- **Server push loop + per-client streamed set: DONE** (`server_stream_chunks`,
+  `chunk_stream_diff`, budget 4/tick, nearest-first, unload of departed chunks).
+- **Client network-fed world + receive/apply: DONE** (`world_set_network_fed`,
+  `world_insert_network_chunk`, `world_evict_chunk`, fragment reassembly in
+  `client_poll`).
+- **Wire packets + version bump: DONE** (`PKT_CHUNK_DATA` fragments,
+  `PKT_CHUNK_UNLOAD`, connect `shared_world` flag, **v8**).
+- **End-to-end verified by hand:** dedicated `--server` + `--client` over
+  loopback — client connects as "remote", receives 100+ streamed columns
+  nearest-first, zero decode failures, no errors.
+
+### Known follow-ups (not blocking)
+
+- **Streaming render distance is the server world's `render_distance`, not the
+  client's.** In host mode they match (passed in). For a dedicated server they
+  can differ (server default 8 vs client 12) so a remote client sees a slightly
+  smaller disc than its render distance. Fix: carry the client's render distance
+  in the connect handshake and stream at `min(server_cap, client_rd)`.
+- **Single in-flight reassembly per client.** The client reassembles one column
+  (`msg_id`) at a time; columns are sent fragments-consecutively so this is fine
+  in practice, but a retransmit of an old column's fragment interleaving a new
+  column under heavy loss could drop the old column (it would not self-heal,
+  since the server marks it streamed). A per-`msg_id` reassembly ring would make
+  it bulletproof. Real terrain (≤7 fragments, loopback-tested clean) is safe.
+- **Interest culling / vertical interest:** still streams the whole horizontal
+  disc; epic `0w8` keeps this sub-scope open.

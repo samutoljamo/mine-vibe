@@ -13,7 +13,10 @@
 #include "player.h"      /* GRAVITY, TERMINAL_VEL */
 #include "block.h"       /* block_is_solid */
 #include "block_physics.h" /* WATER_SOURCE_LEVEL */
-#include "chunk.h"       /* CHUNK_Y */
+#include "chunk.h"       /* CHUNK_Y, CHUNK_BLOCKS */
+#include "chunkwire.h"   /* RLE column (de)serialize for PKT_CHUNK_DATA */
+#include "chunk_stream.h"/* pure streaming-policy diff */
+#include "reliable.h"    /* RELIABLE_MAX_PAYLOAD (chunk fragment sizing) */
 #include "world.h"
 #include "daynight.h"    /* world clock + darkness gate for spawning */
 #include <math.h>
@@ -53,6 +56,25 @@ _Static_assert(INVENTORY_SLOTS == INVENTORY_NET_SLOTS,
     "wire format and inventory model must agree on slot count");
 _Static_assert(ARMOR_SLOT_COUNT == ARMOR_NET_SLOTS,
     "wire format and armour model must agree on armour slot count");
+_Static_assert(CHUNK_DATA_RELIABLE_MAX == RELIABLE_MAX_PAYLOAD,
+    "chunk-data fragment sizing in net.h must match the reliable payload cap");
+
+/* Chunk streaming tunables. Budget caps how many NEW columns we encode+send per
+ * client per tick so a fresh joiner doesn't flood the link (and the reliable
+ * send window) in one tick; the rest stream over subsequent ticks. */
+#define SERVER_STREAM_BUDGET     4
+/* Upper bound on the render distance we will stream around any client, so a
+ * malicious/huge advertised value can't make us generate an unbounded disc. */
+#define SERVER_STREAM_MAX_RD     32
+/* Safety cap on fragments for one column. Real terrain RLE-compresses to 1-3
+ * fragments; only an adversarial/incompressible column approaches this. We skip
+ * (don't stream) a column that would exceed it rather than overflow the 32-slot
+ * reliable window. */
+#define SERVER_STREAM_MAX_FRAGS  48
+_Static_assert(SERVER_STREAM_MAX_FRAGS <= CHUNK_DATA_FRAG_MAX,
+    "server must not send more fragments than the client can reassemble");
+_Static_assert(SERVER_STREAM_MAX_FRAGS <= RELIABLE_WINDOW,
+    "a column's fragments must fit in the reliable send window at once");
 
 /* Edible item: with no dedicated FOOD item in the block model, we designate an
  * existing, naturally-obtainable block as food ("foraged berries from leaves").
@@ -184,6 +206,12 @@ static void disconnect_client(Server* s, ServerClient* c)
     printf("[server] player %d disconnected\n", c->player_id);
     broadcast_player_leave(s, c->player_id);
     c->active = false;
+    /* Release the per-client streamed-chunk set (alloc_client memsets the slot
+     * on reuse, which would otherwise leak this array). */
+    free(c->streamed);
+    c->streamed       = NULL;
+    c->streamed_count = 0;
+    c->streamed_cap   = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -221,7 +249,21 @@ static void handle_connect_request(Server* s, const struct sockaddr_in* addr,
         reject_connect(s, addr, NET_DISCONNECT_SERVER_FULL);
         return;
     }
-    printf("[server] player %d connected (protocol v%u)\n", c->player_id, version);
+    /* Shared-world host (renders the server world in-process) must NOT be
+     * streamed chunks; a true remote client must. */
+    c->shares_world = net_read_connect_shared(data, (size_t)len) != 0;
+    /* Stream the disc the client actually renders, clamped to a sane server cap
+     * (on-demand gen can serve any chunk, so we are not bound by the server
+     * world's small mob render distance). 0 advertised -> fall back to the
+     * server world's render distance. */
+    {
+        int crd = (int)net_read_connect_render_dist(data, (size_t)len);
+        if (crd <= 0) crd = world_get_render_distance(s->world);
+        if (crd > SERVER_STREAM_MAX_RD) crd = SERVER_STREAM_MAX_RD;
+        c->stream_rd = crd;
+    }
+    printf("[server] player %d connected (protocol v%u%s)\n", c->player_id, version,
+           c->shares_world ? ", shared-world host" : ", remote");
 
     uint8_t buf[HEADER_WIRE_SIZE];
     size_t off = 0;
@@ -443,14 +485,18 @@ static void handle_block_break(Server* s, ServerClient* c,
      * breakable block at the requested cell. The credited drop is the server's
      * block, never the client-supplied one. */
     if (!s->world) return;
+    /* Ensure the target column is really generated on the server (applying the
+     * persistence overlay) before reading it, so validation consults the TRUE
+     * block instead of a fail-open AIR. world_ensure_chunk is synchronous and
+     * thread-safe; world_get_chunk_col_block reads through it. In the rare host-
+     * mode window where the chunk is mid-generation by a worker, ensure returns
+     * without a forced regen and the read may still be AIR — that simply refuses
+     * the break (the client retries), which is correct and never credits a
+     * block that isn't there. */
+    int bcx = (p.x < 0) ? (p.x - 15) / 16 : p.x / 16;
+    int bcz = (p.z < 0) ? (p.z - 15) / 16 : p.z / 16;
+    world_ensure_chunk(s->world, bcx, bcz);
     BlockID actual = world_get_block(s->world, p.x, p.y, p.z);
-    /* The headless server streams chunks asynchronously, so a cell the player
-     * legitimately mined can still read AIR here (its chunk hasn't finished
-     * generating yet). Rejecting that breaks normal mining. Fall back to the
-     * client's reach-validated claim; it's still re-validated below, so
-     * air/water/bedrock claims remain refused. */
-    if (actual == BLOCK_AIR)
-        actual = p.block;
     if (!server_block_breakable(actual)) return;
 
     uint8_t leftover = inventory_add(&c->inventory, actual, 1);
@@ -533,8 +579,15 @@ static void handle_block_place(Server* s, ServerClient* c,
 
     /* Validate against the authoritative server world (reflects the overlay's
      * prior edits): the target cell must currently be empty/replaceable, and
-     * the new block must not intersect any player. */
+     * the new block must not intersect any player. Ensure the target column is
+     * generated first so placement isn't wrongly allowed/refused against a
+     * fail-open AIR read of an ungenerated chunk. */
     if (!s->world) return;
+    {
+        int tcx = (tx < 0) ? (tx - 15) / 16 : tx / 16;
+        int tcz = (tz < 0) ? (tz - 15) / 16 : tz / 16;
+        world_ensure_chunk(s->world, tcx, tcz);
+    }
     BlockID target = world_get_block(s->world, tx, ty, tz);
     if (!server_block_replaceable(target)) return;
     if (server_block_intersects_player(s, tx, ty, tz)) return;
@@ -1081,6 +1134,121 @@ static void server_flush_world(Server* s, bool force)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Chunk streaming (remote clients)                                   */
+/* ------------------------------------------------------------------ */
+
+/* Append a coord to a client's streamed set (grows the array as needed). */
+static void streamed_add(ServerClient* c, ChunkCoord cc) {
+    if (c->streamed_count == c->streamed_cap) {
+        size_t ncap = c->streamed_cap ? c->streamed_cap * 2 : 256;
+        ChunkCoord* n = realloc(c->streamed, ncap * sizeof(ChunkCoord));
+        if (!n) return;   /* OOM: skip recording; the chunk simply restreams */
+        c->streamed = n;
+        c->streamed_cap = ncap;
+    }
+    c->streamed[c->streamed_count++] = cc;
+}
+
+/* Remove a coord from a client's streamed set (swap-with-last; order in the set
+ * is irrelevant to chunk_stream_diff). */
+static void streamed_remove(ServerClient* c, int32_t cx, int32_t cz) {
+    for (size_t i = 0; i < c->streamed_count; i++) {
+        if (c->streamed[i].cx == cx && c->streamed[i].cz == cz) {
+            c->streamed[i] = c->streamed[--c->streamed_count];
+            return;
+        }
+    }
+}
+
+/* Encode column (cx,cz) and send it to client c as fragmented PKT_CHUNK_DATA on
+ * the reliable channel. Returns true if streamed (and should be recorded), false
+ * if skipped (oversized incompressible column — real terrain never hits this).  */
+static bool server_send_chunk(Server* s, ServerClient* c, int32_t cx, int32_t cz) {
+    uint8_t blocks[CHUNK_BLOCKS];
+    if (!world_copy_chunk_blocks(s->world, cx, cz, blocks, sizeof blocks))
+        return false;
+
+    /* Worst-case encoded body (chunkwire_encode_bound()): 12-byte header +
+     * 2*CHUNK_BLOCKS + slack. Static, so it never lands on the stack. The
+     * function is the source of truth; this buffer is sized to its known upper
+     * bound and asserted at runtime. */
+    static uint8_t body[12 + 2 * CHUNK_BLOCKS + 16];
+    size_t body_len = chunkwire_encode_chunk(cx, cz, blocks, body, sizeof body);
+    if (body_len == 0) return false;
+
+    uint16_t total = (uint16_t)((body_len + CHUNK_DATA_FRAG_BYTES - 1)
+                                / CHUNK_DATA_FRAG_BYTES);
+    if (total == 0) total = 1;
+    if (total > SERVER_STREAM_MAX_FRAGS) {
+        fprintf(stderr, "[server] chunk (%d,%d) encodes to %zu bytes (%u frags > %d); "
+                        "skipping stream (incompressible column)\n",
+                cx, cz, body_len, total, SERVER_STREAM_MAX_FRAGS);
+        return false;
+    }
+
+    uint16_t msg_id = c->chunk_msg_id++;
+    for (uint16_t i = 0; i < total; i++) {
+        size_t off = (size_t)i * CHUNK_DATA_FRAG_BYTES;
+        size_t flen = body_len - off;
+        if (flen > CHUNK_DATA_FRAG_BYTES) flen = CHUNK_DATA_FRAG_BYTES;
+
+        uint8_t pkt[RELIABLE_MAX_PAYLOAD];
+        PacketHeader h = { .type = PKT_CHUNK_DATA, .player_id = 0 };
+        size_t plen = net_write_chunk_data_frag(pkt, &h, msg_id, i, total,
+                                                body + off, flen);
+        send_reliable(s, c, pkt, (uint16_t)plen);
+    }
+    return true;
+}
+
+/* Per-tick chunk streaming for one REMOTE client: diff the client's render disc
+ * against what we've already sent, on-demand generate + send new columns (budget
+ * capped), and unload columns that left range. No-op for the shared-world host
+ * (it renders the server world directly) and before the first position. */
+static void server_stream_chunks(Server* s, ServerClient* c) {
+    if (!s->world) return;
+    if (c->shares_world) return;        /* host renders the world in-process */
+    if (!c->position_received) return;
+
+    int rd = c->stream_rd > 0 ? c->stream_rd
+                              : world_get_render_distance(s->world);
+    /* Match world_update's chunk-of-position floor division exactly. */
+    int ccx = (int)floorf(c->x / 16.0f);
+    int ccz = (int)floorf(c->z / 16.0f);
+
+    /* Bound the per-tick work: at most SERVER_STREAM_BUDGET sends, plus any
+     * number of (cheap) unloads. */
+    ChunkCoord to_send[SERVER_STREAM_BUDGET];
+    static ChunkCoord to_unload[4096];
+    size_t ns = 0, nu = 0;
+    chunk_stream_diff(ccx, ccz, rd,
+                      c->streamed, c->streamed_count,
+                      to_send, SERVER_STREAM_BUDGET, &ns, SERVER_STREAM_BUDGET,
+                      to_unload, sizeof(to_unload) / sizeof(to_unload[0]), &nu);
+
+    /* Unload departed chunks first (frees the client's memory + our set entry). */
+    for (size_t i = 0; i < nu; i++) {
+        uint8_t buf[HEADER_WIRE_SIZE + 8];
+        PacketHeader h = { .type = PKT_CHUNK_UNLOAD, .player_id = 0 };
+        size_t len = net_write_chunk_unload(buf, &h, to_unload[i].cx, to_unload[i].cz);
+        send_reliable(s, c, buf, (uint16_t)len);
+        streamed_remove(c, to_unload[i].cx, to_unload[i].cz);
+    }
+
+    /* Send new in-range columns (nearest-first), recording each as streamed. */
+    for (size_t i = 0; i < ns; i++) {
+        if (server_send_chunk(s, c, to_send[i].cx, to_send[i].cz))
+            streamed_add(c, to_send[i]);
+        /* If skipped (oversized), don't record it — but to avoid retrying it
+         * every tick forever, record it anyway as "handled"; the client just
+         * won't have that one rare column. We choose to record so the stream
+         * makes forward progress and doesn't wedge on a pathological column. */
+        else
+            streamed_add(c, to_send[i]);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Server tick                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -1136,6 +1304,17 @@ static void server_tick(Server* s, int tick_num)
         ServerClient* c = &s->clients[i];
         if (!c->active) continue;
         server_simulate_survival(s, c, 1.0f / SERVER_TICK_RATE);
+    }
+
+    /* Chunk streaming: push terrain to each REMOTE client around its position
+     * (budget-capped per tick), unloading chunks that left range. No-op for the
+     * shared-world host. Runs every tick; the budget bounds the work. */
+    if (s->world) {
+        for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+            ServerClient* c = &s->clients[i];
+            if (!c->active) continue;
+            server_stream_chunks(s, c);
+        }
     }
 
     if (s->world) {
@@ -1353,6 +1532,13 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
         }
 
         pt_sleep_ms(1);
+    }
+
+    /* Release any per-client streamed-chunk sets still allocated (clients that
+     * never disconnected before the loop exited). */
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        free(s.clients[i].streamed);
+        s.clients[i].streamed = NULL;
     }
 
     /* Final save before teardown. Detach the overlay from the world first so

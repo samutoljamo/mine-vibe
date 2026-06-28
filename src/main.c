@@ -206,6 +206,22 @@ static RemotePlayerSet* g_remote_players = NULL;
 static ClientMobSet*    g_mobs           = NULL;
 static Player*          g_player_ptr     = NULL;
 static vec3             g_spawn_pos      = {0, 0, 0};
+static World*           g_net_world      = NULL;  /* remote client's network-fed world */
+
+/* Server streamed us a chunk: insert its blocks into the local network-fed
+ * world; world_update will light + mesh it. Runs on the main thread (client_poll
+ * is called from the render loop), so touching the world is safe. */
+static void on_chunk_data(int32_t cx, int32_t cz, const uint8_t* blocks,
+                          size_t blocks_len, void* user) {
+    (void)user;
+    if (g_net_world) world_insert_network_chunk(g_net_world, cx, cz, blocks, blocks_len);
+}
+
+/* Server told us a chunk left range: evict it (frees its GPU mesh). */
+static void on_chunk_unload(int32_t cx, int32_t cz, void* user) {
+    (void)user;
+    if (g_net_world) world_evict_chunk(g_net_world, cx, cz);
+}
 
 static void on_death(void* user) {
     (void)user;
@@ -534,6 +550,13 @@ int main(int argc, char *argv[])
         client_set_leave_cb(&client, on_player_leave, NULL);
         client_set_mobs_cb(&client, on_mobs, NULL);
         client_set_death_cb(&client, on_death, NULL);
+        client_set_chunk_cb(&client, on_chunk_data, NULL);
+        client_set_chunk_unload_cb(&client, on_chunk_unload, NULL);
+        /* Host renders the server's world in-process (shared world) — tell the
+         * server NOT to stream chunks to us. A true remote client receives the
+         * streamed terrain. */
+        client_set_shared_world(&client, host_mode);
+        client_set_render_distance(&client, gfx.render_distance);
         client_connect(&client);
     }
 
@@ -571,7 +594,13 @@ int main(int argc, char *argv[])
         }
         world_is_borrowed = true;
     } else {
+        /* Remote client (--client): the world is fed exclusively by the server's
+         * streamed chunks. Create it in network-fed mode so world_update never
+         * regenerates terrain from the seed; chunks arrive via on_chunk_data and
+         * are lit + meshed by the local pipeline. */
         world = world_create(&renderer, session_seed, gfx.render_distance);
+        world_set_network_fed(world, true);
+        g_net_world = world;
     }
 
     BlockPhysics physics;
@@ -609,6 +638,19 @@ int main(int argc, char *argv[])
         {
             glfwPollEvents();
             player_update(&g_player, window, world, 0.0f);
+            /* Pump networking during loading so a remote client actually
+             * receives streamed chunks (its world is network-fed and generates
+             * nothing locally); also keeps the connection alive for the host. */
+            if (networking) {
+                client_send_position(&client,
+                                     g_player.position[0], g_player.position[1],
+                                     g_player.position[2],
+                                     g_player.camera.yaw, g_player.camera.pitch);
+                client_poll(&client);
+                /* Apply any chunk inserts/evicts that the callbacks queued is
+                 * immediate (callbacks mutate the world directly), so just run
+                 * world_update to light+mesh them. */
+            }
             world_update(world, &physics, g_player.position);
             world_get_meshes(world, &meshes, &mesh_count);
 

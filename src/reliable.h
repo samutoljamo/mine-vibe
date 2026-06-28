@@ -10,9 +10,15 @@
 #  include <netinet/in.h>
 #endif
 
-#define RELIABLE_WINDOW      32
+/* Window must be large enough that a tick's worth of chunk-stream fragments
+ * (SERVER_STREAM_BUDGET columns × a few fragments each) plus ordinary reliable
+ * traffic all stay in-flight without evicting unacked entries. */
+#define RELIABLE_WINDOW      64
 #define RELIABLE_TIMEOUT     0.1   /* seconds before retransmit */
-#define RELIABLE_MAX_PAYLOAD 256
+/* Sized so a streamed chunk column fits in a handful of fragments (a real RLE
+ * column is ~6-8 KB). Stays safely under NET_MAX_PACKET (1400) and the net
+ * thread's per-message buffer (NET_THREAD_MAX_MSG). */
+#define RELIABLE_MAX_PAYLOAD 1200
 
 typedef struct {
     uint8_t  data[RELIABLE_MAX_PAYLOAD];

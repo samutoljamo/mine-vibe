@@ -39,7 +39,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 7
+#define NET_PROTOCOL_VERSION 8
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -467,13 +467,60 @@ static inline void net_read_armor(const uint8_t* buf, size_t len,
 
 /* ------------------------------------------------------------------ */
 /*  Chunk streaming packets (protocol v7)                              */
-/*    PKT_CHUNK_DATA   — server → one. The payload after the 8-byte    */
-/*       header is the chunkwire body {cx i32, cz i32, rle_len u32,    */
-/*       rle...} (see src/chunkwire.h). Because a column can exceed a  */
-/*       single datagram it is sent via reliable_send_fragmented and   */
-/*       reassembled client-side; the header+body is the inner payload.*/
+/*    PKT_CHUNK_DATA   — server → one. The chunkwire body {cx i32,     */
+/*       cz i32, rle_len u32, rle...} (see src/chunkwire.h) is split   */
+/*       across one or more fragments, each an ORDINARY reliable packet */
+/*       with the {msg_id,index,total} subheader below (so each frag is */
+/*       independently acked + retransmitted). The client reassembles  */
+/*       per msg_id at CHUNK_DATA_FRAG_BYTES stride, then RLE-decodes.  */
 /*    PKT_CHUNK_UNLOAD — server → one, 16 wire bytes (8 header + 2×i32)*/
 /* ------------------------------------------------------------------ */
+/* PKT_CHUNK_DATA fragment wire layout (protocol v8):
+ *   [header 8][msg_id u16][index u16][total u16][frag bytes...]
+ * Each fragment is an ORDINARY reliable packet (so it is acked + retransmitted
+ * by the existing reliable layer — we do NOT use the unacked magic-byte
+ * fragmentation path). The client reassembles fragments of one msg_id in order
+ * into the chunkwire body {cx,cz,rle_len,rle...}, then RLE-decodes the column.
+ * msg_id distinguishes concurrent/successive columns; index/total drive
+ * reassembly. The data capacity per fragment is the reliable payload minus this
+ * 14-byte prefix. */
+#define CHUNK_DATA_FRAG_PREFIX (HEADER_WIRE_SIZE + 6)   /* 8 + msg_id+index+total */
+/* Must equal RELIABLE_MAX_PAYLOAD (reliable.h, 256). net.h sits below
+ * reliable.h in the dep tree, so we restate the value here and a _Static_assert
+ * in server.c (which includes both) guards the two from drifting apart. */
+#define CHUNK_DATA_RELIABLE_MAX 1200
+#define CHUNK_DATA_FRAG_BYTES  (CHUNK_DATA_RELIABLE_MAX - CHUNK_DATA_FRAG_PREFIX)
+/* Max fragments per streamed column. Must be >= the server's stream cap
+ * (SERVER_STREAM_MAX_FRAGS) and stay <= the reliable window so a whole column's
+ * fragments can be in flight at once. A real RLE terrain column is ~6-8 KB ≈
+ * 6-7 fragments at this size; this cap covers ~56 KB columns. */
+#define CHUNK_DATA_FRAG_MAX    48
+
+static inline size_t net_write_chunk_data_frag(uint8_t* buf,
+                                               const PacketHeader* hdr,
+                                               uint16_t msg_id, uint16_t index,
+                                               uint16_t total,
+                                               const uint8_t* frag, size_t flen)
+{
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u16(buf, &off, msg_id);
+    net_write_u16(buf, &off, index);
+    net_write_u16(buf, &off, total);
+    for (size_t i = 0; i < flen; i++) buf[off++] = frag[i];
+    return off;
+}
+
+static inline void net_read_chunk_data_frag_hdr(const uint8_t* buf,
+                                                uint16_t* msg_id,
+                                                uint16_t* index, uint16_t* total)
+{
+    size_t off = HEADER_WIRE_SIZE;
+    *msg_id = net_read_u16(buf, &off);
+    *index  = net_read_u16(buf, &off);
+    *total  = net_read_u16(buf, &off);
+}
+
 static inline size_t net_write_chunk_unload(uint8_t* buf, const PacketHeader* hdr,
                                             int32_t cx, int32_t cz) {
     size_t off = 0;
@@ -611,11 +658,31 @@ static inline void net_read_player_health(const uint8_t* buf, size_t len,
  * (NetDisconnectReason). Both readers tolerate legacy header-only packets:
  * a missing version reads as 0 (refused), a missing reason as NORMAL. */
 
-static inline void net_write_connect_request(uint8_t* buf, size_t* off,
-                                             const PacketHeader* h)
+/* PKT_CONNECT_REQUEST (protocol v8) appends, after the version:
+ *   u8 shared_world  — 1 when the connecting client is the integrated host that
+ *                      already renders the server's world in-process (so the
+ *                      server must NOT stream chunks to it), 0 for a true remote
+ *                      client that needs chunk streaming.
+ *   u8 render_dist   — the client's render distance in chunks, so the server can
+ *                      stream the disc the client actually wants (clamped to the
+ *                      server's own cap). 0 means "unspecified" -> server uses
+ *                      its own render distance.
+ * Legacy/short reads default both fields to 0 (remote, server-rd). */
+static inline void net_write_connect_request_ex(uint8_t* buf, size_t* off,
+                                                const PacketHeader* h,
+                                                uint8_t shared_world,
+                                                uint8_t render_dist)
 {
     net_write_header(buf, off, h);
     net_write_u16(buf, off, (uint16_t)NET_PROTOCOL_VERSION);
+    net_write_u8(buf, off, shared_world);
+    net_write_u8(buf, off, render_dist);
+}
+
+static inline void net_write_connect_request(uint8_t* buf, size_t* off,
+                                             const PacketHeader* h)
+{
+    net_write_connect_request_ex(buf, off, h, 0, 0);
 }
 
 static inline uint16_t net_read_connect_version(const uint8_t* buf, size_t len)
@@ -623,6 +690,20 @@ static inline uint16_t net_read_connect_version(const uint8_t* buf, size_t len)
     if (len < HEADER_WIRE_SIZE + 2) return 0;  /* legacy / malformed */
     size_t off = HEADER_WIRE_SIZE;
     return net_read_u16(buf, &off);
+}
+
+static inline uint8_t net_read_connect_shared(const uint8_t* buf, size_t len)
+{
+    if (len < HEADER_WIRE_SIZE + 3) return 0;  /* absent -> remote (stream) */
+    size_t off = HEADER_WIRE_SIZE + 2;
+    return net_read_u8(buf, &off);
+}
+
+static inline uint8_t net_read_connect_render_dist(const uint8_t* buf, size_t len)
+{
+    if (len < HEADER_WIRE_SIZE + 4) return 0;  /* absent -> use server's rd */
+    size_t off = HEADER_WIRE_SIZE + 3;
+    return net_read_u8(buf, &off);
 }
 
 static inline void net_write_disconnect(uint8_t* buf, size_t* off,

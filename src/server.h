@@ -15,6 +15,7 @@
 #include "world_persist.h"
 #include "mob.h"
 #include "survival.h"
+#include "chunk_stream.h"   /* ChunkCoord + streaming-policy diff */
 
 typedef struct Renderer Renderer;
 
@@ -48,6 +49,19 @@ typedef struct {
     bool               falling;             /* tracking a descent for fall dmg   */
     float              respawn_grace;       /* seconds of post-respawn invuln     */
     bool               needs_health_sync;   /* hunger/health changed; push packet */
+
+    /* --- Chunk streaming (remote clients only) --- */
+    bool               shares_world;        /* integrated host: renders the server
+                                             * world in-process, so we DON'T stream
+                                             * chunks to it (set from the connect
+                                             * handshake's shared_world flag).      */
+    int                stream_rd;           /* render distance to stream around this
+                                             * client (from the connect handshake;
+                                             * clamped). 0 until first connect.     */
+    ChunkCoord*        streamed;            /* coords already streamed to this client */
+    size_t             streamed_count;
+    size_t             streamed_cap;
+    uint16_t           chunk_msg_id;        /* next PKT_CHUNK_DATA reassembly id    */
 } ServerClient;
 
 typedef struct {
