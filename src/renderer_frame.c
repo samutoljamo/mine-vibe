@@ -155,6 +155,11 @@ void renderer_draw_frame(Renderer* r,
         .pClearValues    = clear_values,
     };
 
+    /* World pass shared state — bound ONCE per frame, then reused for every
+     * visible chunk below. The pipeline, descriptor set (set 0 = GlobalUBO +
+     * atlas sampler), viewport and scissor are identical for all chunks, so
+     * the per-chunk loop only varies the push constant (chunk offset) and the
+     * geometry buffer binds. */
     vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r->pipeline);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -165,7 +170,13 @@ void renderer_draw_frame(Renderer* r,
                             r->pipeline_layout, 0, 1,
                             &r->descriptor_sets[fi], 0, NULL);
 
-    /* 6. Draw loop: frustum-culled chunk meshes */
+    /* 6. Draw loop: frustum-culled chunk meshes.
+     *
+     * No pipeline/descriptor rebinds happen inside this loop — those are bound
+     * once above. Each chunk's vertex and index data now live in a SINGLE
+     * combined VkBuffer (see chunk_mesh_upload): vertices at offset 0, indices
+     * at m->index_offset. Binding the same handle for both vertex and index
+     * input keeps the driver's buffer-tracking minimal per draw. */
     if (meshes && mesh_count > 0) {
         /* Extract frustum from view-projection matrix */
         mat4 vp;
@@ -193,10 +204,12 @@ void renderer_draw_frame(Renderer* r,
                                VK_SHADER_STAGE_VERTEX_BIT,
                                0, sizeof(ChunkPushConstants), &pc);
 
-            /* Bind vertex and index buffers */
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &m->vertex_buffer, &offset);
-            vkCmdBindIndexBuffer(cmd, m->index_buffer, 0, VK_INDEX_TYPE_UINT32);
+            /* Bind the combined buffer as both vertex source (offset 0) and
+             * index source (offset m->index_offset). */
+            VkDeviceSize vb_offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &m->vertex_buffer, &vb_offset);
+            vkCmdBindIndexBuffer(cmd, m->index_buffer, m->index_offset,
+                                 VK_INDEX_TYPE_UINT32);
 
             /* Draw */
             vkCmdDrawIndexed(cmd, m->index_count, 1, 0, 0, 0);
