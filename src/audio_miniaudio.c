@@ -66,6 +66,16 @@ static struct {
     ma_device device;
     ma_mutex  lock;
     bool      device_ok;     /* device opened+started successfully */
+
+    /* The format/channel/rate the data callback must actually emit. We REQUEST
+     * s16/mono/AUDIO_SAMPLE_RATE, but a backend is free to hand us a different
+     * app-facing format (miniaudio's internal converter handles the hardware
+     * side either way). The callback reads these at runtime and writes in
+     * whatever miniaudio settled on — writing s16/mono blindly into, say, an
+     * f32/stereo buffer is exactly what produces garbled/"weird" output. */
+    ma_format dev_format;    /* device.playback.format   (app-facing) */
+    ma_uint32 dev_channels;  /* device.playback.channels (app-facing) */
+
     Voice     voices[MA_BACKEND_MAX_VOICES];
 
     /* Dedicated looping voice (used only if submit_pcm is called with loop). */
@@ -82,13 +92,58 @@ static inline float mix_sample(float acc, int16_t src, float gain)
     return acc + ((float)src / 32768.0f) * gain;
 }
 
+/* Write one frame's clamped value `s` (already in [-1,1]) into `out` at frame
+ * index `f`, in the device's ACTUAL format, duplicated across all channels.
+ * Returns nothing; advances nothing — the caller owns the loop. */
+static inline void write_frame(void* out, ma_uint32 f, float s,
+                               ma_format fmt, ma_uint32 channels)
+{
+    if (s >  1.0f) s =  1.0f;
+    if (s < -1.0f) s = -1.0f;
+
+    ma_uint32 base = f * channels;
+    switch (fmt) {
+        case ma_format_f32: {
+            float* o = (float*)out;
+            for (ma_uint32 c = 0; c < channels; c++) o[base + c] = s;
+            break;
+        }
+        case ma_format_s32: {
+            int32_t* o = (int32_t*)out;
+            /* round-to-nearest, full-scale s32 */
+            int64_t v = (int64_t)(s * 2147483647.0f);
+            if (v >  2147483647LL) v =  2147483647LL;
+            if (v < -2147483648LL) v = -2147483648LL;
+            for (ma_uint32 c = 0; c < channels; c++) o[base + c] = (int32_t)v;
+            break;
+        }
+        case ma_format_s16:
+        default: {
+            /* Default also covers u8/s24, which we don't request; clamping to
+             * s16 and letting miniaudio refuse such a config keeps us safe. */
+            int16_t* o = (int16_t*)out;
+            int v = (int)(s * 32767.0f + (s >= 0.0f ? 0.5f : -0.5f));
+            if (v >  32767) v =  32767;
+            if (v < -32768) v = -32768;
+            for (ma_uint32 c = 0; c < channels; c++) o[base + c] = (int16_t)v;
+            break;
+        }
+    }
+}
+
 /* miniaudio playback callback — runs on the audio thread. Fills `frame_count`
- * mono int16 frames in `output`, mixing every active voice + the loop voice. */
+ * frames in `output`, mixing every active voice + the loop voice. Output is
+ * written in the device's ACTUAL negotiated format and channel count (see
+ * g_ma.dev_format/dev_channels), NOT blindly as s16/mono — that mismatch is
+ * the classic source of garbled playback. Voices are mono s16; we accumulate
+ * in float, clamp once, then fan out to the device's channels. */
 static void data_callback(ma_device* dev, void* output, const void* input,
                           ma_uint32 frame_count)
 {
     (void)dev; (void)input;
-    int16_t* out = (int16_t*)output;
+
+    const ma_format fmt      = g_ma.dev_format;
+    const ma_uint32 channels = g_ma.dev_channels ? g_ma.dev_channels : 1;
 
     ma_mutex_lock(&g_ma.lock);
     for (ma_uint32 f = 0; f < frame_count; f++) {
@@ -112,10 +167,8 @@ static void data_callback(ma_device* dev, void* output, const void* input,
             if (++g_ma.loop_cursor >= g_ma.loop_samples) g_ma.loop_cursor = 0;
         }
 
-        /* Clamp the mixed result back to int16. */
-        if (acc >  1.0f) acc =  1.0f;
-        if (acc < -1.0f) acc = -1.0f;
-        out[f] = (int16_t)(acc * 32767.0f);
+        /* Clamp once and emit in the device's real format across all channels. */
+        write_frame(output, f, acc, fmt, channels);
     }
     ma_mutex_unlock(&g_ma.lock);
 }
@@ -140,6 +193,15 @@ static int ma_backend_init(void)
         ma_device_uninit(&g_ma.device);
         return 1;
     }
+    /* Record the ACTUAL app-facing format/channels miniaudio gave us. With the
+     * config above this is normally s16/1ch, but a backend may hand us a
+     * different format (e.g. f32) and/or channel count; miniaudio's internal
+     * converter bridges to the hardware. The callback emits in exactly this
+     * format/channel count, so it stays correct regardless of negotiation. */
+    g_ma.dev_format   = g_ma.device.playback.format;
+    g_ma.dev_channels = g_ma.device.playback.channels;
+    if (g_ma.dev_channels == 0) g_ma.dev_channels = 1;
+
     if (ma_device_start(&g_ma.device) != MA_SUCCESS) {
         ma_mutex_uninit(&g_ma.lock);
         ma_device_uninit(&g_ma.device);

@@ -88,21 +88,33 @@ typedef struct {
 
 static SfxRecipe sfx_recipe(SoundId id)
 {
+    /* All SFX lean on sine tones (square reserved for a little grit on impacts)
+     * at modest amplitude so they read as soft "sounds" rather than buzzers. */
     switch (id) {
-        /* Dull crunchy thud: low square + lots of noise, fast decay. */
-        case SFX_BLOCK_BREAK: return (SfxRecipe){ 0.22f, 120.0f, 6.0f, 0.7f, 1, 0x1001u };
+        /* Dull crunchy thud: low sine body + a good helping of noise, fast decay. */
+        case SFX_BLOCK_BREAK: return (SfxRecipe){ 0.22f, 120.0f, 6.0f, 0.55f, 0, 0x1001u };
         /* Soft click: short noisy blip, very fast decay. */
-        case SFX_BLOCK_PLACE: return (SfxRecipe){ 0.12f, 220.0f, 9.0f, 0.5f, 1, 0x2002u };
+        case SFX_BLOCK_PLACE: return (SfxRecipe){ 0.12f, 220.0f, 9.0f, 0.45f, 0, 0x2002u };
         /* Footstep: brief muffled noise. */
-        case SFX_STEP:        return (SfxRecipe){ 0.10f,  90.0f, 12.0f, 0.85f, 1, 0x3003u };
-        /* Player hurt: descending square tone, mid decay. */
-        case SFX_HURT:        return (SfxRecipe){ 0.30f, 330.0f, 5.0f, 0.15f, 1, 0x4004u };
-        /* Mob hurt: lower/grittier than player hurt. */
-        case SFX_MOB_HURT:    return (SfxRecipe){ 0.28f, 180.0f, 5.0f, 0.35f, 1, 0x5005u };
+        case SFX_STEP:        return (SfxRecipe){ 0.10f,  90.0f, 12.0f, 0.75f, 0, 0x3003u };
+        /* Player hurt: descending sine tone, mid decay. */
+        case SFX_HURT:        return (SfxRecipe){ 0.30f, 330.0f, 5.0f, 0.12f, 0, 0x4004u };
+        /* Mob hurt: lower/grittier than player hurt — a touch of square. */
+        case SFX_MOB_HURT:    return (SfxRecipe){ 0.28f, 180.0f, 5.0f, 0.30f, 1, 0x5005u };
         /* Eat: soft sine warble, gentle decay. */
         case SFX_EAT:         return (SfxRecipe){ 0.25f, 260.0f, 4.0f, 0.10f, 0, 0x6006u };
-        default:              return (SfxRecipe){ 0.10f, 200.0f, 8.0f, 0.5f, 1, 0x7007u };
+        default:              return (SfxRecipe){ 0.10f, 200.0f, 8.0f, 0.45f, 0, 0x7007u };
     }
+}
+
+/* Short linear attack ramp (in [0,1]) so envelopes START at zero rather than
+ * snapping to full amplitude — that snap is an audible click/pop. ~3ms. */
+static float attack_ramp(size_t i)
+{
+    enum { ATTACK = AUDIO_SAMPLE_RATE / 300 };   /* ~3.3 ms */
+    if (ATTACK <= 0) return 1.0f;
+    if (i >= (size_t)ATTACK) return 1.0f;
+    return (float)i / (float)ATTACK;
 }
 
 size_t audio_gen_sfx(SoundId id, int16_t* out, size_t cap)
@@ -114,6 +126,9 @@ size_t audio_gen_sfx(SoundId id, int16_t* out, size_t cap)
     size_t n = (size_t)(r.dur * AUDIO_SAMPLE_RATE);
     if (n > cap) n = cap;
 
+    /* Short release ramp so the tail lands exactly on zero (no end click). */
+    enum { RELEASE = AUDIO_SAMPLE_RATE / 200 };   /* ~5 ms */
+
     for (size_t i = 0; i < n; i++) {
         float t   = (float)i / (float)AUDIO_SAMPLE_RATE;
         /* Pitch glides down over the sound for a more natural impact/hurt. */
@@ -121,8 +136,12 @@ size_t audio_gen_sfx(SoundId id, int16_t* out, size_t cap)
         float tone = r.square ? audio_osc_square(t, f) : audio_osc_sine(t, f);
         float ns   = audio_noise((uint32_t)i, r.seed);
         float mix  = tone * (1.0f - r.noise_mix) + ns * r.noise_mix;
-        float env  = audio_env_decay(i, n, r.decay);
-        out[i] = to_pcm(mix * env * 0.85f);
+        float env  = audio_env_decay(i, n, r.decay) * attack_ramp(i);
+        /* Linear fade-out over the final RELEASE samples. */
+        if (RELEASE > 0 && n >= (size_t)RELEASE && i >= n - (size_t)RELEASE)
+            env *= (float)(n - i) / (float)RELEASE;
+        /* ~0.5 amplitude headroom: gentle, never a buzzer. */
+        out[i] = to_pcm(mix * env * 0.5f);
     }
     return n;
 }
@@ -156,14 +175,15 @@ size_t audio_gen_music(int16_t* out, size_t cap, uint64_t start)
         float  t   = (float)off / (float)AUDIO_SAMPLE_RATE;
 
         float note = MUSIC_NOTES[ni];
-        /* Plucked sine arpeggio (decays within each note) ... */
-        float arp  = audio_osc_sine(t, note) *
-                     audio_env_decay(off, note_len, 2.2f);
+        /* Per-note attack so each pluck eases in from zero (no click at note
+         * boundaries), then a gentle decay across the note. */
+        float nenv = audio_env_decay(off, note_len, 2.2f) * attack_ramp(off);
+        float arp  = audio_osc_sine(t, note) * nenv;
         /* ... over a quiet drone an octave below for body. */
         float gt   = (float)((start + k) % loop) / (float)AUDIO_SAMPLE_RATE;
-        float pad  = audio_osc_sine(gt, MUSIC_NOTES[0] * 0.5f) * 0.25f;
+        float pad  = audio_osc_sine(gt, MUSIC_NOTES[0] * 0.5f) * 0.22f;
 
-        out[k] = to_pcm((arp * 0.55f + pad) * 0.5f);   /* keep music quiet */
+        out[k] = to_pcm((arp * 0.5f + pad) * 0.45f);   /* keep music quiet */
     }
     return cap;
 }
