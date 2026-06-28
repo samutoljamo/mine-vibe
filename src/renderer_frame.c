@@ -112,19 +112,28 @@ void renderer_draw_frame(Renderer* r,
         return;
     }
 
-    /* Dynamic viewport and scissor — hoisted so HUD pass can reuse them */
+    /* The 3D scene renders either directly into the swapchain image (legacy,
+     * render_scale == 1.0) or into a smaller offscreen target that is then
+     * upscale-blitted into the swapchain image. scene_extent / scene_framebuffer
+     * drive the world pass; the swapchain extent always drives the UI pass. */
+    bool        scale_active = r->scale_active && r->scene_framebuffer != VK_NULL_HANDLE;
+    VkExtent2D  scene_extent = scale_active ? r->scene_extent : r->swapchain.extent;
+    VkFramebuffer scene_fb   = scale_active ? r->scene_framebuffer
+                                            : r->swapchain.framebuffers[image_index];
+
+    /* Viewport/scissor for the 3D world pass, sized to the scene target. */
     VkViewport viewport = {
         .x        = 0.0f,
         .y        = 0.0f,
-        .width    = (float)r->swapchain.extent.width,
-        .height   = (float)r->swapchain.extent.height,
+        .width    = (float)scene_extent.width,
+        .height   = (float)scene_extent.height,
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
 
     VkRect2D scissor = {
         .offset = { 0, 0 },
-        .extent = r->swapchain.extent,
+        .extent = scene_extent,
     };
 
     /* Lerp clear color between sky and deep-water based on underwater
@@ -148,10 +157,10 @@ void renderer_draw_frame(Renderer* r,
     VkRenderPassBeginInfo rp_info = {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass  = r->render_pass,
-        .framebuffer = r->swapchain.framebuffers[image_index],
+        .framebuffer = scene_fb,
         .renderArea  = {
             .offset = { 0, 0 },
-            .extent = r->swapchain.extent,
+            .extent = scene_extent,
         },
         .clearValueCount = msaa ? 3u : 2u,
         .pClearValues    = clear_values,
@@ -237,6 +246,86 @@ void renderer_draw_frame(Renderer* r,
 
     /* 7. End render pass */
     vkCmdEndRenderPass(cmd);
+
+    /* 7b. Render-scale upscale: when the 3D scene was rendered into the smaller
+     * offscreen target, linearly blit it up into the full-res swapchain image.
+     * The HUD/UI pass below then loads that swapchain image and draws on top at
+     * full resolution, so only the 3D scene is downsampled. At render_scale 1.0
+     * this whole block is skipped and the world pass wrote the swapchain image
+     * directly (byte-for-byte the legacy path). */
+    if (scale_active) {
+        VkImage swap_img = r->swapchain.images[image_index];
+
+        /* scene_color leaves the world pass in COLOR_ATTACHMENT_OPTIMAL
+         * (render-pass finalLayout) -> TRANSFER_SRC for the blit. */
+        VkImageMemoryBarrier to_src = {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = r->scene_color_image,
+            .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        /* Swapchain image has no meaningful prior contents (we overwrite the
+         * full image via blit) -> UNDEFINED to TRANSFER_DST. */
+        VkImageMemoryBarrier to_dst = {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask       = 0,
+            .dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = swap_img,
+            .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        VkImageMemoryBarrier pre[2] = { to_src, to_dst };
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, NULL, 0, NULL, 2, pre);
+
+        VkImageBlit blit = {
+            .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+            .srcOffsets = {
+                { 0, 0, 0 },
+                { (int32_t)scene_extent.width, (int32_t)scene_extent.height, 1 },
+            },
+            .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+            .dstOffsets = {
+                { 0, 0, 0 },
+                { (int32_t)r->swapchain.extent.width,
+                  (int32_t)r->swapchain.extent.height, 1 },
+            },
+        };
+        vkCmdBlitImage(cmd,
+            r->scene_color_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            swap_img,             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &blit, VK_FILTER_LINEAR);
+
+        /* Hand the swapchain image to the UI pass, which expects
+         * COLOR_ATTACHMENT_OPTIMAL (initialLayout, LOAD_OP_LOAD) so the blitted
+         * scene is preserved underneath the HUD. */
+        VkImageMemoryBarrier to_color = {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = swap_img,
+            .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, NULL, 0, NULL, 1, &to_color);
+    }
 
     /* UI pass — HUD and any screen overlays */
     float sw = (float)r->swapchain.extent.width;

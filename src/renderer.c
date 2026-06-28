@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Offscreen scene-target lifecycle (render-scale / downsampling). Defined
+ * lower in this file; forward-declared so renderer_init can use them. */
+static void renderer_create_scene_target(Renderer* r);
+static void renderer_destroy_scene_target(Renderer* r);
+
 /* ------------------------------------------------------------------ */
 /*  Debug callback                                                    */
 /* ------------------------------------------------------------------ */
@@ -757,6 +762,16 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
     /* Stash present-mode preference; resolved to a supported mode (FIFO
      * fallback) inside swapchain_create, and reused on resize/recreate. */
     r->present_pref = settings.present;
+    /* Clamp render-scale to a sane 0.25..1.0 range. 1.0 disables the offscreen
+     * indirection entirely (legacy direct-to-swapchain path). */
+    {
+        float rs = settings.render_scale;
+        if (rs <= 0.0f) rs = 1.0f;       /* unset/garbage -> default (off) */
+        if (rs < 0.25f) rs = 0.25f;
+        if (rs > 1.0f)  rs = 1.0f;
+        r->render_scale = rs;
+        r->scale_active = (rs < 1.0f);
+    }
 
     /* --- volk --- */
     if (volkInitialize() != VK_SUCCESS) {
@@ -1082,7 +1097,193 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
     /* --- UI system --- */
     ui_init(r);
 
+    /* --- Offscreen scene target (render-scale; no-op at scale 1.0) --- */
+    renderer_create_scene_target(r);
+
     return true;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Offscreen scene target (render-scale / downsampling)              */
+/* ------------------------------------------------------------------ */
+
+/* Tear down the scaled-render offscreen target. Safe to call when nothing is
+ * allocated (all handles NULL). Caller must ensure the GPU is idle. */
+static void renderer_destroy_scene_target(Renderer* r)
+{
+    if (r->scene_framebuffer)
+        vkDestroyFramebuffer(r->device, r->scene_framebuffer, NULL);
+    if (r->scene_msaa_view)
+        vkDestroyImageView(r->device, r->scene_msaa_view, NULL);
+    if (r->scene_msaa_image)
+        vmaDestroyImage(r->allocator, r->scene_msaa_image, r->scene_msaa_alloc);
+    if (r->scene_depth_view)
+        vkDestroyImageView(r->device, r->scene_depth_view, NULL);
+    if (r->scene_depth_image)
+        vmaDestroyImage(r->allocator, r->scene_depth_image, r->scene_depth_alloc);
+    if (r->scene_color_view)
+        vkDestroyImageView(r->device, r->scene_color_view, NULL);
+    if (r->scene_color_image)
+        vmaDestroyImage(r->allocator, r->scene_color_image, r->scene_color_alloc);
+
+    r->scene_framebuffer  = VK_NULL_HANDLE;
+    r->scene_msaa_view    = VK_NULL_HANDLE;
+    r->scene_msaa_image   = VK_NULL_HANDLE;
+    r->scene_msaa_alloc   = VK_NULL_HANDLE;
+    r->scene_depth_view   = VK_NULL_HANDLE;
+    r->scene_depth_image  = VK_NULL_HANDLE;
+    r->scene_depth_alloc  = VK_NULL_HANDLE;
+    r->scene_color_view   = VK_NULL_HANDLE;
+    r->scene_color_image  = VK_NULL_HANDLE;
+    r->scene_color_alloc  = VK_NULL_HANDLE;
+    r->scene_extent.width = 0;
+    r->scene_extent.height = 0;
+}
+
+/* (Re)build the offscreen scene target sized to floor(swapchain_extent*scale).
+ * No-op (and leaves nothing allocated) when scale_active is false. On any
+ * failure the target is torn down and scale_active is cleared so the frame loop
+ * transparently falls back to the legacy direct-to-swapchain path rather than
+ * presenting garbage. Caller owns GPU-idle guarantees. */
+static void renderer_create_scene_target(Renderer* r)
+{
+    if (!r->scale_active)
+        return;
+
+    VkExtent2D full = r->swapchain.extent;
+    uint32_t sw = (uint32_t)((float)full.width  * r->render_scale);
+    uint32_t sh = (uint32_t)((float)full.height * r->render_scale);
+    if (sw < 1) sw = 1;
+    if (sh < 1) sh = 1;
+    r->scene_extent.width  = sw;
+    r->scene_extent.height = sh;
+
+    bool msaa = (r->sample_count != VK_SAMPLE_COUNT_1_BIT);
+    VmaAllocationCreateInfo alloc_ci = { .usage = VMA_MEMORY_USAGE_GPU_ONLY };
+
+    /* Single-sample resolve/color target — also the blit source, so it needs
+     * TRANSFER_SRC. With MSAA it is a resolve attachment; without MSAA it is the
+     * color attachment directly. */
+    VkImageCreateInfo color_ci = {
+        .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType   = VK_IMAGE_TYPE_2D,
+        .format      = r->swapchain.image_format,
+        .extent      = { sw, sh, 1 },
+        .mipLevels   = 1,
+        .arrayLayers = 1,
+        .samples     = VK_SAMPLE_COUNT_1_BIT,
+        .tiling      = VK_IMAGE_TILING_OPTIMAL,
+        .usage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if (vmaCreateImage(r->allocator, &color_ci, &alloc_ci,
+                       &r->scene_color_image, &r->scene_color_alloc, NULL) != VK_SUCCESS) {
+        fprintf(stderr, "render-scale: failed to create scene color image; "
+                        "falling back to full-res\n");
+        goto fail;
+    }
+    VkImageViewCreateInfo color_view_ci = {
+        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image    = r->scene_color_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format   = r->swapchain.image_format,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    if (vkCreateImageView(r->device, &color_view_ci, NULL, &r->scene_color_view) != VK_SUCCESS) {
+        fprintf(stderr, "render-scale: failed to create scene color view\n");
+        goto fail;
+    }
+
+    /* Depth, sized to the scaled extent, samples matching the world pass. */
+    VkImageCreateInfo depth_ci = {
+        .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType   = VK_IMAGE_TYPE_2D,
+        .format      = r->swapchain.depth_format,
+        .extent      = { sw, sh, 1 },
+        .mipLevels   = 1,
+        .arrayLayers = 1,
+        .samples     = r->sample_count,
+        .tiling      = VK_IMAGE_TILING_OPTIMAL,
+        .usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if (vmaCreateImage(r->allocator, &depth_ci, &alloc_ci,
+                       &r->scene_depth_image, &r->scene_depth_alloc, NULL) != VK_SUCCESS) {
+        fprintf(stderr, "render-scale: failed to create scene depth image\n");
+        goto fail;
+    }
+    VkImageViewCreateInfo depth_view_ci = {
+        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image    = r->scene_depth_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format   = r->swapchain.depth_format,
+        .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 },
+    };
+    if (vkCreateImageView(r->device, &depth_view_ci, NULL, &r->scene_depth_view) != VK_SUCCESS) {
+        fprintf(stderr, "render-scale: failed to create scene depth view\n");
+        goto fail;
+    }
+
+    /* MSAA color attachment (only when MSAA enabled) — resolves into scene_color. */
+    if (msaa) {
+        VkImageCreateInfo msaa_ci = {
+            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType   = VK_IMAGE_TYPE_2D,
+            .format      = r->swapchain.image_format,
+            .extent      = { sw, sh, 1 },
+            .mipLevels   = 1,
+            .arrayLayers = 1,
+            .samples     = r->sample_count,
+            .tiling      = VK_IMAGE_TILING_OPTIMAL,
+            .usage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                           VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        if (vmaCreateImage(r->allocator, &msaa_ci, &alloc_ci,
+                           &r->scene_msaa_image, &r->scene_msaa_alloc, NULL) != VK_SUCCESS) {
+            fprintf(stderr, "render-scale: failed to create scene MSAA image\n");
+            goto fail;
+        }
+        VkImageViewCreateInfo msaa_view_ci = {
+            .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image    = r->scene_msaa_image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format   = r->swapchain.image_format,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        if (vkCreateImageView(r->device, &msaa_view_ci, NULL, &r->scene_msaa_view) != VK_SUCCESS) {
+            fprintf(stderr, "render-scale: failed to create scene MSAA view\n");
+            goto fail;
+        }
+    }
+
+    /* Framebuffer against the existing world render pass. Attachment order
+     * must match create_render_pass(): MSAA -> [color(msaa), depth, resolve],
+     * no MSAA -> [color, depth]. */
+    VkImageView att_msaa[3]  = { r->scene_msaa_view, r->scene_depth_view, r->scene_color_view };
+    VkImageView att_plain[2] = { r->scene_color_view, r->scene_depth_view };
+    VkFramebufferCreateInfo fb_ci = {
+        .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .renderPass      = r->render_pass,
+        .attachmentCount = msaa ? 3u : 2u,
+        .pAttachments    = msaa ? att_msaa : att_plain,
+        .width           = sw,
+        .height          = sh,
+        .layers          = 1,
+    };
+    if (vkCreateFramebuffer(r->device, &fb_ci, NULL, &r->scene_framebuffer) != VK_SUCCESS) {
+        fprintf(stderr, "render-scale: failed to create scene framebuffer\n");
+        goto fail;
+    }
+
+    fprintf(stderr, "render-scale: scene target %ux%u (%.2fx) -> swapchain %ux%u\n",
+            sw, sh, (double)r->render_scale, full.width, full.height);
+    return;
+
+fail:
+    renderer_destroy_scene_target(r);
+    r->scale_active = false;   /* safe fallback: legacy direct path */
 }
 
 /* ------------------------------------------------------------------ */
@@ -1100,6 +1301,10 @@ void renderer_recreate_swapchain(Renderer* r)
     }
 
     vkDeviceWaitIdle(r->device);
+
+    /* Drop the old scaled-render offscreen target; rebuilt against the new
+     * swapchain extent below. No-op when render-scale is disabled. */
+    renderer_destroy_scene_target(r);
 
     /* Save old swapchain */
     Swapchain old = r->swapchain;
@@ -1142,6 +1347,9 @@ void renderer_recreate_swapchain(Renderer* r)
 
     /* Rebuild UI framebuffers against new image views */
     ui_on_swapchain_recreate(r);
+
+    /* Rebuild the scaled-render offscreen target for the new extent. */
+    renderer_create_scene_target(r);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1152,6 +1360,9 @@ void renderer_cleanup(Renderer* r)
 {
     /* UI system (calls vkDeviceWaitIdle internally) */
     ui_cleanup(r);
+
+    /* Offscreen scene target (render-scale). No-op when not allocated. */
+    renderer_destroy_scene_target(r);
 
     /* Block-outline pipeline + per-frame VBs */
     if (r->outline_pipeline)
