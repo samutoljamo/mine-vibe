@@ -315,6 +315,147 @@ static void test_greedy_fewer_than_naive(void)
     printf("PASS: test_greedy_fewer_than_naive\n");
 }
 
+/* (e) Geometry validity: every emitted vertex must lie within the chunk's
+ * local bounds, be finite, and every quad (4 consecutive verts) must be planar
+ * (one axis constant across all 4). A greedy merge that maps width/height to
+ * the wrong axis, or overflows, produces out-of-bounds or non-planar quads —
+ * which look like exploded terrain on screen but pass the count/AO tests. */
+static void test_greedy_geometry_valid(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    /* Mixed terrain: a solid slab plus a couple of stragglers so several
+     * face directions produce merged (W>1/H>1) quads. */
+    for (int y = 60; y < 68; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_block(c, x, y, z, BLOCK_STONE);
+    chunk_set_block(c, 4, 68, 4, BLOCK_DIRT);
+    chunk_set_block(c, 10, 68, 11, BLOCK_DIRT);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_skylight(c, x, y, z, 15);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    const float EPS = 0.01f;
+    for (uint32_t i = 0; i < md.vertex_count; i++) {
+        float x = md.vertices[i].pos[0];
+        float y = md.vertices[i].pos[1];
+        float z = md.vertices[i].pos[2];
+        /* finite */
+        assert(x == x && y == y && z == z);
+        /* within chunk-local bounds [0..DIM] (faces sit on the 0..N edges) */
+        assert(x >= -EPS && x <= (float)CHUNK_X + EPS);
+        assert(y >= -EPS && y <= (float)CHUNK_Y + EPS);
+        assert(z >= -EPS && z <= (float)CHUNK_Z + EPS);
+    }
+
+    /* Each quad must be planar: one of the 3 axes is constant across all 4. */
+    for (uint32_t i = 0; i + 4 <= md.vertex_count; i += 4) {
+        int planar = 0;
+        for (int axis = 0; axis < 3; axis++) {
+            float v0 = md.vertices[i].pos[axis];
+            int same = 1;
+            for (int k = 1; k < 4; k++)
+                if (md.vertices[i+k].pos[axis] < v0 - EPS ||
+                    md.vertices[i+k].pos[axis] > v0 + EPS) { same = 0; break; }
+            if (same) { planar = 1; break; }
+        }
+        assert(planar);
+    }
+
+    /* INDEX VALIDITY: every index must be in range, and the 6 indices for
+     * quad q must reference exactly that quad's 4 vertices [4q..4q+3]. A bad
+     * base-index accumulation produces out-of-range / cross-quad indices that
+     * render as triangles shooting across the world — invisible to the count
+     * and position checks above. */
+    assert(md.index_count == md.vertex_count / 4 * 6);
+    for (uint32_t i = 0; i < md.index_count; i++)
+        assert(md.indices[i] < md.vertex_count);
+    for (uint32_t q = 0; q * 6 + 6 <= md.index_count; q++) {
+        uint32_t lo = q * 4, hi = q * 4 + 3;
+        for (int k = 0; k < 6; k++) {
+            uint32_t idx = md.indices[q * 6 + k];
+            assert(idx >= lo && idx <= hi);
+        }
+    }
+
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_greedy_geometry_valid\n");
+}
+
+/* (f) Worst-case stress: a pseudo-random voxel volume (deterministic hash, no
+ * rand) of mixed block types + air pockets. This produces faces in every
+ * direction and exercises greedy rectangle extraction across many small runs —
+ * the configuration most likely to expose a base-index accumulation bug that
+ * the simple slab/plane cases miss. Validates bounds, planarity, and index
+ * range/quad-locality (the "triangles shooting into the sky" failure mode). */
+static void test_greedy_random_volume_valid(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    const BlockID types[3] = { BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS };
+    for (int y = 40; y < 90; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++) {
+                uint32_t h = (uint32_t)(x*73856093 ^ y*19349663 ^ z*83492791);
+                h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+                if ((h & 3u) != 0u)  /* ~75% filled, ~25% air pockets */
+                    chunk_set_block(c, x, y, z, types[h % 3u]);
+            }
+    atomic_store(&c->state, CHUNK_GENERATED);
+    for (int y = 0; y < CHUNK_Y; y++)
+        for (int z = 0; z < CHUNK_Z; z++)
+            for (int x = 0; x < CHUNK_X; x++)
+                chunk_set_skylight(c, x, y, z, 15);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    const float EPS = 0.01f;
+    assert(md.vertex_count > 0 && md.index_count == md.vertex_count / 4 * 6);
+    for (uint32_t i = 0; i < md.vertex_count; i++) {
+        float x = md.vertices[i].pos[0], y = md.vertices[i].pos[1],
+              z = md.vertices[i].pos[2];
+        assert(x == x && y == y && z == z);
+        assert(x >= -EPS && x <= (float)CHUNK_X + EPS);
+        assert(y >= -EPS && y <= (float)CHUNK_Y + EPS);
+        assert(z >= -EPS && z <= (float)CHUNK_Z + EPS);
+    }
+    for (uint32_t i = 0; i < md.index_count; i++)
+        assert(md.indices[i] < md.vertex_count);
+    for (uint32_t q = 0; q * 6 + 6 <= md.index_count; q++) {
+        uint32_t lo = q * 4, hi = q * 4 + 3;
+        for (int k = 0; k < 6; k++)
+            assert(md.indices[q*6+k] >= lo && md.indices[q*6+k] <= hi);
+    }
+    /* planarity */
+    for (uint32_t i = 0; i + 4 <= md.vertex_count; i += 4) {
+        int planar = 0;
+        for (int axis = 0; axis < 3; axis++) {
+            float v0 = md.vertices[i].pos[axis]; int same = 1;
+            for (int k = 1; k < 4; k++)
+                if (md.vertices[i+k].pos[axis] < v0-EPS ||
+                    md.vertices[i+k].pos[axis] > v0+EPS) { same = 0; break; }
+            if (same) { planar = 1; break; }
+        }
+        assert(planar);
+    }
+    printf("  random-volume: %u verts, %u indices, all valid\n",
+           md.vertex_count, md.index_count);
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_greedy_random_volume_valid\n");
+}
+
 int main(void)
 {
     test_solid_chunk_mesh();
@@ -326,5 +467,7 @@ int main(void)
     test_greedy_checkerboard_no_overmerge();
     test_greedy_light_prevents_merge();
     test_greedy_fewer_than_naive();
+    test_greedy_geometry_valid();
+    test_greedy_random_volume_valid();
     return 0;
 }
