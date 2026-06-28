@@ -63,18 +63,74 @@ enum {
     ITEM_MATERIAL_FIRST = ITEM_TOOL_END,
 
     ITEM_STICK = ITEM_MATERIAL_FIRST,
+    ITEM_LEATHER,        /* armour crafting material (leather tier) */
+    ITEM_IRON_INGOT,     /* armour crafting material (iron tier); smelted from ore */
 
     ITEM_MATERIAL_END,
     ITEM_MATERIAL_LAST  = ITEM_MATERIAL_END - 1,
     ITEM_MATERIAL_COUNT = ITEM_MATERIAL_END - ITEM_MATERIAL_FIRST,
 
-    ITEM_COUNT = ITEM_MATERIAL_END,
+    /* Armour items. Layout is tier-major (leather, iron) × slot
+     * (helmet, chestplate, leggings, boots). Not placeable, not tools; they
+     * carry an armour-points value and durability and live in dedicated
+     * equipment slots (see ArmorSlot). The exact numbering is not relied on
+     * outside item.c; use the named constants. */
+    ITEM_ARMOR_FIRST = ITEM_MATERIAL_END,
+
+    ITEM_LEATHER_HELMET = ITEM_ARMOR_FIRST,
+    ITEM_LEATHER_CHESTPLATE,
+    ITEM_LEATHER_LEGGINGS,
+    ITEM_LEATHER_BOOTS,
+
+    ITEM_IRON_HELMET,
+    ITEM_IRON_CHESTPLATE,
+    ITEM_IRON_LEGGINGS,
+    ITEM_IRON_BOOTS,
+
+    ITEM_ARMOR_END,
+    ITEM_ARMOR_LAST  = ITEM_ARMOR_END - 1,
+    ITEM_ARMOR_COUNT = ITEM_ARMOR_END - ITEM_ARMOR_FIRST,
+
+    ITEM_COUNT = ITEM_ARMOR_END,
 };
 
-/* True for non-block, non-tool crafting materials (e.g. STICK). */
+/* True for non-block, non-tool crafting materials (e.g. STICK, LEATHER). */
 static inline bool item_is_material(uint16_t id) {
     return id >= ITEM_MATERIAL_FIRST && id <= ITEM_MATERIAL_LAST;
 }
+
+/* True for wearable armour items. */
+static inline bool item_is_armor(uint16_t id) {
+    return id >= ITEM_ARMOR_FIRST && id <= ITEM_ARMOR_LAST;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Armour equipment                                                   */
+/* ------------------------------------------------------------------ */
+
+/* The four body slots a player can wear armour in. ARMOR_SLOT_COUNT armour
+ * pieces are tracked per player; the enum value doubles as the equipment array
+ * index. */
+typedef enum {
+    ARMOR_SLOT_HEAD = 0,
+    ARMOR_SLOT_CHEST,
+    ARMOR_SLOT_LEGS,
+    ARMOR_SLOT_FEET,
+    ARMOR_SLOT_COUNT,
+    ARMOR_SLOT_NONE = -1,   /* item is not armour */
+} ArmorSlot;
+
+/* Max protection (each point = 4% reduction); 25 points clamps to the 80% cap
+ * vanilla uses, so any full set can never exceed it. */
+#define ARMOR_MAX_POINTS   25
+#define ARMOR_CAP_PERCENT  80
+
+/* Which body slot an armour item occupies, or ARMOR_SLOT_NONE for non-armour. */
+ArmorSlot item_armor_slot(ItemId id);
+
+/* Armour-defence points contributed by a single armour item (0 for non-armour
+ * or empty/BLOCK_AIR). Pure lookup. */
+int item_armor_points(ItemId id);
 
 /* Immutable per-item metadata. For block items most tool fields are zeroed
  * (TOOL_NONE / MATERIAL_NONE / durability 0). For tools, `block` is unused. */
@@ -85,6 +141,8 @@ typedef struct ItemDef {
     ToolMaterial material;        /* MATERIAL_NONE for blocks */
     uint16_t     max_durability;  /* 0 for blocks / unbreakable use */
     uint8_t      atlas_tile;      /* atlas tile index for the tool icon (tools only) */
+    int8_t       armor_slot;      /* ArmorSlot for armour items, ARMOR_SLOT_NONE otherwise */
+    uint8_t      armor_points;    /* defence points for armour items, 0 otherwise */
 } ItemDef;
 
 /* ------------------------------------------------------------------ */
@@ -133,5 +191,21 @@ void item_representative_color(ItemId id, uint8_t* r, uint8_t* g, uint8_t* b);
  * A wrong-category tool, a block item, or no match yields the base hand time.
  * Unbreakable blocks (bedrock) stay unbreakable regardless of tool. */
 float tool_break_time(ItemId tool, BlockID block);
+
+/* ------------------------------------------------------------------ */
+/*  Pure armour math                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Sum of armour points across an equipment set of ARMOR_SLOT_COUNT item ids
+ * (BLOCK_AIR / non-armour entries contribute 0). The result is clamped to
+ * ARMOR_MAX_POINTS. Pure. */
+int armor_points_total(const ItemId equipped[ARMOR_SLOT_COUNT]);
+
+/* Damage remaining after armour reduction, Minecraft-style: each armour point
+ * removes 4% of incoming damage, capped at ARMOR_CAP_PERCENT (80%). `raw` is the
+ * pre-mitigation damage; `points` is the total armour points (clamped here too).
+ * Always returns at least 0, and at least 1 when raw > 0 (armour never makes a
+ * blow harmless). Pure. */
+int damage_after_armor(int raw, int points);
 
 #endif /* ITEM_H */

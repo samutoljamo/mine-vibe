@@ -7,3 +7,11 @@ void hud_set_survival(int food, int air)
     (void)food;
     (void)air;
 }
+
+/* Stub for hud_set_armor — client.c references it from its PKT_ARMOR handler. */
+#include <stdint.h>
+void hud_set_armor(const uint16_t* worn, int points)
+{
+    (void)worn;
+    (void)points;
+}

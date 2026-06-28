@@ -41,6 +41,12 @@ typedef struct {
     uint8_t food;     /* 0..20 hunger, last server-reported (v3 health pkt) */
     uint8_t air;      /* 0..20 oxygen bubbles, last server-reported         */
 
+    /* Equipped armour, mirrored from the server for the HUD (PKT_ARMOR).
+     * armor[ARMOR_SLOT_*] holds the worn item id (BLOCK_AIR = empty);
+     * armor_points is the server's clamped total used to size the armour bar. */
+    ItemId  armor[ARMOR_SLOT_COUNT];
+    uint8_t armor_points;
+
     /* Day/night clock, server-authoritative. world_ticks is the last value
      * received in a PKT_WORLD_STATE; world_ticks_recv_time is when (monotonic
      * net_time seconds). The renderer estimates the current time-of-day by
@@ -100,6 +106,11 @@ void client_send_mob_attack(Client* c, uint16_t mob_id);
 /* Send a reliable craft request for the recipe at `recipe_index` in the shared
  * crafting table. The server validates inputs and replies with PKT_INVENTORY. */
 void client_send_craft(Client* c, uint16_t recipe_index);
+
+/* Send a reliable equip request: equip the armour item held in inventory slot
+ * `slot` into its body slot. The server validates and replies with fresh
+ * PKT_INVENTORY + PKT_ARMOR snapshots. */
+void client_send_equip(Client* c, uint8_t slot);
 
 /* Process all inbound messages from the net thread.
  * Returns number of PKT_WORLD_STATE packets processed. */

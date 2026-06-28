@@ -60,6 +60,8 @@ void client_init(Client* c, NetThread* net,
     c->health = PLAYER_MAX_HEALTH;
     c->food   = NET_MAX_FOOD;
     c->air    = NET_MAX_AIR;
+    for (int i = 0; i < ARMOR_SLOT_COUNT; i++) c->armor[i] = (ItemId)BLOCK_AIR;
+    c->armor_points = 0;
     c->pending_block_change_count = 0;
     /* Start at noon so the sky is daylit before the first PKT_WORLD_STATE. */
     c->world_ticks = DAY_LENGTH_TICKS / 4;
@@ -185,6 +187,16 @@ void client_send_craft(Client* c, uint16_t recipe_index) {
     reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
     uint8_t buf[16];
     size_t len = net_write_craft(buf, &h, recipe_index);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
+}
+
+void client_send_equip(Client* c, uint8_t slot) {
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_EQUIP, .player_id = c->local_player_id,
+                       .seq = c->tick++ };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[16];
+    size_t len = net_write_equip(buf, &h, slot);
     reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
 }
 
@@ -351,7 +363,8 @@ int client_poll(Client* c)
                     c->inventory.selected = prev_selected;  /* preserve focus */
                     for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
                         ItemId it = (ItemId)ip.slots[i].item;
-                        if (!item_is_block(it) && !item_is_tool(it))
+                        if (!item_is_block(it) && !item_is_tool(it) &&
+                            !item_is_material(it) && !item_is_armor(it))
                             continue;                       /* ignore garbage ids */
                         c->inventory.slots[i].item       = it;
                         c->inventory.slots[i].count      = ip.slots[i].count;
@@ -383,6 +396,18 @@ int client_poll(Client* c)
                     hud_set_survival(NET_MAX_FOOD, NET_MAX_AIR);
                     g_death_cb(g_death_user);
                 }
+            }
+
+        } else if (type == PKT_ARMOR && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new) {
+                uint16_t worn[ARMOR_NET_SLOTS]; uint8_t pts;
+                net_read_armor(msg->data, (size_t)msg->len, &h, worn, &pts);
+                for (int i = 0; i < ARMOR_SLOT_COUNT; i++)
+                    c->armor[i] = (ItemId)worn[i];
+                c->armor_points = pts;
+                hud_set_armor((const ItemId*)c->armor, pts);
             }
 
         } else if (type == PKT_DISCONNECT) {

@@ -24,6 +24,8 @@ typedef enum {
     PKT_MOB_ATTACK      = 12, /* client → server: melee a mob by id           */
     PKT_PLAYER_HEALTH   = 13, /* server → one:  authoritative health + death  */
     PKT_CRAFT           = 14, /* client → server: craft a recipe by index     */
+    PKT_EQUIP           = 15, /* client → server: equip the armour in a slot   */
+    PKT_ARMOR           = 16, /* server → one:    equipped armour + points     */
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -35,7 +37,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 5
+#define NET_PROTOCOL_VERSION 6
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -408,6 +410,57 @@ static inline void net_read_craft(const uint8_t* buf, PacketHeader* hdr,
     size_t off = 0;
     net_read_header(buf, &off, hdr);
     *recipe_index = net_read_u16(buf, &off);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Armour packets (protocol v6)                                       */
+/*    PKT_EQUIP — client → server, 9 wire bytes (8 header + u8 slot).   */
+/*       Asks the server to equip the armour item held in inventory     */
+/*       slot `slot` into its matching armour slot (server validates).  */
+/*    PKT_ARMOR — server → one,  8 + 1 + ARMOR_NET_SLOTS*2 + 1 bytes.   */
+/*       Carries the four equipped armour item ids (u16 each, BLOCK_AIR  */
+/*       when empty) plus the total armour points (u8) for the HUD bar.  */
+/* ------------------------------------------------------------------ */
+#define ARMOR_NET_SLOTS 4   /* must match ARMOR_SLOT_COUNT in item.h */
+
+static inline size_t net_write_equip(uint8_t* buf, const PacketHeader* hdr,
+                                     uint8_t slot) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u8(buf, &off, slot);
+    return off;
+}
+
+static inline void net_read_equip(const uint8_t* buf, PacketHeader* hdr,
+                                  uint8_t* slot) {
+    size_t off = 0;
+    net_read_header(buf, &off, hdr);
+    *slot = net_read_u8(buf, &off);
+}
+
+static inline size_t net_write_armor(uint8_t* buf, const PacketHeader* hdr,
+                                     const uint16_t equipped[ARMOR_NET_SLOTS],
+                                     uint8_t total_points) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u8(buf, &off, ARMOR_NET_SLOTS);
+    for (int i = 0; i < ARMOR_NET_SLOTS; i++)
+        net_write_u16(buf, &off, equipped[i]);
+    net_write_u8(buf, &off, total_points);
+    return off;
+}
+
+static inline void net_read_armor(const uint8_t* buf, size_t len,
+                                  PacketHeader* hdr,
+                                  uint16_t equipped[ARMOR_NET_SLOTS],
+                                  uint8_t* total_points) {
+    size_t off = 0;
+    net_read_header(buf, &off, hdr);
+    uint8_t n = (len >= HEADER_WIRE_SIZE + 1) ? net_read_u8(buf, &off) : 0;
+    if (n > ARMOR_NET_SLOTS) n = ARMOR_NET_SLOTS;
+    for (int i = 0; i < ARMOR_NET_SLOTS; i++) equipped[i] = 0;
+    for (uint8_t i = 0; i < n; i++) equipped[i] = net_read_u16(buf, &off);
+    *total_points = (off + 1 <= len) ? net_read_u8(buf, &off) : 0;
 }
 
 /* ------------------------------------------------------------------ */

@@ -311,6 +311,73 @@ def draw_stick(size=16):
     _draw_handle(img, size)
     return img
 
+# ── armour materials + pieces ───────────────────────────────────────────────
+
+ARMOR_TINT = {
+    'leather': (150, 102,  60, 255),
+    'iron':    (200, 200, 208, 255),
+}
+
+def _fill_rect(img, x0, y0, x1, y1, col):
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            if 0 <= x < img.size[0] and 0 <= y < img.size[1]:
+                img.putpixel((x, y), col)
+
+def draw_leather(size=16):
+    """A folded tan hide — the leather crafting material."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    col = (150, 102, 60, 255)
+    _fill_rect(img, 3, 4, size - 3, size - 4, col)
+    # a couple of darker stitch lines
+    dark = (110, 72, 40, 255)
+    for x in range(3, size - 3):
+        img.putpixel((x, 7), dark)
+        img.putpixel((x, size - 7), dark)
+    return img
+
+def draw_iron_ingot(size=16):
+    """A grey iron ingot bar."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    col = (216, 216, 220, 255)
+    edge = (150, 150, 156, 255)
+    _fill_rect(img, 2, 6, size - 2, size - 4, col)
+    for x in range(2, size - 2):
+        img.putpixel((x, 6), edge)
+        img.putpixel((x, size - 5), edge)
+    return img
+
+def draw_helmet(tier, size=16):
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    col = ARMOR_TINT[tier]
+    _fill_rect(img, 3, 3, size - 3, 9, col)     # dome
+    _fill_rect(img, 3, 9, 6, 12, col)           # left cheek
+    _fill_rect(img, size - 6, 9, size - 3, 12, col)  # right cheek
+    return img
+
+def draw_chestplate(tier, size=16):
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    col = ARMOR_TINT[tier]
+    _fill_rect(img, 2, 3, size - 2, 5, col)     # shoulders
+    _fill_rect(img, 4, 5, size - 4, size - 3, col)  # torso
+    return img
+
+def draw_leggings(tier, size=16):
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    col = ARMOR_TINT[tier]
+    _fill_rect(img, 3, 2, size - 3, 6, col)     # waist
+    _fill_rect(img, 3, 6, 7, size - 2, col)     # left leg
+    _fill_rect(img, size - 7, 6, size - 3, size - 2, col)  # right leg
+    return img
+
+def draw_boots(tier, size=16):
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    col = ARMOR_TINT[tier]
+    _fill_rect(img, 3, 7, 7, size - 2, col)     # left boot
+    _fill_rect(img, size - 7, 7, size - 3, size - 2, col)  # right boot
+    _fill_rect(img, 3, size - 4, size - 3, size - 2, col)  # soles
+    return img
+
 TILE_GENERATORS = {
     0:  draw_stone,
     1:  draw_dirt,
@@ -343,6 +410,17 @@ TILE_GENERATORS = {
     27: lambda: draw_shovel('iron'),
     # Crafting materials (free atlas indices after the tools).
     28: draw_stick,
+    29: draw_leather,
+    30: draw_iron_ingot,
+    # Armour pieces (leather then iron, helmet/chest/legs/boots).
+    31: lambda: draw_helmet('leather'),
+    32: lambda: draw_chestplate('leather'),
+    33: lambda: draw_leggings('leather'),
+    34: lambda: draw_boots('leather'),
+    35: lambda: draw_helmet('iron'),
+    36: lambda: draw_chestplate('iron'),
+    37: lambda: draw_leggings('iron'),
+    38: lambda: draw_boots('iron'),
 }
 
 TILE_NAMES = {
@@ -354,7 +432,11 @@ TILE_NAMES = {
     19: "wood_pickaxe",  20: "wood_axe",  21: "wood_shovel",
     22: "stone_pickaxe", 23: "stone_axe", 24: "stone_shovel",
     25: "iron_pickaxe",  26: "iron_axe",  27: "iron_shovel",
-    28: "stick",
+    28: "stick", 29: "leather", 30: "iron_ingot",
+    31: "leather_helmet", 32: "leather_chestplate",
+    33: "leather_leggings", 34: "leather_boots",
+    35: "iron_helmet", 36: "iron_chestplate",
+    37: "iron_leggings", 38: "iron_boots",
 }
 
 # ── player skin ───────────────────────────────────────────────────────────────

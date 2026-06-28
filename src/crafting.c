@@ -55,6 +55,44 @@ static const Recipe g_recipe_table[] = {
     { .name = "Torches", .input_count = 2,
       .inputs = { {(ItemId)BLOCK_COAL_ORE, 1}, {ITEM_STICK, 1} },
       .output = { (ItemId)BLOCK_TORCH, 4 } },
+
+    /* --- Armour materials --- */
+    /* No furnace yet: "smelt" iron ore directly into an ingot via a 1:1 craft. */
+    { .name = "Iron Ingot", .input_count = 1,
+      .inputs = { {(ItemId)BLOCK_IRON_ORE, 1} },
+      .output = { ITEM_IRON_INGOT, 1 } },
+    /* Leather stand-in: tan a hide from planks (no animals/hide drops yet). */
+    { .name = "Leather", .input_count = 1,
+      .inputs = { {(ItemId)BLOCK_PLANKS, 3} },
+      .output = { ITEM_LEATHER, 1 } },
+
+    /* --- Leather armour: vanilla shapes' material counts (5/8/7/4) --- */
+    { .name = "Leather Helmet", .input_count = 1,
+      .inputs = { {ITEM_LEATHER, 5} },
+      .output = { ITEM_LEATHER_HELMET, 1 } },
+    { .name = "Leather Chestplate", .input_count = 1,
+      .inputs = { {ITEM_LEATHER, 8} },
+      .output = { ITEM_LEATHER_CHESTPLATE, 1 } },
+    { .name = "Leather Leggings", .input_count = 1,
+      .inputs = { {ITEM_LEATHER, 7} },
+      .output = { ITEM_LEATHER_LEGGINGS, 1 } },
+    { .name = "Leather Boots", .input_count = 1,
+      .inputs = { {ITEM_LEATHER, 4} },
+      .output = { ITEM_LEATHER_BOOTS, 1 } },
+
+    /* --- Iron armour: iron ingots --- */
+    { .name = "Iron Helmet", .input_count = 1,
+      .inputs = { {ITEM_IRON_INGOT, 5} },
+      .output = { ITEM_IRON_HELMET, 1 } },
+    { .name = "Iron Chestplate", .input_count = 1,
+      .inputs = { {ITEM_IRON_INGOT, 8} },
+      .output = { ITEM_IRON_CHESTPLATE, 1 } },
+    { .name = "Iron Leggings", .input_count = 1,
+      .inputs = { {ITEM_IRON_INGOT, 7} },
+      .output = { ITEM_IRON_LEGGINGS, 1 } },
+    { .name = "Iron Boots", .input_count = 1,
+      .inputs = { {ITEM_IRON_INGOT, 4} },
+      .output = { ITEM_IRON_BOOTS, 1 } },
 };
 
 #define RECIPE_COUNT ((int)(sizeof(g_recipe_table) / sizeof(g_recipe_table[0])))

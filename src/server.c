@@ -32,6 +32,8 @@ void server_request_stop(void) { atomic_store(&g_server_stop, true); }
  * cross-header invariant. */
 _Static_assert(INVENTORY_SLOTS == INVENTORY_NET_SLOTS,
     "wire format and inventory model must agree on slot count");
+_Static_assert(ARMOR_SLOT_COUNT == ARMOR_NET_SLOTS,
+    "wire format and armour model must agree on armour slot count");
 
 /* Edible item: with no dedicated FOOD item in the block model, we designate an
  * existing, naturally-obtainable block as food ("foraged berries from leaves").
@@ -44,6 +46,9 @@ _Static_assert(INVENTORY_SLOTS == INVENTORY_NET_SLOTS,
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+/* Forward decl: armour snapshot is sent on connect (before its definition). */
+static void server_send_armor(Server* s, ServerClient* c);
 
 static ServerClient* find_client_by_addr(Server* s,
                                            const struct sockaddr_in* addr)
@@ -206,6 +211,9 @@ static void handle_connect_request(Server* s, const struct sockaddr_in* addr,
     send_reliable(s, c, buf, (uint16_t)off);
 
     broadcast_player_join(s, c);
+
+    /* Initial state snapshots for the new client (armour starts empty). */
+    server_send_armor(s, c);
 }
 
 static void handle_position(Server* s, ServerClient* c,
@@ -275,6 +283,63 @@ static void server_send_inventory(Server* s, ServerClient* c)
     uint8_t buf[64];
     size_t  len = net_write_inventory(buf, &p);
     send_reliable(s, c, buf, (uint16_t)len);
+}
+
+/* Total armour points from the player's worn set (clamped pure helper). */
+static int server_armor_points(const ServerClient* c) {
+    return armor_points_total(c->armor);
+}
+
+static void server_send_armor(Server* s, ServerClient* c) {
+    uint16_t worn[ARMOR_NET_SLOTS];
+    for (int i = 0; i < ARMOR_SLOT_COUNT; i++) worn[i] = (uint16_t)c->armor[i];
+    PacketHeader h = { .type = PKT_ARMOR, .player_id = 0 };
+    uint8_t buf[32];
+    size_t  len = net_write_armor(buf, &h, worn,
+                                  (uint8_t)server_armor_points(c));
+    send_reliable(s, c, buf, (uint16_t)len);
+}
+
+/* Equip the armour item held in inventory slot `slot` into its body slot.
+ * Server-authoritative: any non-armour item or empty/garbage slot is a no-op.
+ * Swaps any previously-worn piece back into the inventory slot. */
+static void handle_equip(Server* s, ServerClient* c,
+                         const uint8_t* data, size_t len) {
+    if (len < 9) return;
+    PacketHeader h; uint8_t slot;
+    net_read_equip(data, &h, &slot);
+    bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+    if (!is_new) return;
+    c->last_recv_time = net_time();
+
+    if (slot >= INVENTORY_SLOTS) return;
+    InventorySlot* inv = &c->inventory.slots[slot];
+    if (inv->count == 0) return;
+    ItemId item = inv->item;
+    ArmorSlot as = item_armor_slot(item);
+    if (as == ARMOR_SLOT_NONE) return;     /* not armour: ignore */
+
+    /* Swap: remember what was worn, place the new piece, return the old to the
+     * vacated inventory slot (armour is unstackable so the slot held one). */
+    ItemId   prev_item = c->armor[as];
+    uint16_t prev_dur  = c->armor_dur[as];
+
+    c->armor[as]     = item;
+    c->armor_dur[as] = inv->durability ? inv->durability
+                                       : item_get_def(item)->max_durability;
+
+    if (prev_item != BLOCK_AIR && item_is_armor(prev_item)) {
+        inv->item       = prev_item;
+        inv->count      = 1;
+        inv->durability = prev_dur;
+    } else {
+        inv->item       = BLOCK_AIR;
+        inv->count      = 0;
+        inv->durability = 0;
+    }
+
+    server_send_inventory(s, c);
+    server_send_armor(s, c);
 }
 
 /* --- Pure block-edit validation predicates (no world/server state) --- */
@@ -583,6 +648,13 @@ static void server_kill_player(Server* s, ServerClient* c) {
     server_give_starter_kit(c);   /* keep tools usable after respawn */
     server_send_inventory(s, c);
 
+    /* Worn armour is lost on death (no item-entity drops yet). */
+    for (int i = 0; i < ARMOR_SLOT_COUNT; i++) {
+        c->armor[i]     = (ItemId)BLOCK_AIR;
+        c->armor_dur[i] = 0;
+    }
+    server_send_armor(s, c);
+
     c->health = 0;
     server_send_health(s, c, MOB_HEALTH_FLAG_DIED);
 
@@ -595,10 +667,33 @@ static void server_kill_player(Server* s, ServerClient* c) {
     c->needs_health_sync = true;
 }
 
+/* Apply one point of armour wear to every worn piece on a hit; a piece that
+ * reaches 0 durability breaks (slot emptied). Flags an armour sync if anything
+ * changed so the client HUD updates. Matches the per-hit wear tested for the
+ * pure durability math. */
+static void server_wear_armor(Server* s, ServerClient* c) {
+    bool changed = false;
+    for (int i = 0; i < ARMOR_SLOT_COUNT; i++) {
+        if (c->armor[i] == BLOCK_AIR || !item_is_armor(c->armor[i])) continue;
+        if (c->armor_dur[i] > 0) c->armor_dur[i]--;
+        if (c->armor_dur[i] == 0) {            /* broke */
+            c->armor[i] = (ItemId)BLOCK_AIR;
+            changed = true;
+        }
+    }
+    if (changed) server_send_armor(s, c);
+}
+
 void server_damage_player(Server* s, ServerClient* c, int dmg) {
     if (c->health <= 0) return;
     if (c->respawn_grace > 0.0f) return;   /* invulnerable after respawn */
-    c->health = (int16_t)(c->health - dmg);
+    if (dmg <= 0) return;
+
+    /* Armour reduces incoming damage (4%/point, capped) and takes wear. */
+    int reduced = damage_after_armor(dmg, server_armor_points(c));
+    if (server_armor_points(c) > 0) server_wear_armor(s, c);
+
+    c->health = (int16_t)(c->health - reduced);
     if (c->health <= 0) {
         server_kill_player(s, c);
     } else {
@@ -886,6 +981,7 @@ static void server_tick(Server* s, int tick_num)
             else if (type == PKT_BLOCK_PLACE)  handle_block_place(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_MOB_ATTACK)   handle_mob_attack(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_CRAFT)        handle_craft(s, c, msg->data, (size_t)msg->len);
+            else if (type == PKT_EQUIP)        handle_equip(s, c, msg->data, (size_t)msg->len);
         }
         free(msg);
     }
