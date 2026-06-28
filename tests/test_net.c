@@ -6,6 +6,7 @@
 #include "../src/net.h"
 #include "../src/reliable.h"
 #include "../src/chunkwire.h"
+#include "../src/chunk_reasm.h"
 
 static void test_serialize_position(void)
 {
@@ -736,6 +737,228 @@ static void test_cursor_roundtrip_parity(void) {
     printf("PASS: cursor_roundtrip_parity\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  Keepalive packet (protocol v9)                                      */
+/* ------------------------------------------------------------------ */
+
+/* PKT_KEEPALIVE is header-only; it round-trips through the bounds-checked codec
+ * and a buffer shorter than the header is rejected without over-reading. */
+static void test_keepalive_roundtrip(void) {
+    uint8_t buf[HEADER_WIRE_SIZE];
+    PacketHeader hdr = { .type = PKT_KEEPALIVE, .player_id = 7,
+                         .seq = 0x1234, .ack = 0x5678, .ack_bits = 0x9ABC };
+    size_t len = net_write_keepalive(buf, &hdr);
+    assert(len == HEADER_WIRE_SIZE);
+
+    PacketHeader h;
+    assert(net_parse_keepalive(buf, len, &h));
+    assert(h.type == PKT_KEEPALIVE && h.player_id == 7);
+    assert(h.seq == 0x1234 && h.ack == 0x5678 && h.ack_bits == 0x9ABC);
+
+    /* Any truncation below the header is rejected, never over-read. */
+    for (size_t L = 0; L < HEADER_WIRE_SIZE; L++) {
+        uint8_t* t = malloc(L ? L : 1);
+        memcpy(t, buf, L);
+        PacketHeader rh;
+        assert(!net_parse_keepalive(t, L, &rh));
+        free(t);
+    }
+    printf("PASS: keepalive_roundtrip\n");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Chunk reassembly ring (loss hardening, mine-vibe-003)               */
+/* ------------------------------------------------------------------ */
+
+/* Build a synthetic column of `total` fragments whose decoded body is a
+ * deterministic function of msg_id, so two interleaved columns are
+ * distinguishable. Returns the body length. */
+static size_t build_column(uint16_t msg_id, uint16_t total, uint8_t* body,
+                           size_t body_cap) {
+    size_t n = (size_t)(total - 1) * CHUNK_DATA_FRAG_BYTES + 17; /* partial last */
+    assert(n <= body_cap);
+    for (size_t i = 0; i < n; i++)
+        body[i] = (uint8_t)((i * 13 + msg_id * 7 + 1) & 0xFF);
+    return n;
+}
+
+/* Feed fragment `index` of a built column into the ring. Returns true (and fills
+ * out/out_len) when the column completes. */
+static bool feed_frag(ChunkReasmRing* ring, uint16_t msg_id, uint16_t index,
+                      uint16_t total, const uint8_t* body, size_t body_len,
+                      uint8_t* out, size_t out_cap, size_t* out_len) {
+    size_t off = (size_t)index * CHUNK_DATA_FRAG_BYTES;
+    size_t flen = body_len - off;
+    if (flen > CHUNK_DATA_FRAG_BYTES) flen = CHUNK_DATA_FRAG_BYTES;
+    return chunk_reasm_feed(ring, msg_id, index, total, body + off, flen,
+                            out, out_cap, out_len);
+}
+
+/* Two columns' fragments interleaved out of order, plus a dropped+retransmitted
+ * fragment, must BOTH reassemble correctly and independently. */
+static void test_reasm_interleaved(void) {
+    ChunkReasmRing ring;
+    chunk_reasm_init(&ring);
+
+    enum { TOTAL = 3 };
+    static uint8_t bodyA[TOTAL * CHUNK_DATA_FRAG_BYTES];
+    static uint8_t bodyB[TOTAL * CHUNK_DATA_FRAG_BYTES];
+    size_t lenA = build_column(100, TOTAL, bodyA, sizeof bodyA);
+    size_t lenB = build_column(200, TOTAL, bodyB, sizeof bodyB);
+
+    static uint8_t out[TOTAL * CHUNK_DATA_FRAG_BYTES];
+    size_t out_len = 0;
+    bool doneA = false, doneB = false;
+
+    /* Interleave fragments of A(100) and B(200) out of order. Simulate a
+     * dropped A frag 1 (skipped here) then retransmitted later. */
+    assert(!feed_frag(&ring, 200, 2, TOTAL, bodyB, lenB, out, sizeof out, &out_len)); /* B last */
+    assert(!feed_frag(&ring, 100, 0, TOTAL, bodyA, lenA, out, sizeof out, &out_len)); /* A first */
+    assert(!feed_frag(&ring, 200, 0, TOTAL, bodyB, lenB, out, sizeof out, &out_len)); /* B first */
+    assert(!feed_frag(&ring, 100, 2, TOTAL, bodyA, lenA, out, sizeof out, &out_len)); /* A last (frag1 still missing) */
+    /* Both columns are still in flight concurrently. */
+    assert(chunk_reasm_active_count(&ring) == 2);
+
+    /* B frag 1 arrives -> B completes. */
+    doneB = feed_frag(&ring, 200, 1, TOTAL, bodyB, lenB, out, sizeof out, &out_len);
+    assert(doneB);
+    assert(out_len == lenB);
+    assert(memcmp(out, bodyB, lenB) == 0);
+    assert(chunk_reasm_active_count(&ring) == 1);   /* only A left */
+
+    /* The dropped A frag 1 is retransmitted (possibly duplicated) -> A completes. */
+    doneA = feed_frag(&ring, 100, 1, TOTAL, bodyA, lenA, out, sizeof out, &out_len);
+    assert(doneA);
+    assert(out_len == lenA);
+    assert(memcmp(out, bodyA, lenA) == 0);
+    assert(chunk_reasm_active_count(&ring) == 0);   /* both freed */
+
+    printf("PASS: reasm_interleaved\n");
+}
+
+/* A duplicate fragment must not double-count or corrupt; the column still
+ * completes correctly exactly once. */
+static void test_reasm_duplicates(void) {
+    ChunkReasmRing ring;
+    chunk_reasm_init(&ring);
+    enum { TOTAL = 2 };
+    static uint8_t body[TOTAL * CHUNK_DATA_FRAG_BYTES];
+    size_t len = build_column(42, TOTAL, body, sizeof body);
+    static uint8_t out[TOTAL * CHUNK_DATA_FRAG_BYTES];
+    size_t out_len = 0;
+
+    assert(!feed_frag(&ring, 42, 0, TOTAL, body, len, out, sizeof out, &out_len));
+    assert(!feed_frag(&ring, 42, 0, TOTAL, body, len, out, sizeof out, &out_len)); /* dup */
+    assert(chunk_reasm_active_count(&ring) == 1);
+    bool done = feed_frag(&ring, 42, 1, TOTAL, body, len, out, sizeof out, &out_len);
+    assert(done);
+    assert(out_len == len && memcmp(out, body, len) == 0);
+    printf("PASS: reasm_duplicates\n");
+}
+
+/* When more concurrent columns than slots are in flight, the OLDEST partial is
+ * evicted to bound memory — without corrupting the survivors. */
+static void test_reasm_overflow_evicts_oldest(void) {
+    ChunkReasmRing ring;
+    chunk_reasm_init(&ring);
+    enum { TOTAL = 2 };
+    static uint8_t out[TOTAL * CHUNK_DATA_FRAG_BYTES];
+    size_t out_len = 0;
+
+    /* Start CHUNK_REASM_SLOTS+1 distinct columns, each with only frag 0 (all
+     * partial). The first started (oldest touch) must be evicted. */
+    static uint8_t bodies[CHUNK_REASM_SLOTS + 1][TOTAL * CHUNK_DATA_FRAG_BYTES];
+    size_t lens[CHUNK_REASM_SLOTS + 1];
+    for (int i = 0; i < CHUNK_REASM_SLOTS + 1; i++) {
+        lens[i] = build_column((uint16_t)(1000 + i), TOTAL, bodies[i], sizeof bodies[i]);
+        bool d = feed_frag(&ring, (uint16_t)(1000 + i), 0, TOTAL,
+                           bodies[i], lens[i], out, sizeof out, &out_len);
+        assert(!d);
+    }
+    /* The ring is capped at CHUNK_REASM_SLOTS active columns. */
+    assert(chunk_reasm_active_count(&ring) == CHUNK_REASM_SLOTS);
+
+    /* The oldest column (msg_id 1000) was evicted: its surviving frag 0 is gone,
+     * so completing it now requires BOTH frags again (no stale corruption). The
+     * newest columns (1001..) still hold frag 0, so one more frag completes them
+     * with the correct bytes. */
+    bool d = feed_frag(&ring, (uint16_t)(1000 + CHUNK_REASM_SLOTS), 1, TOTAL,
+                       bodies[CHUNK_REASM_SLOTS], lens[CHUNK_REASM_SLOTS],
+                       out, sizeof out, &out_len);
+    assert(d);
+    assert(out_len == lens[CHUNK_REASM_SLOTS]);
+    assert(memcmp(out, bodies[CHUNK_REASM_SLOTS], lens[CHUNK_REASM_SLOTS]) == 0);
+
+    /* Feeding only frag 1 of the EVICTED column does not complete it (frag 0 was
+     * dropped on eviction); it just opens a fresh partial slot. */
+    out_len = 0;
+    bool d2 = feed_frag(&ring, 1000, 1, TOTAL, bodies[0], lens[0],
+                        out, sizeof out, &out_len);
+    assert(!d2);
+    printf("PASS: reasm_overflow_evicts_oldest\n");
+}
+
+/* Malformed fragment geometry is ignored without opening a slot or crashing. */
+static void test_reasm_malformed(void) {
+    ChunkReasmRing ring;
+    chunk_reasm_init(&ring);
+    static uint8_t body[CHUNK_DATA_FRAG_BYTES];
+    static uint8_t out[CHUNK_DATA_FRAG_BYTES];
+    size_t out_len = 0;
+    /* total = 0 */
+    assert(!chunk_reasm_feed(&ring, 1, 0, 0, body, 1, out, sizeof out, &out_len));
+    /* index >= total */
+    assert(!chunk_reasm_feed(&ring, 1, 5, 3, body, 1, out, sizeof out, &out_len));
+    /* total > CHUNK_DATA_FRAG_MAX */
+    assert(!chunk_reasm_feed(&ring, 1, 0, CHUNK_DATA_FRAG_MAX + 1, body, 1,
+                             out, sizeof out, &out_len));
+    /* flen too big */
+    assert(!chunk_reasm_feed(&ring, 1, 0, 1, body, CHUNK_DATA_FRAG_BYTES + 1,
+                             out, sizeof out, &out_len));
+    assert(chunk_reasm_active_count(&ring) == 0);
+    printf("PASS: reasm_malformed\n");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Address resolution (mine-vibe-9xu)                                   */
+/* ------------------------------------------------------------------ */
+
+/* net_resolve handles dotted-quad IPv4 literals and DNS names. "127.0.0.1"
+ * must resolve to exactly 127.0.0.1 on the requested port; an IPv6-only literal
+ * is reported as NO_IPV4 (the transport is IPv4-only today); garbage fails. */
+static void test_resolve_addr(void) {
+    struct sockaddr_in a;
+
+    /* IPv4 literal round-trips to the exact address + port. */
+    memset(&a, 0, sizeof a);
+    assert(net_resolve("127.0.0.1", 25565, &a) == NET_RESOLVE_OK);
+    assert(a.sin_family == AF_INET);
+    assert(a.sin_port == htons(25565));
+    /* 127.0.0.1 in network order. */
+    assert(a.sin_addr.s_addr == htonl(0x7F000001u));
+
+    /* "localhost" must resolve to an IPv4 loopback (most stacks list 127.0.0.1
+     * among its A records). */
+    memset(&a, 0, sizeof a);
+    NetResolveResult lr = net_resolve("localhost", 1234, &a);
+    assert(lr == NET_RESOLVE_OK || lr == NET_RESOLVE_NO_IPV4);
+    if (lr == NET_RESOLVE_OK) {
+        assert(a.sin_port == htons(1234));
+        assert(a.sin_addr.s_addr == htonl(0x7F000001u));   /* 127.0.0.1 */
+    }
+
+    /* An IPv6 literal cannot fill an IPv4 sockaddr_in: reported, not crashed. */
+    memset(&a, 0, sizeof a);
+    NetResolveResult r6 = net_resolve("::1", 80, &a);
+    assert(r6 == NET_RESOLVE_NO_IPV4 || r6 == NET_RESOLVE_FAILED);
+
+    /* A syntactically invalid host fails cleanly. */
+    memset(&a, 0, sizeof a);
+    assert(net_resolve("this is not a host", 80, &a) == NET_RESOLVE_FAILED);
+
+    printf("PASS: resolve_addr\n");
+}
+
 int main(void)
 {
     test_serialize_position();
@@ -760,6 +983,12 @@ int main(void)
     test_chunkwire_malformed();
     test_cursor_roundtrip_parity();
     test_fuzz_parsers();
+    test_keepalive_roundtrip();
+    test_reasm_interleaved();
+    test_reasm_duplicates();
+    test_reasm_overflow_evicts_oldest();
+    test_reasm_malformed();
+    test_resolve_addr();
     printf("All net tests passed.\n");
     return 0;
 }

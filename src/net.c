@@ -90,6 +90,35 @@ int net_recv(int fd, void* buf, int len, struct sockaddr_in* from)
     return n;
 }
 
+NetResolveResult net_resolve(const char* host, uint16_t port,
+                             struct sockaddr_in* out)
+{
+    wsa_init();
+    char portstr[16];
+    snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;   /* accept IPv4 or IPv6 results */
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res)
+        return NET_RESOLVE_FAILED;
+
+    NetResolveResult rc = NET_RESOLVE_NO_IPV4;
+    for (struct addrinfo* ai = res; ai; ai = ai->ai_next) {
+        if (ai->ai_family == AF_INET && ai->ai_addrlen >= sizeof(*out)) {
+            memcpy(out, ai->ai_addr, sizeof(*out));
+            rc = NET_RESOLVE_OK;
+            break;
+        }
+    }
+    freeaddrinfo(res);
+    return rc;
+}
+
 double net_time(void)
 {
     static LARGE_INTEGER freq = {{0, 0}};
@@ -105,11 +134,12 @@ double net_time(void)
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>   /* getaddrinfo */
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
-#include <string.h>  /* strerror */
+#include <string.h>  /* strerror, memcpy, memset */
 
 static int make_nonblocking(int fd)
 {
@@ -194,6 +224,40 @@ int net_recv(int fd, void* buf, int len, struct sockaddr_in* from)
                            (struct sockaddr*)from, &fromlen);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
     return n;
+}
+
+NetResolveResult net_resolve(const char* host, uint16_t port,
+                             struct sockaddr_in* out)
+{
+    char portstr[16];
+    snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;   /* accept IPv4 or IPv6 results */
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+
+    struct addrinfo* res = NULL;
+    int err = getaddrinfo(host, portstr, &hints, &res);
+    if (err != 0 || !res) {
+        fprintf(stderr, "net: resolve '%s' failed: %s\n",
+                host, gai_strerror(err));
+        return NET_RESOLVE_FAILED;
+    }
+
+    /* Prefer the first IPv4 (A) result. The current transport is IPv4-only, so
+     * a name that resolves only to IPv6 is reported distinctly. */
+    NetResolveResult rc = NET_RESOLVE_NO_IPV4;
+    for (struct addrinfo* ai = res; ai; ai = ai->ai_next) {
+        if (ai->ai_family == AF_INET && ai->ai_addrlen >= sizeof(*out)) {
+            memcpy(out, ai->ai_addr, sizeof(*out));
+            rc = NET_RESOLVE_OK;
+            break;
+        }
+    }
+    freeaddrinfo(res);
+    return rc;
 }
 
 double net_time(void)

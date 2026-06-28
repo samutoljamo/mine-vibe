@@ -28,6 +28,10 @@ typedef enum {
     PKT_ARMOR           = 16, /* server → one:    equipped armour + points     */
     PKT_CHUNK_DATA      = 17, /* server → one:  RLE column (reliable+fragmented)*/
     PKT_CHUNK_UNLOAD    = 18, /* server → one:  drop a now-distant chunk        */
+    PKT_KEEPALIVE       = 19, /* both ways: header-only liveness ping/pong; keeps
+                               * NAT pinholes open and lets each peer detect a
+                               * dead remote (no traffic for N seconds). Sent
+                               * UNRELIABLE on a periodic timer (protocol v9).  */
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -39,7 +43,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 8
+#define NET_PROTOCOL_VERSION 9
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -1079,6 +1083,33 @@ static inline uint8_t net_read_disconnect_reason(const uint8_t* buf, size_t len)
 }
 
 /* ------------------------------------------------------------------ */
+/*  PKT_KEEPALIVE — header-only liveness ping/pong (protocol v9)        */
+/*                                                                     */
+/*  Sent UNRELIABLE in both directions on a periodic timer so that:     */
+/*    - NAT/firewall pinholes stay open (a few seconds < typical ~30s   */
+/*      UDP mapping timeout) for an otherwise-idle connection, and      */
+/*    - each peer can notice the other has gone away (no traffic for N  */
+/*      seconds) and surface a clean disconnect instead of hanging.     */
+/*  It carries no payload beyond the 8-byte header; its ack/ack_bits    */
+/*  still piggyback the reliable channel state like any other packet.   */
+/* ------------------------------------------------------------------ */
+static inline size_t net_write_keepalive(uint8_t* buf, const PacketHeader* h)
+{
+    size_t off = 0;
+    net_write_header(buf, &off, h);
+    return off;   /* 8 */
+}
+
+/* Bounds-checked parse: returns 1 only if a full 8-byte header was present. */
+static inline int net_parse_keepalive(const uint8_t* buf, size_t len,
+                                      PacketHeader* h)
+{
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, h);
+    return net_reader_ok(&r);
+}
+
+/* ------------------------------------------------------------------ */
 /*  UDP socket helpers                                                 */
 /* ------------------------------------------------------------------ */
 #ifdef _WIN32
@@ -1092,6 +1123,31 @@ static inline uint8_t net_read_disconnect_reason(const uint8_t* buf, size_t len)
 int  net_socket_server(uint16_t port);
 int  net_socket_client(void);
 void net_socket_close(int fd);
+
+/* ------------------------------------------------------------------ */
+/*  Address resolution (DNS hostnames + IP literals)                   */
+/* ------------------------------------------------------------------ */
+/* Resolve `host` (a DNS hostname, a dotted-quad IPv4 literal, or an IPv6
+ * literal) and `port` via getaddrinfo. On success fills *out with the resolved
+ * IPv4 socket address (in network byte order, ready for net_send) and returns
+ * NET_RESOLVE_OK. This replaces the old inet_pton path so --client accepts
+ * names like "host.example.com", not just "1.2.3.4".
+ *
+ * The current UDP transport is IPv4 (struct sockaddr_in) end-to-end, so an
+ * address that resolves ONLY to IPv6 is reported as NET_RESOLVE_NO_IPV4 rather
+ * than silently failing — the caller can surface a clear message. A name with
+ * both A and AAAA records resolves to its IPv4 (A) address and works today.
+ *
+ * Pure apart from the DNS lookup itself (no globals, no sockets created), so it
+ * is unit-testable against loopback literals ("127.0.0.1"). */
+typedef enum {
+    NET_RESOLVE_OK        = 0,
+    NET_RESOLVE_FAILED    = 1,  /* unknown host / lookup error */
+    NET_RESOLVE_NO_IPV4   = 2,  /* resolved, but only IPv6 addresses available */
+} NetResolveResult;
+
+NetResolveResult net_resolve(const char* host, uint16_t port,
+                             struct sockaddr_in* out);
 
 /* Returns bytes sent/received, 0 on EAGAIN/EWOULDBLOCK, -1 on error. */
 int  net_send(int fd, const void* buf, int len,

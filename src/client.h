@@ -3,6 +3,16 @@
 
 #define CLIENT_MAX_CONNECT_ATTEMPTS 10
 
+/* Dead-server detection + keepalive (mine-vibe-6dp). The client sends a
+ * header-only PKT_KEEPALIVE every CLIENT_KEEPALIVE_INTERVAL seconds whenever it
+ * is connected, so an idle connection keeps the NAT pinhole open and the server
+ * keeps seeing traffic (its own SERVER_TIMEOUT_SEC won't drop us). If NO inbound
+ * datagram arrives from the server for CLIENT_SERVER_TIMEOUT_SEC, the client
+ * treats the server as gone and disconnects cleanly. The interval is well under
+ * both timeouts and the typical ~30s UDP NAT mapping lifetime. */
+#define CLIENT_KEEPALIVE_INTERVAL  3.0
+#define CLIENT_SERVER_TIMEOUT_SEC  10.0
+
 #include <stdint.h>
 #include <stdbool.h>
 #ifdef _WIN32
@@ -15,6 +25,7 @@
 #include "net_thread.h"
 #include "inventory.h"
 #include "mob.h"
+#include "chunk_reasm.h"
 
 typedef enum {
     CLIENT_DISCONNECTED,
@@ -85,21 +96,22 @@ typedef struct {
     } pending_block_changes[256];
     int pending_block_change_count;
 
-    /* Reassembly buffer for fragmented PKT_CHUNK_DATA columns. Each fragment is
-     * an ordinary (acked + retransmitted) reliable packet carrying a
+    /* Reassembly ring for fragmented PKT_CHUNK_DATA columns. Each fragment is an
+     * ordinary (acked + retransmitted) reliable packet carrying a
      * {msg_id,index,total} subheader; we reassemble per msg_id at our own
-     * CHUNK_DATA_FRAG_BYTES stride. One in-flight column at a time is enough:
-     * the server sends a column's fragments consecutively. A new msg_id resets
-     * the buffer. */
-    struct {
-        bool     active;
-        uint16_t msg_id;
-        uint16_t total;
-        uint16_t received;
-        uint8_t  got[CHUNK_DATA_FRAG_MAX];
-        size_t   total_len;
-        uint8_t  data[CHUNK_DATA_FRAG_MAX * CHUNK_DATA_FRAG_BYTES];
-    } chunk_reasm;
+     * CHUNK_DATA_FRAG_BYTES stride. A few concurrent in-flight columns are kept
+     * so that under loss/reorder a retransmitted fragment of an older column
+     * interleaved with a newer one reassembles independently instead of being
+     * dropped (mine-vibe-003). Memory is bounded; oldest partial is evicted. */
+    ChunkReasmRing chunk_reasm;
+
+    /* Dead-server detection (mine-vibe-6dp). last_server_recv_time is the
+     * monotonic net_time() of the most recent inbound datagram from the server;
+     * if it goes stale for CLIENT_SERVER_TIMEOUT_SEC we surface a clean
+     * disconnect instead of hanging. last_keepalive_time gates the periodic
+     * outbound keepalive that holds the NAT pinhole open while idle. */
+    double last_server_recv_time;
+    double last_keepalive_time;
 } Client;
 
 void client_init(Client* c, NetThread* net,
