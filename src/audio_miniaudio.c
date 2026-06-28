@@ -14,11 +14,12 @@
  *   - init() opens a single shared playback device matching the engine format
  *     (1 channel, s16, AUDIO_SAMPLE_RATE) and starts it.
  *   - submit_pcm(pcm, n, gain, loop=false) copies the PCM into a free one-shot
- *     "voice" slot. The game thread calls this for every SFX and for each
- *     ~33ms streamed music chunk produced by audio_update().
+ *     "voice" slot. The game thread calls this for every SFX.
  *   - submit_pcm(..., loop=true) installs the buffer as the single looping
- *     music voice (honored even though the current engine streams music as
- *     non-looping chunks instead).
+ *     music voice. The engine renders the WHOLE music loop once and submits it
+ *     here as one looping voice; set_loop_gain() then tracks volume/mute live.
+ *     (This replaced the old per-frame ~33ms chunk streaming, which ran off the
+ *     frame rate and played music too fast / clipping above 30fps.)
  *   - The miniaudio data callback (audio thread) mixes every active voice plus
  *     the looping voice additively into the output, clamping to int16. Voices
  *     are freed when their cursor reaches the end.
@@ -215,7 +216,11 @@ static void ma_backend_submit_pcm(const int16_t* pcm, size_t samples,
                                   float gain, bool loop)
 {
     if (!g_ma.device_ok || !pcm || samples == 0) return;
-    if (gain <= 0.0f) return;   /* fully attenuated — nothing to play */
+    /* A one-shot at gain 0 is silent — skip it. But ALWAYS install the looping
+     * voice (even at gain 0, e.g. submitted while muted): it must exist so that
+     * a later set_loop_gain (unmute / volume up) makes music audible instantly
+     * without re-submitting (which would reset the loop cursor / cause artifacts). */
+    if (!loop && gain <= 0.0f) return;
 
     int16_t* copy = (int16_t*)malloc(samples * sizeof(int16_t));
     if (!copy) return;
@@ -256,6 +261,18 @@ static void ma_backend_update(void)
     /* The data callback pulls audio on its own thread; nothing to pump here. */
 }
 
+/* Update the looping voice's gain in place — no realloc, no cursor reset, so it
+ * is seamless. Lets master-volume/mute changes affect the single render-once
+ * music voice live (clamped here so a 0 gain is truly silent). */
+static void ma_backend_set_loop_gain(float gain)
+{
+    if (!g_ma.device_ok) return;
+    if (gain < 0.0f) gain = 0.0f;
+    ma_mutex_lock(&g_ma.lock);
+    g_ma.loop_gain = gain;
+    ma_mutex_unlock(&g_ma.lock);
+}
+
 static void ma_backend_stop_loop(void)
 {
     if (!g_ma.device_ok) return;
@@ -290,12 +307,13 @@ static void ma_backend_shutdown(void)
 }
 
 static const AudioBackend MINIAUDIO_BACKEND = {
-    .name       = "miniaudio",
-    .init       = ma_backend_init,
-    .submit_pcm = ma_backend_submit_pcm,
-    .update     = ma_backend_update,
-    .stop_loop  = ma_backend_stop_loop,
-    .shutdown   = ma_backend_shutdown,
+    .name          = "miniaudio",
+    .init          = ma_backend_init,
+    .submit_pcm    = ma_backend_submit_pcm,
+    .update        = ma_backend_update,
+    .set_loop_gain = ma_backend_set_loop_gain,
+    .stop_loop     = ma_backend_stop_loop,
+    .shutdown      = ma_backend_shutdown,
 };
 
 /* Strong definition of the hook declared (weak) in audio_backend.h. The engine

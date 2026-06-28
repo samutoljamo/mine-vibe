@@ -369,6 +369,110 @@ static void test_sfx_soft_and_short(void) {
     printf("PASS: sfx_soft_and_short\n");
 }
 
+/* ---- Music is a render-once looping voice, NOT a per-frame stream -------- *
+ *
+ * The P0 bug was: audio_update() generated and submitted a ~33ms music chunk
+ * EVERY frame, so above 30fps music played faster than real-time and the
+ * overlapping chunks piled up into clipping. The fix renders the whole loop
+ * once and hands it to the backend as a single looping voice; audio_update()
+ * no longer touches music at all. These tests pin that contract. */
+
+static void test_music_render_once_not_per_frame(void) {
+    audio_init();   /* music defaults ON -> the loop is submitted exactly once */
+
+    /* Turning music on submits the looping voice exactly once. */
+    uint64_t base = audio_music_submit_count();
+    assert(audio_music_is_playing());
+
+    /* Hammer audio_update() at a high "frame rate": it must NOT submit any
+     * more music (the whole point of the fix). */
+    float listener[3] = {0, 0, 0};
+    for (int i = 0; i < 1000; i++) audio_update(listener);
+    assert(audio_music_submit_count() == base);     /* update never submits music */
+    assert(audio_music_is_playing());               /* still playing */
+
+    /* Toggling music off stops the loop; on re-submits exactly one voice. */
+    audio_set_music(false);
+    assert(!audio_music_is_playing());
+    for (int i = 0; i < 100; i++) audio_update(listener);
+    uint64_t after_off = audio_music_submit_count();
+
+    audio_set_music(true);
+    assert(audio_music_is_playing());
+    assert(audio_music_submit_count() == after_off + 1);   /* exactly one (re)submit */
+
+    /* And update still doesn't add submissions after re-enabling. */
+    uint64_t after_on = audio_music_submit_count();
+    for (int i = 0; i < 100; i++) audio_update(listener);
+    assert(audio_music_submit_count() == after_on);
+
+    audio_shutdown();
+    printf("PASS: music_render_once_not_per_frame\n");
+}
+
+/* The single looping music buffer is the full song loop, in-range, finite, and
+ * carries signal (it's the ONLY music voice now — no overlap, so no clipping). */
+static void test_music_loop_buffer(void) {
+    audio_init();
+
+    size_t n = 0;
+    const int16_t* loop = audio_music_loop_pcm(&n);
+    assert(loop != NULL);
+    /* Length matches the song loop length exactly (not time-compressed). */
+    assert(n == audio_music_loop_samples());
+    assert(n > AUDIO_SAMPLE_RATE);     /* multiple seconds */
+
+    int nonzero = 0, peak = 0;
+    for (size_t i = 0; i < n; i++) {
+        assert(loop[i] > -32768 && loop[i] < 32767);   /* in range, no wrap */
+        assert(loop[i] == loop[i]);                    /* finite */
+        if (loop[i] != 0) nonzero = 1;
+        if (abs(loop[i]) > peak) peak = abs(loop[i]);
+    }
+    assert(nonzero);
+    assert(peak > 200);                /* audible */
+
+    /* Seamless wrap: the stored loop matches audio_gen_music head, and the
+     * join across the boundary is small (the looping voice wraps cleanly). */
+    int16_t head[256];
+    audio_gen_music(head, 256, 0);
+    assert(memcmp(loop, head, sizeof head) == 0);      /* buffer == generator */
+    int step = abs((int)loop[0] - (int)loop[n - 1]);
+    assert(step < 4000);               /* continuous across the loop join */
+
+    audio_shutdown();
+    printf("PASS: music_loop_buffer\n");
+}
+
+/* Mute / master volume still scale music: since the loop is submitted once, the
+ * effective music gain must track the CURRENT volume/mute live (no re-submit
+ * artifacts). We verify the gain the engine pushes to the backend for music. */
+static void test_music_respects_volume_and_mute(void) {
+    audio_init();
+    audio_set_muted(false);
+
+    audio_set_master_volume(1.0f);
+    float full = audio_music_effective_gain();
+    assert(full > 0.0f);
+
+    /* Halving master volume halves the music gain. */
+    audio_set_master_volume(0.5f);
+    float half = audio_music_effective_gain();
+    assert(fabsf(half - full * 0.5f) < 1e-4f);
+
+    /* Mute => truly silent music. */
+    audio_set_muted(true);
+    assert(audio_music_effective_gain() == 0.0f);
+
+    /* Unmute restores. */
+    audio_set_muted(false);
+    assert(fabsf(audio_music_effective_gain() - half) < 1e-4f);
+
+    audio_set_master_volume(0.6f);
+    audio_shutdown();
+    printf("PASS: music_respects_volume_and_mute\n");
+}
+
 /* ---- Master volume + mute ----------------------------------------------- */
 
 static void test_master_volume_and_mute(void) {
@@ -464,6 +568,9 @@ int main(void) {
     test_music_note_math();
     test_music_render_song();
     test_music_loops_seamlessly();
+    test_music_render_once_not_per_frame();
+    test_music_loop_buffer();
+    test_music_respects_volume_and_mute();
     test_buffers_in_range_and_finite();
     test_sfx_soft_and_short();
     test_master_volume_and_mute();
