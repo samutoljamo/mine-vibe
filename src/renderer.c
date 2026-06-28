@@ -753,6 +753,9 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
     /* Stash the requested anisotropy; resolved against device caps when the
      * atlas sampler is created in texture.c. */
     r->max_anisotropy = (float)(settings.aniso < 1 ? 1 : settings.aniso);
+    /* Stash present-mode preference; resolved to a supported mode (FIFO
+     * fallback) inside swapchain_create, and reused on resize/recreate. */
+    r->present_pref = settings.present;
 
     /* --- volk --- */
     if (volkInitialize() != VK_SUCCESS) {
@@ -882,6 +885,7 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
         if (!swapchain_create(r->physical_device, r->device, r->allocator,
                               r->surface, r->graphics_family, r->present_family,
                               VK_NULL_HANDLE, r->sample_count,
+                              r->present_pref,
                               w, h, VK_NULL_HANDLE, &temp_sc))
         {
             fprintf(stderr, "Failed to create initial swapchain\n");
@@ -906,6 +910,7 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
         if (!swapchain_create(r->physical_device, r->device, r->allocator,
                               r->surface, r->graphics_family, r->present_family,
                               r->render_pass, r->sample_count,
+                              r->present_pref,
                               w, h, VK_NULL_HANDLE, &r->swapchain))
         {
             fprintf(stderr, "Failed to create swapchain with framebuffers\n");
@@ -1103,6 +1108,7 @@ void renderer_recreate_swapchain(Renderer* r)
     if (!swapchain_create(r->physical_device, r->device, r->allocator,
                           r->surface, r->graphics_family, r->present_family,
                           r->render_pass, r->sample_count,
+                          r->present_pref,
                           w, h, old.swapchain, &new_sc))
     {
         fprintf(stderr, "Failed to recreate swapchain\n");

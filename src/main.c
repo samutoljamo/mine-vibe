@@ -290,13 +290,21 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--aniso") == 0 && i + 1 < argc) {
             gfx.aniso = atoi(argv[++i]);  /* clamped to device caps at init */
         }
+        else if (strcmp(argv[i], "--present") == 0 && i + 1 < argc) {
+            const char* m = argv[++i]; /* falls back to FIFO at init if unsupported */
+            if      (strcmp(m, "mailbox")   == 0) gfx.present = PRESENT_PREF_MAILBOX;
+            else if (strcmp(m, "immediate") == 0) gfx.present = PRESENT_PREF_IMMEDIATE;
+            else                                  gfx.present = PRESENT_PREF_FIFO;
+        }
         else if (strcmp(argv[i], "--stats") == 0) {
             g_show_stats = true;          /* start with the perf overlay on */
         }
     }
 
-    printf("Settings: render-distance=%d chunks, msaa=%dx, aniso=%dx\n",
-           gfx.render_distance, gfx.msaa, gfx.aniso);
+    printf("Settings: render-distance=%d chunks, msaa=%dx, aniso=%dx, present=%s\n",
+           gfx.render_distance, gfx.msaa, gfx.aniso,
+           gfx.present == PRESENT_PREF_MAILBOX   ? "mailbox" :
+           gfx.present == PRESENT_PREF_IMMEDIATE ? "immediate" : "fifo");
 
     /* Single-player is a loopback host: spawn an in-process server and
      * connect to it. Gameplay (inventory, block break/place) is server-

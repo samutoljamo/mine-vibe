@@ -18,14 +18,31 @@ static VkSurfaceFormatKHR choose_format(const VkSurfaceFormatKHR* formats,
     return formats[0];
 }
 
-static VkPresentModeKHR choose_present_mode(const VkPresentModeKHR* modes,
-                                             uint32_t count)
+static bool present_mode_supported(const VkPresentModeKHR* modes,
+                                   uint32_t count, VkPresentModeKHR want)
 {
-    for (uint32_t i = 0; i < count; i++) {
-        if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
-            return modes[i];
+    for (uint32_t i = 0; i < count; i++)
+        if (modes[i] == want) return true;
+    return false;
+}
+
+/* Resolve the requested preference to a device-supported present mode.
+ * FIFO is guaranteed by the spec, so it is always the graceful fallback when
+ * the requested mode is unavailable. */
+static VkPresentModeKHR choose_present_mode(const VkPresentModeKHR* modes,
+                                            uint32_t count,
+                                            PresentModePref pref)
+{
+    VkPresentModeKHR want;
+    switch (pref) {
+        case PRESENT_PREF_MAILBOX:   want = VK_PRESENT_MODE_MAILBOX_KHR;   break;
+        case PRESENT_PREF_IMMEDIATE: want = VK_PRESENT_MODE_IMMEDIATE_KHR; break;
+        case PRESENT_PREF_FIFO:
+        default:                     want = VK_PRESENT_MODE_FIFO_KHR;      break;
     }
-    return VK_PRESENT_MODE_FIFO_KHR;
+    if (present_mode_supported(modes, count, want))
+        return want;
+    return VK_PRESENT_MODE_FIFO_KHR;  /* always supported */
 }
 
 static VkExtent2D choose_extent(const VkSurfaceCapabilitiesKHR* caps,
@@ -168,6 +185,7 @@ bool swapchain_create(VkPhysicalDevice pd, VkDevice device, VmaAllocator allocat
                       VkSurfaceKHR surface, uint32_t graphics_family,
                       uint32_t present_family, VkRenderPass render_pass,
                       VkSampleCountFlagBits sample_count,
+                      PresentModePref present_pref,
                       int width, int height, VkSwapchainKHR old_swapchain,
                       Swapchain* out)
 {
@@ -192,7 +210,7 @@ bool swapchain_create(VkPhysicalDevice pd, VkDevice device, VmaAllocator allocat
     vkGetPhysicalDeviceSurfacePresentModesKHR(pd, surface, &mode_count, modes);
 
     VkSurfaceFormatKHR fmt  = choose_format(formats, format_count);
-    VkPresentModeKHR   mode = choose_present_mode(modes, mode_count);
+    VkPresentModeKHR   mode = choose_present_mode(modes, mode_count, present_pref);
     VkExtent2D         ext  = choose_extent(&caps, width, height);
 
     const char* mode_name =
