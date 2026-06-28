@@ -230,15 +230,19 @@ static void on_player_leave(uint8_t pid, void* user)
 }
 
 typedef struct {
-    uint16_t port;
-    int      max;
-    int      seed;
-    char     save_path[WORLDSAVE_PATH_MAX];
+    uint16_t  port;
+    int       max;
+    int       seed;
+    char      save_path[WORLDSAVE_PATH_MAX];
+    Renderer* renderer;        /* host shared-world: server creates the world
+                                * with this renderer; NULL -> headless server   */
+    int       render_distance; /* client render distance for the shared world   */
 } ServerArgs;
 static void* server_thread_func(void* arg)
 {
     ServerArgs* a = (ServerArgs*)arg;
-    server_run(a->port, a->max, a->seed, a->save_path);
+    server_run_ex(a->port, a->max, a->seed, a->save_path,
+                  a->renderer, a->render_distance);
     free(a);
     return NULL;
 }
@@ -465,6 +469,12 @@ int main(int argc, char *argv[])
         sargs->max  = SERVER_MAX_CLIENTS;
         sargs->seed = session_seed;
         snprintf(sargs->save_path, sizeof(sargs->save_path), "%s", session_path);
+        /* Host shared-world: hand the server our renderer + render distance so it
+         * creates the ONE authoritative world (with GPU meshing) that we then
+         * render directly — no second seed-generated client copy. The server
+         * thread will not drive world_update; this (render) thread does. */
+        sargs->renderer        = &renderer;
+        sargs->render_distance = gfx.render_distance;
         pt_thread_create(&server_thread, server_thread_func, sargs);
         /* Give server 200ms to bind before client tries to connect */
         pt_sleep_ms(200);
@@ -506,7 +516,36 @@ int main(int argc, char *argv[])
     g_player_ptr = &g_player;
     glm_vec3_copy(g_spawn, g_spawn_pos);
     g_player.agent_mode = agent_mode;
-    World* world = world_create(&renderer, session_seed, gfx.render_distance);
+
+    /* Host shared-world unification: instead of generating a SECOND world from
+     * the seed, render the integrated server's authoritative world directly.
+     * This eliminates the two-worlds divergence (validation gaps, late-joiner /
+     * save-load mismatch) for singleplayer/host. The server created the world
+     * with our renderer, so its chunk meshes upload to the GPU; we (the main /
+     * render thread) own world_update on it. `world_is_borrowed` marks that the
+     * server owns the lifetime, so we don't double-destroy it on shutdown.
+     *
+     * Remote client (--client) still generates locally from the seed until the
+     * server-side chunk streaming push loop lands (see docs/plans/chunk-
+     * streaming.md, remote mode is PARTIAL). */
+    World* world = NULL;
+    bool   world_is_borrowed = false;
+    if (host_mode) {
+        /* The server thread creates the world asynchronously; spin briefly for
+         * it to be published. It is created early in server_run_ex, so this
+         * resolves within a few ms in practice. */
+        for (int tries = 0; tries < 2000 && !world; tries++) {
+            world = server_get_world();
+            if (!world) pt_sleep_ms(1);
+        }
+        if (!world) {
+            fprintf(stderr, "[main] FATAL: server world never became available\n");
+            return 1;
+        }
+        world_is_borrowed = true;
+    } else {
+        world = world_create(&renderer, session_seed, gfx.render_distance);
+    }
 
     BlockPhysics physics;
     block_physics_init(&physics);
@@ -809,7 +848,15 @@ int main(int argc, char *argv[])
         /* Apply server-authoritative block edits buffered from the network
          * thread. world_set_block marks chunks dirty for re-meshing.
          * Guarded: without networking the Client struct is uninitialised
-         * stack memory and pending_block_change_count would be garbage. */
+         * stack memory and pending_block_change_count would be garbage.
+         *
+         * Host shared-world: the integrated server already applied each edit
+         * directly to THIS world (it is the same World*), including the relight
+         * and needs_remesh flag the main-thread world_update picks up. So we
+         * must NOT re-apply it here (that would double-write blocks/lights from
+         * two threads). We still wake block physics around the edit so sand /
+         * water react. For a remote client the edit has only been received over
+         * the wire, so it must be applied locally. */
         if (networking) {
             for (int i = 0; i < client.pending_block_change_count; i++) {
                 int x = client.pending_block_changes[i].x;
@@ -821,18 +868,18 @@ int main(int argc, char *argv[])
                             (unsigned)b, x, y, z);
                     continue;
                 }
-                if (!world_set_block(world, x, y, z, b)) {
-                    fprintf(stderr, "[main] world_set_block failed at (%d,%d,%d) block=%u; chunk unloaded or busy\n",
-                            x, y, z, (unsigned)b);
-                    continue;
-                }
-                /* The PKT_BLOCK_CHANGE protocol carries no meta channel, so
-                 * network-placed water arrives with meta=0 — water_tick reads
-                 * level 0, subtracts WATER_DISSIPATION, and removes the block
-                 * on the very next tick. Tag player-placed water as a source
-                 * so it persists and spreads like a bucket-placed block. */
-                if (b == BLOCK_WATER) {
-                    world_set_meta(world, x, y, z, WATER_SOURCE_LEVEL);
+                if (!world_is_borrowed) {
+                    /* Remote client: apply the received edit to our local world. */
+                    if (!world_set_block(world, x, y, z, b)) {
+                        fprintf(stderr, "[main] world_set_block failed at (%d,%d,%d) block=%u; chunk unloaded or busy\n",
+                                x, y, z, (unsigned)b);
+                        continue;
+                    }
+                    /* PKT_BLOCK_CHANGE carries no meta channel, so network-placed
+                     * water arrives with meta=0 and would dissipate next tick.
+                     * Tag player-placed water as a source so it persists/spreads. */
+                    if (b == BLOCK_WATER)
+                        world_set_meta(world, x, y, z, WATER_SOURCE_LEVEL);
                 }
                 /* Wake the gravity/water simulators around the edit. Without
                  * this, sand placed mid-air just floats and water never flows
@@ -1016,10 +1063,15 @@ int main(int argc, char *argv[])
     }
     if (host_mode) {
         server_request_stop();         /* break the server loop so the join returns */
-        pt_thread_join(server_thread); /* takes PT_Thread by value */
+        pt_thread_join(server_thread); /* takes PT_Thread by value — also destroys
+                                        * the shared world it owns */
     }
 
-    world_destroy(world);
+    /* Only destroy the world we own. In host mode the world belongs to the
+     * server thread, which destroyed it during the join above; destroying it
+     * again here would be a double-free. */
+    if (!world_is_borrowed)
+        world_destroy(world);
     block_physics_destroy(&physics);
     if (agent_mode) agent_destroy();
     renderer_cleanup(&renderer);

@@ -11,6 +11,7 @@
 #include "physics.h"
 #include "player.h"      /* GRAVITY, TERMINAL_VEL */
 #include "block.h"       /* block_is_solid */
+#include "block_physics.h" /* WATER_SOURCE_LEVEL */
 #include "chunk.h"       /* CHUNK_Y */
 #include "world.h"
 #include "daynight.h"    /* world clock + darkness gate for spawning */
@@ -33,6 +34,16 @@ void server_request_stop(void) { atomic_store(&g_server_stop, true); }
 static atomic_bool g_server_save_req = false;
 
 void server_request_save(void) { atomic_store(&g_server_save_req, true); }
+
+/* Live authoritative world, published once server_run_ex creates it so the
+ * host's main/render thread can render the SAME world instead of generating a
+ * second copy (host shared-world unification). NULL before creation and after
+ * teardown. _Atomic so the host can poll it from another thread. */
+static _Atomic(World*) g_server_world = NULL;
+
+World* server_get_world(void) {
+    return atomic_load_explicit(&g_server_world, memory_order_acquire);
+}
 
 /* server.c is the first translation unit that pulls in both the inventory
  * model and the inventory wire format, so this is where we assert the
@@ -257,8 +268,16 @@ static void server_persist_edit(Server* s, int x, int y, int z, BlockID b)
         overlay_record(&s->overlay, x, y, z, b);
         s->overlay_dirty = true;
     }
-    if (s->world)
+    if (s->world) {
         world_set_block(s->world, x, y, z, b);
+        /* Player-placed water must be a full source block, else water_tick
+         * reads meta 0 and dissipates it next tick. In host shared-world mode
+         * the client renders this same world, so the server (not the client)
+         * owns setting the source meta. Harmless for the headless/dedicated
+         * server too. */
+        if (b == BLOCK_WATER)
+            world_set_meta(s->world, x, y, z, WATER_SOURCE_LEVEL);
+    }
 }
 
 static void server_broadcast_block_change(Server* s, int x, int y, int z, BlockID b)
@@ -1012,8 +1031,13 @@ static void server_tick(Server* s, int tick_num)
     vec3 anchor;
     server_anchor(s, anchor);
 
-    /* Stream terrain around the anchor so mobs have ground to walk on. */
-    if (s->world) {
+    /* Stream terrain around the anchor so mobs have ground to walk on.
+     * In host shared-world mode the renderer's main thread drives the chunk
+     * pipeline (world_update) on this same world — exactly one thread may do
+     * that — so we skip it here and only read blocks (mob/collision queries).
+     * The main thread anchors world_update on the player's position, which is
+     * the same anchor, so terrain is loaded around the player either way. */
+    if (s->world && s->drives_world_update) {
         world_update(s->world, /*bp=*/NULL, anchor);
     }
 
@@ -1133,6 +1157,13 @@ static void server_tick(Server* s, int tick_num)
 
 void server_run(uint16_t port, int max_clients, int seed, const char* save_path)
 {
+    server_run_ex(port, max_clients, seed, save_path, NULL, 0);
+}
+
+void server_run_ex(uint16_t port, int max_clients, int seed,
+                   const char* save_path, Renderer* renderer,
+                   int render_distance)
+{
     int fd = net_socket_server(port);
     if (fd < 0) { fprintf(stderr, "[server] bind failed on port %d\n", port); return; }
 
@@ -1180,8 +1211,26 @@ void server_run(uint16_t port, int max_clients, int seed, const char* save_path)
                 s.save_path);
     }
 
-    s.world = world_create_headless(seed, 8 /* SERVER_MOB_RENDER_DIST */);
-    world_set_overlay(s.world, &s.overlay);
+    /* Host shared-world: when the caller hands us a renderer we create the
+     * world WITH it (so chunk meshes upload to the GPU) at the client's render
+     * distance, and the host's main/render thread will drive the chunk
+     * pipeline — so we must NOT also call world_update from this thread.
+     * Dedicated/headless (renderer == NULL) keeps the legacy behaviour: we own
+     * the pipeline at the small mob render distance. */
+    s.drives_world_update = (renderer == NULL);
+    int rd = (renderer != NULL && render_distance > 0)
+           ? render_distance : 8 /* SERVER_MOB_RENDER_DIST */;
+
+    World* w = world_create(renderer, seed, rd);
+    /* Attach the persistence overlay BEFORE publishing the world, so that
+     * every chunk the generation workers produce has the player's saved edits
+     * replayed during WORK_GENERATE (overlay_apply_chunk) — before the chunk
+     * advances to GENERATED/LIT/MESHING. The host renderer only ever meshes a
+     * chunk once it reaches LIT, which is strictly after generation+overlay, so
+     * there is no window where the client could mesh pre-overlay terrain. */
+    world_set_overlay(w, &s.overlay);
+    s.world = w;
+    atomic_store_explicit(&g_server_world, w, memory_order_release);
     mob_set_init(&s.mobs);
 
     printf("[server] listening on port %d (max %d clients)\n", port, s.max_clients);
@@ -1208,6 +1257,11 @@ void server_run(uint16_t port, int max_clients, int seed, const char* save_path)
     /* Final save before teardown. Detach the overlay from the world first so
      * no worker can read it while we free it (workers stop in world_destroy). */
     server_flush_world(&s, /*force=*/true);
+    /* Unpublish before destroying so a late server_get_world() can't hand the
+     * host a dangling pointer. In host mode the main thread has already stopped
+     * touching the world by the time it joins this thread (see main.c
+     * shutdown order). */
+    atomic_store_explicit(&g_server_world, NULL, memory_order_release);
     if (s.world) {
         world_set_overlay(s.world, NULL);
         world_destroy(s.world);

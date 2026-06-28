@@ -16,6 +16,8 @@
 #include "mob.h"
 #include "survival.h"
 
+typedef struct Renderer Renderer;
+
 #define SERVER_MAX_CLIENTS  32
 #define SERVER_TICK_RATE    20     /* Hz */
 #define SERVER_TIMEOUT_SEC  10.0
@@ -59,6 +61,13 @@ typedef struct {
     float        mob_spawn_timer; /* accumulates time toward MOB_SPAWN_INTERVAL */
     uint32_t     world_ticks;    /* day/night clock; advances once per tick  */
 
+    /* Host shared-world mode: when a renderer is attached (host/singleplayer),
+     * the renderer's main thread owns the chunk pipeline (it must own GPU
+     * uploads anyway), so the server thread does NOT call world_update — it
+     * only reads/writes blocks. false for dedicated servers, which drive the
+     * pipeline themselves. */
+    bool         drives_world_update;
+
     /* World persistence: block-delta overlay + periodic-flush bookkeeping. */
     BlockOverlay overlay;
     bool         overlay_active;  /* false if persistence is disabled        */
@@ -73,6 +82,23 @@ typedef struct {
  *   SERVER_SAVE_FILE (single hardcoded world, legacy behaviour).
  * Runs until server.running is set false (or fatal error). */
 void server_run(uint16_t port, int max_clients, int seed, const char* save_path);
+
+/* Host shared-world variant. When `renderer` is non-NULL, the server creates
+ * its world WITH that renderer (so chunk meshes upload to the GPU) at
+ * `render_distance`, and does NOT drive the chunk pipeline itself — the host's
+ * main/render thread pumps world_update on the shared world. The host obtains
+ * the live World* via server_get_world() once it is created. With
+ * renderer == NULL this behaves exactly like server_run (headless, server
+ * drives its own pipeline). */
+void server_run_ex(uint16_t port, int max_clients, int seed,
+                   const char* save_path, Renderer* renderer,
+                   int render_distance);
+
+/* Returns the server's authoritative World* once the server loop has created
+ * it, or NULL before that (and after teardown). Thread-safe; the host spins on
+ * this briefly after starting the server thread. The returned world is owned
+ * by the server — the caller must NOT destroy it. */
+World* server_get_world(void);
 
 /* Signal the running server loop (on its own thread in host mode) to exit, so
  * the main thread can join it cleanly on shutdown. Thread-safe. */

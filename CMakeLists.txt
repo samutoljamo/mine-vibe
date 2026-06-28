@@ -173,6 +173,7 @@ add_executable(minecraft
     src/net.c
     src/reliable.c
     src/net_thread.c
+    src/chunkwire.c
     src/server.c
     src/client.c
     src/audio.c
@@ -254,6 +255,10 @@ if(WIN32)
     target_link_libraries(test_net PRIVATE ws2_32)
 endif()
 add_test(NAME net COMMAND test_net)
+
+add_executable(test_chunkwire tests/test_chunkwire.c src/chunkwire.c)
+target_include_directories(test_chunkwire PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME chunkwire COMMAND test_chunkwire)
 
 add_executable(test_ui
     tests/test_ui.c
