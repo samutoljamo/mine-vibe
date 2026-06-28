@@ -27,6 +27,7 @@
 #include "inventory.h"
 #include "crafting.h"
 #include "daynight.h"
+#include "worldsave.h"
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
@@ -228,11 +229,16 @@ static void on_player_leave(uint8_t pid, void* user)
         remote_player_remove(g_remote_players, pid);
 }
 
-typedef struct { uint16_t port; int max; int seed; } ServerArgs;
+typedef struct {
+    uint16_t port;
+    int      max;
+    int      seed;
+    char     save_path[WORLDSAVE_PATH_MAX];
+} ServerArgs;
 static void* server_thread_func(void* arg)
 {
     ServerArgs* a = (ServerArgs*)arg;
-    server_run(a->port, a->max, a->seed);
+    server_run(a->port, a->max, a->seed, a->save_path);
     free(a);
     return NULL;
 }
@@ -286,7 +292,8 @@ int main(int argc, char *argv[])
         host_mode = true;
 
     if (server_mode) {
-        server_run(port, SERVER_MAX_CLIENTS, WORLD_SEED);
+        /* Dedicated server: legacy single hardcoded world (NULL -> world.dat). */
+        server_run(port, SERVER_MAX_CLIENTS, WORLD_SEED, NULL);
         return 0;
     }
 
@@ -323,12 +330,141 @@ int main(int argc, char *argv[])
 
     renderer_init_player_mesh(&renderer);
 
+    /* ---- World selection (interactive host mode only) ------------------
+     * Singleplayer/host now manages multiple worlds under saves/<name>/.
+     * Before any server/world is created we run a lightweight menu loop that
+     * draws the main menu over a black background (no world yet) and waits for
+     * the player to either create a new world or load an existing one. The
+     * chosen seed + overlay path are then fed to the server thread and to
+     * world_create so client and server agree on the seed.
+     *
+     * --client (joins a remote server) and --agent (headless automation) skip
+     * this and use the legacy hardcoded seed + world.dat path, so their flows
+     * are unchanged. The pause menu's Save / Save & Quit talk to the server via
+     * server_request_save()/server_request_stop(); to switch worlds mid-session
+     * the player quits (clean restart) and relaunches. */
+    int  session_seed = WORLD_SEED;
+    char session_path[WORLDSAVE_PATH_MAX] = {0};   /* empty -> legacy world.dat */
+    bool want_quit = false;
+
+    /* A valid (placeholder) player so the world-selection menu can build a view
+     * matrix before the real seed-based spawn is computed below. */
+    player_init(&g_player, (vec3){ 0, 80, 0 });
+    g_player_ptr = &g_player;
+    g_player.agent_mode = agent_mode;
+
+    if (host_mode && !agent_mode) {
+        /* New-world name/seed come from an incrementing counter seeded by the
+         * existing world count, so no rand()/time() globals are needed. */
+        WorldList wl;
+        worldsave_scan(&wl);
+        uint64_t new_counter = (uint64_t)wl.count;
+
+        ui_set_state(GAME_MAIN_MENU);
+        hud_set_menu_page(MENU_PAGE_ROOT);
+
+        bool chosen = false;
+        int prev_lmb = GLFW_RELEASE;
+        while (!chosen && !glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            float sw = (float)renderer.swapchain.extent.width;
+            float sh = (float)renderer.swapchain.extent.height;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            int lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT);
+            bool clicked = (lmb == GLFW_PRESS && prev_lmb == GLFW_RELEASE);
+            prev_lmb = lmb;
+
+            /* (Re)scan worlds and publish names for the Load page each frame so
+             * a world created earlier this loop would show up. */
+            WorldList list;
+            worldsave_scan(&list);
+            const char* names[WORLDSAVE_LIST_MAX];
+            for (int i = 0; i < list.count; i++) names[i] = list.entries[i].name;
+            hud_set_world_list(names, list.count);
+
+            ui_input_begin();
+            if (hud_get_menu_page() == MENU_PAGE_ROOT) {
+                HudRect b0 = hud_menu_button_rect(0, sw, sh);
+                HudRect b1 = hud_menu_button_rect(1, sw, sh);
+                HudRect b2 = hud_menu_button_rect(2, sw, sh);
+                ui_add_element(HUD_ID_NEW_WORLD,  b0.x, b0.y, b0.w, b0.h);
+                ui_add_element(HUD_ID_LOAD_WORLD, b1.x, b1.y, b1.w, b1.h);
+                ui_add_element(HUD_ID_QUIT,       b2.x, b2.y, b2.w, b2.h);
+            } else {
+                for (int i = 0; i < list.count; i++) {
+                    HudRect r = hud_menu_button_rect(i, sw, sh);
+                    ui_add_element(HUD_ID_WORLD0 + i, r.x, r.y, r.w, r.h);
+                }
+                int back_idx = list.count > 0 ? list.count : 1;
+                HudRect rb = hud_menu_button_rect(back_idx, sw, sh);
+                ui_add_element(HUD_ID_BACK, rb.x, rb.y, rb.w, rb.h);
+            }
+            ui_handle_mouse((float)mx, (float)my, clicked);
+            int hit = ui_clicked_element();
+
+            if (hit == HUD_ID_NEW_WORLD) {
+                WorldMeta m;
+                char nm[WORLDSAVE_NAME_MAX];
+                worldsave_new_name(new_counter, nm, sizeof(nm));
+                int32_t sd = worldsave_seed_from_counter(new_counter);
+                worldsave_meta_init(&m, nm, sd, (int64_t)(new_counter + 1));
+                worldsave_write_meta(&m);   /* creates saves/<name>/ + meta */
+                session_seed = sd;
+                worldsave_dat_path(m.name, session_path, sizeof(session_path));
+                chosen = true;
+            } else if (hit == HUD_ID_LOAD_WORLD) {
+                hud_set_menu_page(MENU_PAGE_LOAD);
+            } else if (hit == HUD_ID_BACK) {
+                hud_set_menu_page(MENU_PAGE_ROOT);
+            } else if (hit == HUD_ID_QUIT) {
+                want_quit = true;
+                chosen = true;
+            } else if (hit >= HUD_ID_WORLD0
+                       && hit < HUD_ID_WORLD0 + list.count) {
+                WorldMeta* m = &list.entries[hit - HUD_ID_WORLD0];
+                session_seed = m->seed;
+                worldsave_dat_path(m->name, session_path, sizeof(session_path));
+                /* Bump recency so it floats to the top next time. */
+                m->last_played += 1;
+                worldsave_write_meta(m);
+                chosen = true;
+            }
+
+            mat4 view, proj;
+            camera_get_view(&g_player.camera, g_player.eye_pos, view);
+            float aspect = sw / sh;
+            camera_get_proj(&g_player.camera, aspect, proj);
+            vec3 sky = {0.06f, 0.07f, 0.10f};
+            renderer_draw_frame(&renderer, NULL, 0, NULL, 0, view, proj,
+                                (vec3){0,-1,0}, 1.0f, sky,
+                                NULL, -1, NULL, 0.0f, false, NULL);
+        }
+
+        /* Player picked the world: enter PLAYING and reset the menu page so a
+         * later Esc shows the in-game pause overlay, not the world list. */
+        hud_set_menu_page(MENU_PAGE_ROOT);
+        ui_set_state(GAME_PLAYING);
+    } else {
+        /* client / agent / dedicated: legacy single world. */
+        session_seed = WORLD_SEED;
+        session_path[0] = '\0';
+    }
+
+    if (want_quit) {
+        renderer_cleanup(&renderer);
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     PT_Thread server_thread = {0};
     if (host_mode) {
         ServerArgs* sargs = malloc(sizeof(ServerArgs));
         sargs->port = port;
         sargs->max  = SERVER_MAX_CLIENTS;
-        sargs->seed = WORLD_SEED;
+        sargs->seed = session_seed;
+        snprintf(sargs->save_path, sizeof(sargs->save_path), "%s", session_path);
         pt_thread_create(&server_thread, server_thread_func, sargs);
         /* Give server 200ms to bind before client tries to connect */
         pt_sleep_ms(200);
@@ -364,13 +500,13 @@ int main(int argc, char *argv[])
         client_connect(&client);
     }
 
-    int spawn_y = worldgen_get_height(0, 0, WORLD_SEED) + 4;
+    int spawn_y = worldgen_get_height(0, 0, session_seed) + 4;
     vec3 g_spawn = { 0, (float)spawn_y, 0 };
     player_init(&g_player, g_spawn);
     g_player_ptr = &g_player;
     glm_vec3_copy(g_spawn, g_spawn_pos);
     g_player.agent_mode = agent_mode;
-    World* world = world_create(&renderer, WORLD_SEED, gfx.render_distance);
+    World* world = world_create(&renderer, session_seed, gfx.render_distance);
 
     BlockPhysics physics;
     block_physics_init(&physics);
@@ -499,8 +635,12 @@ int main(int argc, char *argv[])
             } else if (g_ui_state == GAME_PAUSED) {
                 HudRect b0 = hud_menu_button_rect(0, sw, sh);
                 HudRect b1 = hud_menu_button_rect(1, sw, sh);
-                ui_add_element(HUD_ID_RESUME, b0.x, b0.y, b0.w, b0.h);
-                ui_add_element(HUD_ID_QUIT,   b1.x, b1.y, b1.w, b1.h);
+                HudRect b2 = hud_menu_button_rect(2, sw, sh);
+                HudRect b3 = hud_menu_button_rect(3, sw, sh);
+                ui_add_element(HUD_ID_RESUME,    b0.x, b0.y, b0.w, b0.h);
+                ui_add_element(HUD_ID_SAVE,      b1.x, b1.y, b1.w, b1.h);
+                ui_add_element(HUD_ID_SAVE_QUIT, b2.x, b2.y, b2.w, b2.h);
+                ui_add_element(HUD_ID_QUIT,      b3.x, b3.y, b3.w, b3.h);
             } else if (g_ui_state == GAME_INVENTORY) {
                 for (int i = 0; i < HUD_SLOT_COUNT; i++) {
                     HudRect r = hud_inventory_slot_rect(i, sw, sh);
@@ -527,6 +667,14 @@ int main(int argc, char *argv[])
             int hit = ui_clicked_element();
             if (hit == HUD_ID_PLAY || hit == HUD_ID_RESUME) {
                 ui_set_state(GAME_PLAYING);
+            } else if (hit == HUD_ID_SAVE) {
+                /* Trigger a mid-game world flush on the server thread. */
+                if (host_mode) server_request_save();
+            } else if (hit == HUD_ID_SAVE_QUIT) {
+                /* Flush, then fall through to a normal shutdown (the teardown
+                 * below force-flushes again, so the save is guaranteed). */
+                if (host_mode) server_request_save();
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
             } else if (hit == HUD_ID_QUIT) {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             } else if (hit >= HUD_ID_SLOT0 && hit < HUD_ID_SLOT0 + HUD_SLOT_COUNT) {

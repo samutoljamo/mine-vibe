@@ -162,6 +162,7 @@ add_executable(minecraft
     src/lighting.c
     src/world.c
     src/world_persist.c
+    src/worldsave.c
     src/player.c
     src/physics.c
     src/block_physics.c
@@ -526,10 +527,16 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME world_persist COMMAND test_world_persist)
 
+# Multiple-world save management (pure: name sanitize, path build, meta
+# format/parse, new-world name/seed derivation, world-list). No Vulkan/GLFW.
+add_executable(test_worldsave tests/test_worldsave.c src/worldsave.c)
+target_include_directories(test_worldsave PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME worldsave COMMAND test_worldsave)
+
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
           test_inventory test_raycast test_ore test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
-          test_crafting test_item test_armor)
+          test_crafting test_item test_armor test_worldsave)
     msvc_enable_c11_atomics(${t})
 endforeach()

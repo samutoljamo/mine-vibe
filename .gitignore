@@ -8,3 +8,8 @@
 # Build output
 /build/
 .claude/worktrees/
+
+# Saved worlds (runtime data) + legacy single-world file
+/saves/
+/world.dat
+/world.dat.tmp

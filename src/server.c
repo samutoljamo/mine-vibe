@@ -27,6 +27,13 @@ static atomic_bool g_server_stop = false;
 
 void server_request_stop(void) { atomic_store(&g_server_stop, true); }
 
+/* Cross-thread "flush the world now" signal. The UI's Save / Save & Quit
+ * buttons set this; the loop forces an overlay save next tick and clears it.
+ * Mirrors g_server_stop so server.h / net.h stay untouched. */
+static atomic_bool g_server_save_req = false;
+
+void server_request_save(void) { atomic_store(&g_server_save_req, true); }
+
 /* server.c is the first translation unit that pulls in both the inventory
  * model and the inventory wire format, so this is where we assert the
  * cross-header invariant. */
@@ -1034,6 +1041,13 @@ static void server_tick(Server* s, int tick_num)
         server_flush_world(s, /*force=*/false);
     }
 
+    /* On-demand flush requested from the UI thread (Save / Save & Quit). Force
+     * the write even if nothing changed so the player gets clear feedback. */
+    if (atomic_exchange(&g_server_save_req, false)) {
+        s->save_timer = 0.0f;
+        server_flush_world(s, /*force=*/true);
+    }
+
     /* 2. Timeout detection */
     for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
         ServerClient* c = &s->clients[i];
@@ -1110,7 +1124,7 @@ static void server_tick(Server* s, int tick_num)
 /*  Entry point                                                        */
 /* ------------------------------------------------------------------ */
 
-void server_run(uint16_t port, int max_clients, int seed)
+void server_run(uint16_t port, int max_clients, int seed, const char* save_path)
 {
     int fd = net_socket_server(port);
     if (fd < 0) { fprintf(stderr, "[server] bind failed on port %d\n", port); return; }
@@ -1128,6 +1142,7 @@ void server_run(uint16_t port, int max_clients, int seed)
                   ? SERVER_MAX_CLIENTS : max_clients;
     s.running     = true;
     atomic_store(&g_server_stop, false);   /* reset for a clean (re)start */
+    atomic_store(&g_server_save_req, false);
 
     s.seed  = seed;
 
@@ -1135,8 +1150,11 @@ void server_run(uint16_t port, int max_clients, int seed)
      * full daylight rather than mid-transition. */
     s.world_ticks = DAY_LENGTH_TICKS / 4;
 
-    /* ---- World persistence: load (or start) the block-delta overlay ---- */
-    snprintf(s.save_path, sizeof(s.save_path), "%s", SERVER_SAVE_FILE);
+    /* ---- World persistence: load (or start) the block-delta overlay ----
+     * Use the caller-chosen world path (saves/<name>/world.dat) when given;
+     * fall back to the legacy single-world file otherwise. */
+    snprintf(s.save_path, sizeof(s.save_path), "%s",
+             (save_path && save_path[0]) ? save_path : SERVER_SAVE_FILE);
     s.overlay_active = true;
     if (overlay_load(&s.overlay, s.save_path)) {
         if (overlay_seed(&s.overlay) != seed) {
