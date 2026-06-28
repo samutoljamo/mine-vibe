@@ -215,6 +215,30 @@ static void disconnect_client(Server* s, ServerClient* c)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Malformed-packet drop logging (rate-limited)                       */
+/* ------------------------------------------------------------------ */
+/* A hostile peer can fire a stream of truncated/garbage datagrams; logging one
+ * line per drop would itself be a log-flood DoS. Emit at most one line per
+ * second and fold the rest into a count. */
+static void server_drop_malformed(const char* what)
+{
+    static double next_report = 0.0;
+    static unsigned long suppressed = 0;
+    double now = net_time();
+    if (now >= next_report) {
+        if (suppressed)
+            fprintf(stderr, "[server] dropped malformed %s packet "
+                            "(+%lu more suppressed)\n", what, suppressed);
+        else
+            fprintf(stderr, "[server] dropped malformed %s packet\n", what);
+        suppressed = 0;
+        next_report = now + 1.0;
+    } else {
+        suppressed++;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Packet handling                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -280,9 +304,11 @@ static void handle_connect_request(Server* s, const struct sockaddr_in* addr,
 static void handle_position(Server* s, ServerClient* c,
                               const uint8_t* data, int len)
 {
-    if (len < 32) return;
     PositionPacket p;
-    net_read_position(data, &p);
+    if (!net_parse_position(data, (size_t)len, &p)) {
+        server_drop_malformed("position");
+        return;
+    }
 
     reliable_on_recv(&c->reliable, p.header.seq, p.header.ack, p.header.ack_bits);
 
@@ -374,9 +400,11 @@ static void server_send_armor(Server* s, ServerClient* c) {
  * Swaps any previously-worn piece back into the inventory slot. */
 static void handle_equip(Server* s, ServerClient* c,
                          const uint8_t* data, size_t len) {
-    if (len < 9) return;
     PacketHeader h; uint8_t slot;
-    net_read_equip(data, &h, &slot);
+    if (!net_parse_equip(data, len, &h, &slot)) {
+        server_drop_malformed("equip");
+        return;
+    }
     bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
     if (!is_new) return;
     c->last_recv_time = net_time();
@@ -458,9 +486,11 @@ static void handle_block_break(Server* s, ServerClient* c,
                                 const uint8_t* data, size_t len)
 {
     /* Header 8 + payload 12 (xyz) + 1 (block) + 1 (slot) = 22 wire bytes. */
-    if (len < 8 + 14) return;
     BlockBreakPacket p;
-    net_read_block_break(data, &p);
+    if (!net_parse_block_break(data, len, &p)) {
+        server_drop_malformed("block-break");
+        return;
+    }
 
     bool is_new = reliable_on_recv(&c->reliable,
                                     p.header.seq,
@@ -518,9 +548,11 @@ static void handle_block_place(Server* s, ServerClient* c,
                                 const uint8_t* data, size_t len)
 {
     /* Header 8 + payload 12 (xyz) + 1 (face) + 1 (slot) = 22 wire bytes. */
-    if (len < 8 + 14) return;
     BlockPlacePacket p;
-    net_read_block_place(data, &p);
+    if (!net_parse_block_place(data, len, &p)) {
+        server_drop_malformed("block-place");
+        return;
+    }
 
     bool is_new = reliable_on_recv(&c->reliable,
                                     p.header.seq,
@@ -604,9 +636,11 @@ static void handle_block_place(Server* s, ServerClient* c,
  * silent no-op so a malicious or stale client can't desync the inventory. */
 static void handle_craft(Server* s, ServerClient* c,
                          const uint8_t* data, size_t len) {
-    if (len < 10) return;
     PacketHeader h; uint16_t recipe_index;
-    net_read_craft(data, &h, &recipe_index);
+    if (!net_parse_craft(data, len, &h, &recipe_index)) {
+        server_drop_malformed("craft");
+        return;
+    }
     bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
     if (!is_new) return;
     c->last_recv_time = net_time();
@@ -649,9 +683,11 @@ static void award_mob_loot(Server* s, ServerClient* c, MobType type) {
 
 static void handle_mob_attack(Server* s, ServerClient* c,
                               const uint8_t* data, size_t len) {
-    if (len < 10) return;
     PacketHeader h; uint16_t mob_id;
-    net_read_mob_attack(data, &h, &mob_id);
+    if (!net_parse_mob_attack(data, len, &h, &mob_id)) {
+        server_drop_malformed("mob-attack");
+        return;
+    }
     bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
     if (!is_new) return;
     c->last_recv_time = net_time();

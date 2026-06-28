@@ -253,11 +253,16 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME agent_json COMMAND test_agent)
 
-add_executable(test_net tests/test_net.c src/net.c src/reliable.c)
+add_executable(test_net tests/test_net.c src/net.c src/reliable.c src/chunkwire.c)
 target_include_directories(test_net PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(WIN32)
     target_link_libraries(test_net PRIVATE ws2_32)
 endif()
+# The netcode parser tests (truncation + 200k-iteration fuzz) size every input
+# to a fresh heap buffer of exactly the truncated length, so an out-of-bounds
+# read of an untrusted packet trips the allocator / a guard page rather than
+# silently reading adjacent memory. Build with -fsanitize=address as well when a
+# sanitizer runtime is available for an even tighter check.
 add_test(NAME net COMMAND test_net)
 
 add_executable(test_chunkwire tests/test_chunkwire.c src/chunkwire.c)

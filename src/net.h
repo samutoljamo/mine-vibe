@@ -48,6 +48,175 @@ typedef enum {
 } NetDisconnectReason;
 
 /* ------------------------------------------------------------------ */
+/*  Bounds-checked cursor codec (untrusted/WAN input)                  */
+/*                                                                     */
+/*  The legacy net_read_* helpers below over-read a too-short buffer.  */
+/*  For parsing packets that arrived off the network (which may be     */
+/*  truncated, malformed or hostile) use a NetReader instead: every    */
+/*  typed read checks the remaining length BEFORE touching the buffer  */
+/*  and, on underflow, latches ok=false and returns 0 without ever     */
+/*  reading past the end. After parsing, the caller checks reader_ok() */
+/*  (or it never set ok=false) and DROPS the packet if parsing failed. */
+/*                                                                     */
+/*  The matching NetWriter caps every write against capacity so a      */
+/*  serializer can never overflow its destination buffer.             */
+/* ------------------------------------------------------------------ */
+typedef struct {
+    const uint8_t* base;
+    size_t         len;
+    size_t         pos;
+    int            ok;     /* 1 while no underflow has occurred */
+} NetReader;
+
+static inline NetReader net_reader_init(const void* buf, size_t len)
+{
+    NetReader r;
+    r.base = (const uint8_t*)buf;
+    r.len  = len;
+    r.pos  = 0;
+    r.ok   = 1;
+    return r;
+}
+
+static inline int    net_reader_ok(const NetReader* r)        { return r->ok; }
+static inline size_t net_reader_remaining(const NetReader* r) { return r->ok ? (r->len - r->pos) : 0; }
+
+/* True iff at least `n` more bytes are available; latches ok=false otherwise. */
+static inline int net_reader_need(NetReader* r, size_t n)
+{
+    if (!r->ok) return 0;
+    if (r->pos + n > r->len) { r->ok = 0; return 0; }
+    return 1;
+}
+
+static inline uint8_t net_reader_u8(NetReader* r)
+{
+    if (!net_reader_need(r, 1)) return 0;
+    return r->base[r->pos++];
+}
+
+static inline uint16_t net_reader_u16(NetReader* r)
+{
+    if (!net_reader_need(r, 2)) return 0;
+    uint16_t v = (uint16_t)r->base[r->pos]
+               | ((uint16_t)r->base[r->pos + 1] << 8);
+    r->pos += 2;
+    return v;
+}
+
+static inline uint32_t net_reader_u32(NetReader* r)
+{
+    if (!net_reader_need(r, 4)) return 0;
+    uint32_t v = (uint32_t)r->base[r->pos]
+               | ((uint32_t)r->base[r->pos + 1] << 8)
+               | ((uint32_t)r->base[r->pos + 2] << 16)
+               | ((uint32_t)r->base[r->pos + 3] << 24);
+    r->pos += 4;
+    return v;
+}
+
+static inline int32_t net_reader_i32(NetReader* r)
+{
+    return (int32_t)net_reader_u32(r);
+}
+
+static inline int16_t net_reader_i16(NetReader* r)
+{
+    return (int16_t)net_reader_u16(r);
+}
+
+static inline float net_reader_f32(NetReader* r)
+{
+    uint32_t bits = net_reader_u32(r);
+    float v;
+    memcpy(&v, &bits, 4);
+    return v;
+}
+
+/* Copy `n` bytes into `dst` (which must hold n). On underflow leaves dst
+ * untouched, latches ok=false, returns 0. */
+static inline int net_reader_bytes(NetReader* r, void* dst, size_t n)
+{
+    if (!net_reader_need(r, n)) return 0;
+    memcpy(dst, r->base + r->pos, n);
+    r->pos += n;
+    return 1;
+}
+
+/* Skip `n` bytes (bounds-checked). */
+static inline int net_reader_skip(NetReader* r, size_t n)
+{
+    if (!net_reader_need(r, n)) return 0;
+    r->pos += n;
+    return 1;
+}
+
+typedef struct {
+    uint8_t* base;
+    size_t   cap;
+    size_t   pos;
+    int      ok;     /* 1 while no overflow has occurred */
+} NetWriter;
+
+static inline NetWriter net_writer_init(void* buf, size_t cap)
+{
+    NetWriter w;
+    w.base = (uint8_t*)buf;
+    w.cap  = cap;
+    w.pos  = 0;
+    w.ok   = 1;
+    return w;
+}
+
+static inline int    net_writer_ok(const NetWriter* w)  { return w->ok; }
+static inline size_t net_writer_len(const NetWriter* w) { return w->ok ? w->pos : 0; }
+
+static inline int net_writer_room(NetWriter* w, size_t n)
+{
+    if (!w->ok) return 0;
+    if (w->pos + n > w->cap) { w->ok = 0; return 0; }
+    return 1;
+}
+
+static inline void net_writer_u8(NetWriter* w, uint8_t v)
+{
+    if (!net_writer_room(w, 1)) return;
+    w->base[w->pos++] = v;
+}
+
+static inline void net_writer_u16(NetWriter* w, uint16_t v)
+{
+    if (!net_writer_room(w, 2)) return;
+    w->base[w->pos++] = (uint8_t)(v & 0xFF);
+    w->base[w->pos++] = (uint8_t)(v >> 8);
+}
+
+static inline void net_writer_u32(NetWriter* w, uint32_t v)
+{
+    if (!net_writer_room(w, 4)) return;
+    w->base[w->pos++] = (uint8_t)(v & 0xFF);
+    w->base[w->pos++] = (uint8_t)((v >> 8) & 0xFF);
+    w->base[w->pos++] = (uint8_t)((v >> 16) & 0xFF);
+    w->base[w->pos++] = (uint8_t)(v >> 24);
+}
+
+static inline void net_writer_i32(NetWriter* w, int32_t v) { net_writer_u32(w, (uint32_t)v); }
+
+static inline void net_writer_f32(NetWriter* w, float v)
+{
+    uint32_t bits;
+    memcpy(&bits, &v, 4);
+    net_writer_u32(w, bits);
+}
+
+static inline void net_writer_bytes(NetWriter* w, const void* src, size_t n)
+{
+    if (!net_writer_room(w, n)) return;
+    memcpy(w->base + w->pos, src, n);
+    w->pos += n;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Wire serialization helpers — write/read little-endian             */
 /* ------------------------------------------------------------------ */
 
@@ -169,6 +338,17 @@ static inline void net_read_header(const uint8_t* buf, size_t* off,
     h->ack_bits  = net_read_u16(buf, off);
 }
 
+/* Bounds-checked header read. On a buffer shorter than HEADER_WIRE_SIZE the
+ * reader latches ok=false; the caller checks net_reader_ok() and drops. */
+static inline void net_reader_header(NetReader* r, PacketHeader* h)
+{
+    h->type      = net_reader_u8(r);
+    h->player_id = net_reader_u8(r);
+    h->seq       = net_reader_u16(r);
+    h->ack       = net_reader_u16(r);
+    h->ack_bits  = net_reader_u16(r);
+}
+
 /* ------------------------------------------------------------------ */
 /*  PositionPacket — 32 wire bytes                                     */
 /*  Client sends its authoritative position every frame.              */
@@ -203,6 +383,22 @@ static inline void net_read_position(const uint8_t* buf, PositionPacket* p)
     p->z     = net_read_float(buf, &off);
     p->yaw   = net_read_float(buf, &off);
     p->pitch = net_read_float(buf, &off);
+}
+
+/* Bounds-checked parse: returns 1 only if the full 32-byte packet was present.
+ * On a short/truncated buffer returns 0 and never reads out of bounds. */
+static inline int net_parse_position(const uint8_t* buf, size_t len,
+                                     PositionPacket* p)
+{
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, &p->header);
+    p->tick  = net_reader_u32(&r);
+    p->x     = net_reader_f32(&r);
+    p->y     = net_reader_f32(&r);
+    p->z     = net_reader_f32(&r);
+    p->yaw   = net_reader_f32(&r);
+    p->pitch = net_reader_f32(&r);
+    return net_reader_ok(&r);
 }
 
 /* ------------------------------------------------------------------ */
@@ -312,6 +508,20 @@ static inline void net_read_block_break(const uint8_t* buf,
     p->slot  = net_read_u8(buf, &off);
 }
 
+/* Bounds-checked parse (22 wire bytes). */
+static inline int net_parse_block_break(const uint8_t* buf, size_t len,
+                                        BlockBreakPacket* p)
+{
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, &p->header);
+    p->x     = net_reader_i32(&r);
+    p->y     = net_reader_i32(&r);
+    p->z     = net_reader_i32(&r);
+    p->block = net_reader_u8(&r);
+    p->slot  = net_reader_u8(&r);
+    return net_reader_ok(&r);
+}
+
 static inline size_t net_write_block_place(uint8_t* buf,
                                             const BlockPlacePacket* p)
 {
@@ -337,6 +547,20 @@ static inline void net_read_block_place(const uint8_t* buf,
     p->slot = net_read_u8(buf, &off);
 }
 
+/* Bounds-checked parse (22 wire bytes). */
+static inline int net_parse_block_place(const uint8_t* buf, size_t len,
+                                        BlockPlacePacket* p)
+{
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, &p->header);
+    p->x    = net_reader_i32(&r);
+    p->y    = net_reader_i32(&r);
+    p->z    = net_reader_i32(&r);
+    p->face = net_reader_u8(&r);
+    p->slot = net_reader_u8(&r);
+    return net_reader_ok(&r);
+}
+
 static inline size_t net_write_block_change(uint8_t* buf,
                                              const BlockChangePacket* p)
 {
@@ -358,6 +582,19 @@ static inline void net_read_block_change(const uint8_t* buf,
     p->y     = net_read_i32(buf, &off);
     p->z     = net_read_i32(buf, &off);
     p->block = net_read_u8(buf, &off);
+}
+
+/* Bounds-checked parse (21 wire bytes). */
+static inline int net_parse_block_change(const uint8_t* buf, size_t len,
+                                         BlockChangePacket* p)
+{
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, &p->header);
+    p->x     = net_reader_i32(&r);
+    p->y     = net_reader_i32(&r);
+    p->z     = net_reader_i32(&r);
+    p->block = net_reader_u8(&r);
+    return net_reader_ok(&r);
 }
 
 /* Wire body per slot: [item u16][count u8][durability u16] = 5 bytes. */
@@ -390,6 +627,25 @@ static inline void net_read_inventory(const uint8_t* buf, InventoryPacket* p)
     }
 }
 
+/* Bounds-checked parse. The declared slot_count is clamped to the array bound
+ * and every per-slot read is length-checked; a truncated body sets ok=false. */
+static inline int net_parse_inventory(const uint8_t* buf, size_t len,
+                                      InventoryPacket* p)
+{
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, &p->header);
+    uint8_t declared = net_reader_u8(&r);
+    if (!net_reader_ok(&r)) return 0;
+    p->slot_count = declared > INVENTORY_NET_SLOTS ? INVENTORY_NET_SLOTS
+                                                   : declared;
+    for (uint8_t i = 0; i < p->slot_count; i++) {
+        p->slots[i].item       = net_reader_u16(&r);
+        p->slots[i].count      = net_reader_u8 (&r);
+        p->slots[i].durability = net_reader_u16(&r);
+    }
+    return net_reader_ok(&r);
+}
+
 /* ------------------------------------------------------------------ */
 /*  PKT_CRAFT — client → server, 10 wire bytes (8 header + u16 recipe)  */
 /*                                                                     */
@@ -412,6 +668,15 @@ static inline void net_read_craft(const uint8_t* buf, PacketHeader* hdr,
     size_t off = 0;
     net_read_header(buf, &off, hdr);
     *recipe_index = net_read_u16(buf, &off);
+}
+
+/* Bounds-checked parse (10 wire bytes). */
+static inline int net_parse_craft(const uint8_t* buf, size_t len,
+                                  PacketHeader* hdr, uint16_t* recipe_index) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *recipe_index = net_reader_u16(&r);
+    return net_reader_ok(&r);
 }
 
 /* ------------------------------------------------------------------ */
@@ -440,6 +705,15 @@ static inline void net_read_equip(const uint8_t* buf, PacketHeader* hdr,
     *slot = net_read_u8(buf, &off);
 }
 
+/* Bounds-checked parse (9 wire bytes). */
+static inline int net_parse_equip(const uint8_t* buf, size_t len,
+                                  PacketHeader* hdr, uint8_t* slot) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *slot = net_reader_u8(&r);
+    return net_reader_ok(&r);
+}
+
 static inline size_t net_write_armor(uint8_t* buf, const PacketHeader* hdr,
                                      const uint16_t equipped[ARMOR_NET_SLOTS],
                                      uint8_t total_points) {
@@ -452,17 +726,24 @@ static inline size_t net_write_armor(uint8_t* buf, const PacketHeader* hdr,
     return off;
 }
 
+/* Bounds-checked armour parse. Tolerant by design (legacy/short packets read
+ * missing fields as zero) but never over-reads: each field is taken only if the
+ * cursor still has room. Always returns 1 (the packet is best-effort), with
+ * absent fields defaulted. */
 static inline void net_read_armor(const uint8_t* buf, size_t len,
                                   PacketHeader* hdr,
                                   uint16_t equipped[ARMOR_NET_SLOTS],
                                   uint8_t* total_points) {
-    size_t off = 0;
-    net_read_header(buf, &off, hdr);
-    uint8_t n = (len >= HEADER_WIRE_SIZE + 1) ? net_read_u8(buf, &off) : 0;
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    uint8_t n = (net_reader_remaining(&r) >= 1) ? net_reader_u8(&r) : 0;
     if (n > ARMOR_NET_SLOTS) n = ARMOR_NET_SLOTS;
     for (int i = 0; i < ARMOR_NET_SLOTS; i++) equipped[i] = 0;
-    for (uint8_t i = 0; i < n; i++) equipped[i] = net_read_u16(buf, &off);
-    *total_points = (off + 1 <= len) ? net_read_u8(buf, &off) : 0;
+    for (uint8_t i = 0; i < n; i++) {
+        if (net_reader_remaining(&r) < 2) break;
+        equipped[i] = net_reader_u16(&r);
+    }
+    *total_points = (net_reader_remaining(&r) >= 1) ? net_reader_u8(&r) : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -521,6 +802,21 @@ static inline void net_read_chunk_data_frag_hdr(const uint8_t* buf,
     *total  = net_read_u16(buf, &off);
 }
 
+/* Bounds-checked parse of the fragment subheader (header + 3×u16 = 14 bytes).
+ * Returns 1 only if the full prefix was present. */
+static inline int net_parse_chunk_data_frag_hdr(const uint8_t* buf, size_t len,
+                                                PacketHeader* hdr,
+                                                uint16_t* msg_id,
+                                                uint16_t* index, uint16_t* total)
+{
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *msg_id = net_reader_u16(&r);
+    *index  = net_reader_u16(&r);
+    *total  = net_reader_u16(&r);
+    return net_reader_ok(&r);
+}
+
 static inline size_t net_write_chunk_unload(uint8_t* buf, const PacketHeader* hdr,
                                             int32_t cx, int32_t cz) {
     size_t off = 0;
@@ -537,6 +833,17 @@ static inline void net_read_chunk_unload(const uint8_t* buf,
     net_read_header(buf, &off, hdr);
     *cx = net_read_i32(buf, &off);
     *cz = net_read_i32(buf, &off);
+}
+
+/* Bounds-checked parse (16 wire bytes). */
+static inline int net_parse_chunk_unload(const uint8_t* buf, size_t len,
+                                         PacketHeader* hdr,
+                                         int32_t* cx, int32_t* cz) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *cx = net_reader_i32(&r);
+    *cz = net_reader_i32(&r);
+    return net_reader_ok(&r);
 }
 
 /* ------------------------------------------------------------------ */
@@ -599,6 +906,27 @@ static inline void net_read_mob_state_entry(const uint8_t* buf, size_t* off,
     m->health = net_read_u8(buf, off);
 }
 
+/* Bounds-checked one mob entry through a cursor (20 wire bytes). */
+static inline void net_reader_mob_state_entry(NetReader* r, NetMobState* m) {
+    m->id     = net_reader_u16(r);
+    m->type   = net_reader_u8(r);
+    m->x      = net_reader_f32(r);
+    m->y      = net_reader_f32(r);
+    m->z      = net_reader_f32(r);
+    m->yaw    = net_reader_f32(r);
+    m->health = net_reader_u8(r);
+}
+
+/* Bounds-checked one player-state entry through a cursor (21 wire bytes). */
+static inline void net_reader_player_state(NetReader* r, NetPlayerState* p) {
+    p->player_id = net_reader_u8(r);
+    p->x         = net_reader_f32(r);
+    p->y         = net_reader_f32(r);
+    p->z         = net_reader_f32(r);
+    p->yaw       = net_reader_f32(r);
+    p->pitch     = net_reader_f32(r);
+}
+
 static inline size_t net_write_mob_attack(uint8_t* buf, const PacketHeader* hdr,
                                           uint16_t mob_id) {
     size_t off = 0;
@@ -612,6 +940,15 @@ static inline void net_read_mob_attack(const uint8_t* buf, PacketHeader* hdr,
     size_t off = 0;
     net_read_header(buf, &off, hdr);
     *mob_id = net_read_u16(buf, &off);
+}
+
+/* Bounds-checked parse (10 wire bytes). */
+static inline int net_parse_mob_attack(const uint8_t* buf, size_t len,
+                                       PacketHeader* hdr, uint16_t* mob_id) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *mob_id = net_reader_u16(&r);
+    return net_reader_ok(&r);
 }
 
 static inline size_t net_write_player_health(uint8_t* buf, const PacketHeader* hdr,
@@ -632,17 +969,38 @@ static inline void net_read_player_health(const uint8_t* buf, size_t len,
                                           PacketHeader* hdr,
                                           uint8_t* health, uint8_t* flags,
                                           uint8_t* food, uint8_t* air) {
-    size_t off = 0;
-    net_read_header(buf, &off, hdr);
-    *health = net_read_u8(buf, &off);
-    *flags  = net_read_u8(buf, &off);
-    if (len >= HEADER_WIRE_SIZE + 4) {
-        *food = net_read_u8(buf, &off);
-        *air  = net_read_u8(buf, &off);
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *health = net_reader_u8(&r);
+    *flags  = net_reader_u8(&r);
+    if (net_reader_remaining(&r) >= 2) {
+        *food = net_reader_u8(&r);
+        *air  = net_reader_u8(&r);
     } else {
         *food = NET_MAX_FOOD;
         *air  = NET_MAX_AIR;
     }
+}
+
+/* Bounds-checked parse: returns 1 only if at least health+flags were present
+ * (the minimum 10-byte packet). food/air default to full when absent. */
+static inline int net_parse_player_health(const uint8_t* buf, size_t len,
+                                          PacketHeader* hdr,
+                                          uint8_t* health, uint8_t* flags,
+                                          uint8_t* food, uint8_t* air) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *health = net_reader_u8(&r);
+    *flags  = net_reader_u8(&r);
+    if (!net_reader_ok(&r)) return 0;
+    if (net_reader_remaining(&r) >= 2) {
+        *food = net_reader_u8(&r);
+        *air  = net_reader_u8(&r);
+    } else {
+        *food = NET_MAX_FOOD;
+        *air  = NET_MAX_AIR;
+    }
+    return 1;
 }
 
 /* ------------------------------------------------------------------ */
