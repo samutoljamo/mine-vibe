@@ -8,6 +8,7 @@
 #include "raycast.h"   /* for block_face_offset / FACE_PZ */
 #include "gameplay.h"  /* for MAX_REACH */
 #include "mob.h"
+#include "mob_ai.h"      /* passive spawn eligibility + loot tables (pure) */
 #include "physics.h"
 #include "player.h"      /* GRAVITY, TERMINAL_VEL */
 #include "block.h"       /* block_is_solid */
@@ -578,6 +579,21 @@ static void handle_craft(Server* s, ServerClient* c,
     server_send_inventory(s, c);
 }
 
+/* Award a slain mob's loot to its killer's inventory (server-authoritative) and
+ * push the updated inventory if anything was actually picked up. Drops whose
+ * item is not yet modelled produce an empty table (see mob_loot), so this is a
+ * no-op for those types until the items exist. */
+static void award_mob_loot(Server* s, ServerClient* c, MobType type) {
+    MobLootDrop drops[MOB_LOOT_MAX];
+    int n = mob_loot(type, drops);
+    bool gained = false;
+    for (int i = 0; i < n; i++) {
+        uint8_t leftover = inventory_add_item(&c->inventory, drops[i].item, drops[i].count);
+        if (leftover < drops[i].count) gained = true;   /* at least one picked up */
+    }
+    if (gained) server_send_inventory(s, c);
+}
+
 static void handle_mob_attack(Server* s, ServerClient* c,
                               const uint8_t* data, size_t len) {
     if (len < 10) return;
@@ -601,8 +617,10 @@ static void handle_mob_attack(Server* s, ServerClient* c,
     if (dx*dx + dy*dy + dz*dz > (MAX_REACH + 1.0f) * (MAX_REACH + 1.0f)) return;
 
     c->last_attack_time = now;
-    if (mob_combat_apply(&m->health, PLAYER_ATTACK_DAMAGE))
+    if (mob_combat_apply(&m->health, PLAYER_ATTACK_DAMAGE)) {
+        award_mob_loot(s, c, m->type);      /* drops go to the killer */
         mob_set_remove(&s->mobs, mob_id);   /* dead → vanishes next broadcast */
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -636,6 +654,10 @@ static int server_surface_y(World* w, int x, int z) {
     return -1;
 }
 
+/* Hostile types only (zombie/skeleton/creeper occupy the first slots of the
+ * MobType enum). Passive animals are handled by the daytime herd path below. */
+#define HOSTILE_TYPE_COUNT 3
+
 static void server_try_spawn(Server* s, vec3 anchor) {
     int live = 0;
     for (int i = 0; i < MOB_MAX; i++) if (s->mobs.mobs[i].active) live++;
@@ -648,9 +670,77 @@ static void server_try_spawn(Server* s, vec3 anchor) {
     int z = (int)floorf(anchor[2] + sinf(ang) * rad);
     int y = server_surface_y(s->world, x, z);
     if (y < 0) return;  /* terrain not ready / no valid column — try again next interval */
-    MobType type = (MobType)(rand() % MOB_TYPE_COUNT);
+    MobType type = (MobType)(rand() % HOSTILE_TYPE_COUNT);   /* hostile only */
     Mob* m = mob_set_spawn(&s->mobs, type, (vec3){ (float)x + 0.5f, (float)(y + 1), (float)z + 0.5f });
     if (m) fprintf(stderr, "[server] spawned mob %u (type %d) at (%d,%d)\n", m->id, (int)type, x, z);
+}
+
+/* Count currently-live passive animals (for the passive cap). */
+static int server_count_passive(const Server* s) {
+    int n = 0;
+    for (int i = 0; i < MOB_MAX; i++) {
+        const Mob* m = &s->mobs.mobs[i];
+        if (m->active && mob_ai_is_passive_spawn_type(m->type)) n++;
+    }
+    return n;
+}
+
+/* Distance from (x,z) at surface height to the nearest connected player (XZ
+ * plane). Returns a large sentinel when no players are connected. */
+static float server_nearest_player_dist_xz(const Server* s, float x, float z) {
+    float best = 1.0e30f;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        const ServerClient* c = &s->clients[i];
+        if (!c->active || !c->position_received) continue;
+        float dx = c->x - x, dz = c->z - z;
+        float d = sqrtf(dx*dx + dz*dz);
+        if (d < best) best = d;
+    }
+    return best;
+}
+
+/* Daytime passive herd spawning. Picks a candidate column in a ring around the
+ * anchor, then defers to the pure eligibility check (daytime, grass surface,
+ * passive cap, min distance from players) before placing a small same-type herd
+ * clustered around the seed. Server-authoritative; runs on a separate timer and
+ * budget from the hostile path. */
+static void server_try_spawn_passive(Server* s, vec3 anchor) {
+    int live_passive = server_count_passive(s);
+
+    /* Candidate seed column in the passive spawn ring. */
+    float ang = (float)rand() / (float)RAND_MAX * 6.2831853f;
+    float rad = PASSIVE_SPAWN_MIN
+              + (float)rand() / (float)RAND_MAX * (PASSIVE_SPAWN_MAX - PASSIVE_SPAWN_MIN);
+    int sx = (int)floorf(anchor[0] + cosf(ang) * rad);
+    int sz = (int)floorf(anchor[2] + sinf(ang) * rad);
+    int sy = server_surface_y(s->world, sx, sz);
+    if (sy < 0) return;   /* terrain not ready */
+
+    bool is_day   = !daynight_is_dark(s->world_ticks);
+    bool on_grass = world_get_block(s->world, sx, sy, sz) == BLOCK_GRASS;
+    float pdist   = server_nearest_player_dist_xz(s, (float)sx + 0.5f, (float)sz + 0.5f);
+
+    if (!mob_ai_passive_spawn_ok(is_day, on_grass, live_passive, pdist)) return;
+
+    int herd = mob_ai_herd_size(live_passive, (uint32_t)rand());
+    if (herd <= 0) return;
+    MobType type = mob_ai_herd_type((uint32_t)rand());
+
+    int spawned = 0;
+    for (int i = 0; i < herd; i++) {
+        /* Cluster members within PASSIVE_HERD_SPREAD blocks of the seed. */
+        int ox = (int)floorf(((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * PASSIVE_HERD_SPREAD);
+        int oz = (int)floorf(((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * PASSIVE_HERD_SPREAD);
+        int mx = sx + ox, mz = sz + oz;
+        int my = server_surface_y(s->world, mx, mz);
+        if (my < 0) { my = sy; mx = sx; mz = sz; }   /* fall back to the seed column */
+        Mob* m = mob_set_spawn(&s->mobs, type,
+                               (vec3){ (float)mx + 0.5f, (float)(my + 1), (float)mz + 0.5f });
+        if (m) spawned++;
+    }
+    if (spawned)
+        fprintf(stderr, "[server] spawned passive herd: %d x type %d at (%d,%d)\n",
+                spawned, (int)type, sx, sz);
 }
 
 /* Convert survival air seconds (0..MAX_AIR_SEC) to 0..20 bubbles for the HUD. */
@@ -1061,6 +1151,17 @@ static void server_tick(Server* s, int tick_num)
             if (s->mob_spawn_timer >= MOB_SPAWN_INTERVAL) {
                 s->mob_spawn_timer = 0.0f;
                 server_try_spawn(s, anchor);
+            }
+        }
+
+        /* Passive farm animals spawn in daylight, on a separate timer/budget so
+         * they don't compete with the hostile path. Only accumulate while it is
+         * day, so a dawn transition doesn't dump a burst built up overnight. */
+        if (!daynight_is_dark(s->world_ticks)) {
+            s->passive_spawn_timer += 1.0f / SERVER_TICK_RATE;
+            if (s->passive_spawn_timer >= PASSIVE_SPAWN_INTERVAL) {
+                s->passive_spawn_timer = 0.0f;
+                server_try_spawn_passive(s, anchor);
             }
         }
     }

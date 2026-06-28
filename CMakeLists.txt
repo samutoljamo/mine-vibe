@@ -181,6 +181,7 @@ add_executable(minecraft
     src/audio_miniaudio.c
     src/remote_player.c
     src/mob.c
+    src/mob_ai.c
     src/inventory.c
     src/item.c
     src/crafting.c
@@ -305,6 +306,17 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_mob PRIVATE m)
 endif()
 add_test(NAME mob COMMAND test_mob)
+
+add_executable(test_mob_ai
+    tests/test_mob_ai.c
+    src/mob_ai.c
+)
+target_include_directories(test_mob_ai PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_mob_ai PRIVATE cglm)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mob_ai PRIVATE m)
+endif()
+add_test(NAME mob_ai COMMAND test_mob_ai)
 
 add_executable(test_mesher
     tests/test_mesher.c
