@@ -514,6 +514,14 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
 
     /* ---- Step 2: Unload distant chunks ---- */
     {
+        /* Host shared-world safety: in host mode the server thread concurrently
+         * calls world_get_block/world_set_block on this world (mob AI,
+         * collision, survival), but only within ~MOB_DESPAWN_RANGE (44 blocks,
+         * <3 chunks) of the anchor — which equals this thread's update center.
+         * We only free chunks beyond unload_rd = render_distance + 4 chunks
+         * (>=5 chunks = 80 blocks since render_distance >= 1), so the freed
+         * region never overlaps the server's read region. Keep that margin if
+         * the minimum render distance ever drops. */
         /* First pass: collect chunks to unload (avoids O(n^2) iterator restarts) */
         Chunk* to_remove[1024];
         int    remove_count = 0;

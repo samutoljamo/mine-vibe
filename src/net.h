@@ -26,6 +26,8 @@ typedef enum {
     PKT_CRAFT           = 14, /* client → server: craft a recipe by index     */
     PKT_EQUIP           = 15, /* client → server: equip the armour in a slot   */
     PKT_ARMOR           = 16, /* server → one:    equipped armour + points     */
+    PKT_CHUNK_DATA      = 17, /* server → one:  RLE column (reliable+fragmented)*/
+    PKT_CHUNK_UNLOAD    = 18, /* server → one:  drop a now-distant chunk        */
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -37,7 +39,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 6
+#define NET_PROTOCOL_VERSION 7
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -461,6 +463,33 @@ static inline void net_read_armor(const uint8_t* buf, size_t len,
     for (int i = 0; i < ARMOR_NET_SLOTS; i++) equipped[i] = 0;
     for (uint8_t i = 0; i < n; i++) equipped[i] = net_read_u16(buf, &off);
     *total_points = (off + 1 <= len) ? net_read_u8(buf, &off) : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Chunk streaming packets (protocol v7)                              */
+/*    PKT_CHUNK_DATA   — server → one. The payload after the 8-byte    */
+/*       header is the chunkwire body {cx i32, cz i32, rle_len u32,    */
+/*       rle...} (see src/chunkwire.h). Because a column can exceed a  */
+/*       single datagram it is sent via reliable_send_fragmented and   */
+/*       reassembled client-side; the header+body is the inner payload.*/
+/*    PKT_CHUNK_UNLOAD — server → one, 16 wire bytes (8 header + 2×i32)*/
+/* ------------------------------------------------------------------ */
+static inline size_t net_write_chunk_unload(uint8_t* buf, const PacketHeader* hdr,
+                                            int32_t cx, int32_t cz) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_i32(buf, &off, cx);
+    net_write_i32(buf, &off, cz);
+    return off;
+}
+
+static inline void net_read_chunk_unload(const uint8_t* buf,
+                                         PacketHeader* hdr,
+                                         int32_t* cx, int32_t* cz) {
+    size_t off = 0;
+    net_read_header(buf, &off, hdr);
+    *cx = net_read_i32(buf, &off);
+    *cz = net_read_i32(buf, &off);
 }
 
 /* ------------------------------------------------------------------ */
