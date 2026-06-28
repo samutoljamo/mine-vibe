@@ -7,7 +7,8 @@ layout(set = 0, binding = 1) uniform sampler2D tex_skin;
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
-    vec4 tint;   // rgb = override colour, a = blend strength (0 = unmodified skin)
+    vec4 tint;   // a = 0: player skin; a > 0: mob, rgb = primary (upper) colour
+    vec4 tint2;  // mob only: rgb = secondary (lower) colour
 } pc;
 
 layout(location = 0) out vec4 out_color;
@@ -18,12 +19,11 @@ void main() {
 
     vec3 base;
     if (pc.tint.a > 0.0) {
-        // Mob: a two-tone zombie instead of the player skin. The model's UVs put
+        // Mob: a two-tone box instead of the player skin. The model's UVs put
         // the head in the top half of the skin (v < 0.5) and the torso/limbs in
-        // the bottom half, so split on frag_uv.y: green head/face, dark-teal body.
-        vec3 skin  = vec3(0.40, 0.62, 0.32);   // sickly green
-        vec3 cloth = vec3(0.16, 0.34, 0.40);   // dark teal — reads against grass
-        base = (frag_uv.y < 0.5) ? skin : cloth;
+        // the bottom half, so split on frag_uv.y. Colours are supplied per mob
+        // type via the push constants (primary = upper, secondary = lower).
+        base = (frag_uv.y < 0.5) ? pc.tint.rgb : pc.tint2.rgb;
     } else {
         base = tex_color.rgb;                  // remote player: real skin
     }

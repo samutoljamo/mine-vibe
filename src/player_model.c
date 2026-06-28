@@ -221,16 +221,27 @@ void player_model_draw(Renderer* r, VkCommandBuffer cmd,
         glm_translate(model, pos);
         glm_rotate(model, (float)GLM_PI_2 - states[i].yaw, (vec3){0.0f, 1.0f, 0.0f});
 
-        /* 80-byte push block: mat4 model (64) then vec4 tint (16), laid out as a
-         * flat float array so there is no struct-alignment padding between them
-         * (cglm may over-align mat4, which would bloat a struct past the 80-byte
-         * push range and corrupt the tint). */
-        float pc[20];
+        /* Per-axis body scale (mobs scale the shared box to their silhouette).
+         * Treat 0 as "unspecified" -> 1.0 so the player path stays unscaled. */
+        float sx = states[i].scale[0] != 0.0f ? states[i].scale[0] : 1.0f;
+        float sy = states[i].scale[1] != 0.0f ? states[i].scale[1] : 1.0f;
+        float sz = states[i].scale[2] != 0.0f ? states[i].scale[2] : 1.0f;
+        glm_scale(model, (vec3){sx, sy, sz});
+
+        /* 96-byte push block: mat4 model (64) then vec4 tint (16) then vec4
+         * tint2 (16), laid out as a flat float array so there is no struct-
+         * alignment padding (cglm may over-align mat4, which would bloat a
+         * struct past the push range and corrupt the tints). */
+        float pc[24];
         memcpy(pc, model, sizeof(model));   /* 64 bytes: the model matrix */
         pc[16] = states[i].tint[0];
         pc[17] = states[i].tint[1];
         pc[18] = states[i].tint[2];
         pc[19] = states[i].tint[3];
+        pc[20] = states[i].tint2[0];
+        pc[21] = states[i].tint2[1];
+        pc[22] = states[i].tint2[2];
+        pc[23] = 0.0f;
 
         vkCmdPushConstants(cmd, r->player_pipeline_layout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

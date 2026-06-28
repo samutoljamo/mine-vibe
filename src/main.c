@@ -21,6 +21,7 @@
 #include "client.h"
 #include "remote_player.h"
 #include "player_model.h"
+#include "mob_render.h"
 #include "platform_thread.h"
 #include "raycast.h"
 #include "gameplay.h"
@@ -919,6 +920,12 @@ int main(int argc, char *argv[])
                 rp_states[rcount].tint[1] = 0.0f;
                 rp_states[rcount].tint[2] = 0.0f;
                 rp_states[rcount].tint[3] = 0.0f;
+                rp_states[rcount].tint2[0] = 0.0f;  /* unused for players */
+                rp_states[rcount].tint2[1] = 0.0f;
+                rp_states[rcount].tint2[2] = 0.0f;
+                rp_states[rcount].scale[0] = 1.0f;  /* unscaled player model */
+                rp_states[rcount].scale[1] = 1.0f;
+                rp_states[rcount].scale[2] = 1.0f;
                 rcount++;
             }
             for (int i = 0; i < MOB_MAX && rcount < REMOTE_PLAYER_MAX + MOB_MAX; i++) {
@@ -926,14 +933,24 @@ int main(int argc, char *argv[])
                 if (!m->active || m->snapshot_count < 2) continue;
                 vec3 pos; float yaw;
                 client_mob_interpolate(m, dt, pos, &yaw);
+                /* Per-type two-tone colours + body silhouette from the render
+                 * table; a=1 flags "this is a mob" so the shader uses the
+                 * supplied colours instead of the player skin. */
+                MobRenderDef def = mob_render_def((MobType)m->type);
                 rp_states[rcount].pos[0] = pos[0];
                 rp_states[rcount].pos[1] = pos[1];
                 rp_states[rcount].pos[2] = pos[2];
                 rp_states[rcount].yaw    = yaw;
-                rp_states[rcount].tint[0] = 0.0f;  /* rgb unused for mobs; */
-                rp_states[rcount].tint[1] = 0.0f;  /* a=1 flags "this is a mob" so the */
-                rp_states[rcount].tint[2] = 0.0f;  /* shader applies the zombie palette */
+                rp_states[rcount].tint[0] = def.primary[0];
+                rp_states[rcount].tint[1] = def.primary[1];
+                rp_states[rcount].tint[2] = def.primary[2];
                 rp_states[rcount].tint[3] = 1.0f;
+                rp_states[rcount].tint2[0] = def.secondary[0];
+                rp_states[rcount].tint2[1] = def.secondary[1];
+                rp_states[rcount].tint2[2] = def.secondary[2];
+                rp_states[rcount].scale[0] = def.half_w / MOB_RENDER_BASE_HALF_W;
+                rp_states[rcount].scale[1] = def.height / MOB_RENDER_BASE_HEIGHT;
+                rp_states[rcount].scale[2] = def.depth  / MOB_RENDER_BASE_DEPTH;
                 rcount++;
             }
         }
