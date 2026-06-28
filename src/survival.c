@@ -96,6 +96,18 @@ int survival_regen_step(float food, int health, float* regen_timer,
     return healed;
 }
 
+int survival_regen_tick(SurvivalState* s, int health, float dt)
+{
+    int heal = survival_regen_step(s->food, health, &s->regen_timer,
+                                   &s->exhaustion, dt);
+    /* Settle the exhaustion the heal just charged into saturation/food so the
+     * cost is visible immediately: saturation drains first, then food. The
+     * `added` is 0 here because survival_regen_step already bumped exhaustion;
+     * passing 0 just runs the threshold-draining loop on the existing value. */
+    survival_apply_exhaustion(&s->food, &s->saturation, &s->exhaustion, 0.0f);
+    return heal;
+}
+
 int survival_starve_step(float food, int health, float* starve_timer,
                          float dt)
 {

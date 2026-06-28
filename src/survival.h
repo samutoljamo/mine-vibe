@@ -124,6 +124,14 @@ bool survival_apply_food(SurvivalState* s, int hunger_restore);
 int survival_regen_step(float food, int health, float* regen_timer,
                         float* exhaustion, float dt);
 
+/* Convenience whole-state regen tick. Runs survival_regen_step against the
+ * SurvivalState's own fields, and immediately settles the exhaustion the heal
+ * cost into saturation/food (so each healed hp visibly burns the hidden
+ * saturation reserve first, then food — Minecraft-style). Returns hp to ADD
+ * this tick (clamped so it never exceeds SURVIVAL_MAX_HEALTH given `health`).
+ * Pure: a deterministic function of *s and its inputs. */
+int survival_regen_tick(SurvivalState* s, int health, float dt);
+
 /* Starvation step. At food <= 0 and health > STARVE_FLOOR, returns hp to
  * SUBTRACT this tick (0 or more) and advances *starve_timer. */
 int survival_starve_step(float food, int health, float* starve_timer,
