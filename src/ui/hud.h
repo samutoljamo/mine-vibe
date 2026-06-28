@@ -22,8 +22,12 @@ typedef struct PerfStats {
     float    samples[PERF_SAMPLE_COUNT]; /* frametimes in seconds */
     int      count;                      /* valid samples (<= PERF_SAMPLE_COUNT) */
     int      head;                       /* next write index (ring) */
-    /* Per-frame counters surfaced from the renderer, copied in by the caller. */
+    /* Per-frame counters surfaced from the renderer, copied in by the caller.
+     * culled_chunks: candidate chunk meshes rejected by the frustum test;
+     * total_chunks = visible + culled (the candidate set this frame). */
     uint32_t visible_chunks;
+    uint32_t culled_chunks;
+    uint32_t total_chunks;
     uint32_t draw_calls;
 } PerfStats;
 
@@ -33,6 +37,8 @@ static inline void perf_stats_reset(PerfStats* p)
     p->count = 0;
     p->head  = 0;
     p->visible_chunks = 0;
+    p->culled_chunks  = 0;
+    p->total_chunks   = 0;
     p->draw_calls     = 0;
     for (int i = 0; i < PERF_SAMPLE_COUNT; i++) p->samples[i] = 0.0f;
 }
