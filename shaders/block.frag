@@ -1,11 +1,32 @@
 #version 450
 
-layout(location = 0) in vec2  frag_uv;
-layout(location = 1) in float frag_light;
-layout(location = 2) in float frag_ao;
-layout(location = 3) in float frag_view_z;
+layout(location = 0) in vec2       frag_uv;
+layout(location = 1) in float      frag_light;
+layout(location = 2) in float      frag_ao;
+layout(location = 3) in float      frag_view_z;
+layout(location = 4) in flat uint  frag_tile;
 
 layout(set = 0, binding = 1) uniform sampler2D tex_atlas;
+
+/* Atlas: 16x16 grid of 16px tiles in a 256px texture. Mirror of the C-side
+ * TILE_UV / HALF_TEXEL inset so tiled (greedy-merged) quads sample exactly
+ * the same in-tile UV window as the legacy single-tile quads. */
+const float TILE_UV    = 1.0 / 16.0;
+const float HALF_TEXEL = 1.5 / 256.0;
+
+/* Wrap a repeat-space coordinate (range [0..W]x[0..H]) back into a single
+ * atlas tile, using textureGrad so mip selection follows the *unwrapped*
+ * coordinate — this avoids a high-mip seam where fract() jumps 1->0. */
+vec4 sample_tiled(uint tile, vec2 repeat_uv) {
+    vec2 tile_origin = vec2(float(tile % 16u), float(tile / 16u)) * TILE_UV;
+    float span = TILE_UV - 2.0 * HALF_TEXEL;
+    vec2 local = fract(repeat_uv);
+    vec2 atlas_uv = tile_origin + HALF_TEXEL + local * span;
+    /* Derivatives of the continuous (pre-fract) atlas coordinate. */
+    vec2 ddx = dFdx(repeat_uv) * span;
+    vec2 ddy = dFdy(repeat_uv) * span;
+    return textureGrad(tex_atlas, atlas_uv, ddx, ddy);
+}
 
 layout(set = 0, binding = 0) uniform GlobalUBO {
     mat4 view;
@@ -28,7 +49,9 @@ const vec3  WATER_COLOR_FAR = vec3(0.06, 0.18, 0.40);
 const float WATER_FOG_RANGE = 32.0;
 
 void main() {
-    vec4 tex_color = texture(tex_atlas, frag_uv);
+    vec4 tex_color = (frag_tile == 255u)
+        ? texture(tex_atlas, frag_uv)        /* legacy single-tile quad */
+        : sample_tiled(frag_tile, frag_uv);  /* greedy-merged, tile-repeat UV */
     /* Threshold 0.1 (not 0.5): anisotropic filtering at oblique view
      * angles averages many samples along the projected pixel footprint;
      * at high LODs those samples can cross atlas tile boundaries into

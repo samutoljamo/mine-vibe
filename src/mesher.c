@@ -58,12 +58,22 @@ static void ensure_capacity(MeshData* md, uint32_t need_verts, uint32_t need_idx
     }
 }
 
+/* Emit one quad.
+ *   pos   : 4 corner positions (emit order v0..v3)
+ *   uv    : 4 corner UVs. For greedy-merged quads these carry tile-REPEAT
+ *           coordinates (range [0..W] / [0..H]); the fragment shader wraps
+ *           them back into a single atlas tile via the per-vertex `tile`.
+ *           For 1x1 quads they are the usual in-tile UVs and tile==255 tells
+ *           the shader to use them verbatim (no wrap).
+ *   tile  : atlas tile index, or 255 for "no tiling, use uv directly".
+ */
 static void emit_quad(MeshData* md,
                       float pos[4][3],
                       float uv[4][2],
                       uint8_t normal_id,
                       const uint8_t ao[4],
-                      const uint8_t light[4])
+                      const uint8_t light[4],
+                      uint8_t tile)
 {
     ensure_capacity(md, 4, 6);
     uint32_t base = md->vertex_count;
@@ -78,7 +88,7 @@ static void emit_quad(MeshData* md,
         v->normal = normal_id;
         v->ao     = ao[i];
         v->light  = light[i];
-        v->_pad   = 0;
+        v->tile   = tile;
     }
 
     if (ao[0] + ao[2] > ao[1] + ao[3]) {
@@ -241,21 +251,26 @@ static uint8_t corner_sky(uint8_t face_block, uint8_t side1, uint8_t side2, uint
     return count == 0 ? 0 : (uint8_t)(sum / count);
 }
 
-/* Per-corner smooth light. Same basis vectors as compute_face_ao. */
+/* Per-face basis vectors. Same convention used throughout: u and v span the
+ * face plane; the 4 corners are placed at signs (-u,-v)(+u,-v)(+u,+v)(-u,+v),
+ * matching the vertex positions emitted below. fd* is the air-side step. */
+static const int fdx[6] = { 1, -1,  0,  0,  0,  0 };
+static const int fdy[6] = { 0,  0,  1, -1,  0,  0 };
+static const int fdz[6] = { 0,  0,  0,  0,  1, -1 };
+static const int ux[6]  = { 0,  0,  1,  1, -1,  1 };
+static const int uy[6]  = { 0,  0,  0,  0,  0,  0 };
+static const int uz[6]  = { 1, -1,  0,  0,  0,  0 };
+static const int vx[6]  = { 0,  0,  0,  0,  0,  0 };
+static const int vy[6]  = { 1,  1,  0,  0,  1,  1 };
+static const int vz[6]  = { 0,  0,  1, -1,  0,  0 };
+static const int signs_u[4] = { -1, +1, +1, -1 };
+static const int signs_v[4] = { -1, -1, +1, +1 };
+
+/* Per-corner smooth light. */
 static void compute_face_light(const Chunk* c, const ChunkNeighbors* nb,
                                int x, int y, int z, int face, uint8_t light[4])
 {
-    static const int fdx[6] = { 1, -1,  0,  0,  0,  0 };
-    static const int fdy[6] = { 0,  0,  1, -1,  0,  0 };
-    static const int fdz[6] = { 0,  0,  0,  0,  1, -1 };
-
-    int ux[6] = {0,0,1,1,-1,1}, uy[6] = {0,0,0,0,0,0}, uz[6] = {1,-1,0,0,0,0};
-    int vx[6] = {0,0,0,0,0,0},  vy[6] = {1,1,0,0,1,1}, vz[6] = {0,0,1,-1,0,0};
-    int signs_u[4] = { -1, +1, +1, -1 };
-    int signs_v[4] = { -1, -1, +1, +1 };
-
     int ax = x + fdx[face], ay = y + fdy[face], az = z + fdz[face];
-
     uint8_t face_block = sky_at(c, nb, ax, ay, az);
 
     for (int i = 0; i < 4; i++) {
@@ -273,50 +288,10 @@ static void compute_face_light(const Chunk* c, const ChunkNeighbors* nb,
 }
 
 /* For face dir (0=+X..5=-Z), fill ao[4] with computed AO for the 4 corners.
- * Vertex ordering matches the existing emit_quad order.
- *
- * Per-face basis vectors (u, v) span the face plane. The 4 corners are
- * placed according to signs_u/signs_v = {(-1,-1),(+1,-1),(+1,+1),(-1,+1)},
- * derived directly from the vertex positions emitted by mesher_build's switch:
- *
- *  Face 0 (+X): v0=(x+1,y,  z  ), v1=(x+1,y,  z+1), v2=(x+1,y+1,z+1), v3=(x+1,y+1,z  )
- *               air=(x+1,y,z), u=+Z (0,0,1), v=+Y (0,1,0)
- *  Face 1 (-X): v0=(x,  y,  z+1), v1=(x,  y,  z  ), v2=(x,  y+1,z  ), v3=(x,  y+1,z+1)
- *               air=(x-1,y,z), u=-Z (0,0,-1), v=+Y (0,1,0)
- *  Face 2 (+Y): v0=(x,  y+1,z  ), v1=(x+1,y+1,z  ), v2=(x+1,y+1,z+1), v3=(x,  y+1,z+1)
- *               air=(x,y+1,z), u=+X (1,0,0), v=+Z (0,0,1)
- *  Face 3 (-Y): v0=(x,  y,  z+1), v1=(x+1,y,  z+1), v2=(x+1,y,  z  ), v3=(x,  y,  z  )
- *               air=(x,y-1,z), u=+X (1,0,0), v=-Z (0,0,-1)
- *  Face 4 (+Z): v0=(x+1,y,  z+1), v1=(x,  y,  z+1), v2=(x,  y+1,z+1), v3=(x+1,y+1,z+1)
- *               air=(x,y,z+1), u=-X (-1,0,0), v=+Y (0,1,0)
- *  Face 5 (-Z): v0=(x,  y,  z  ), v1=(x+1,y,  z  ), v2=(x+1,y+1,z  ), v3=(x,  y+1,z  )
- *               air=(x,y,z-1), u=+X (1,0,0), v=+Y (0,1,0)
- */
+ * Vertex ordering matches emit order. */
 static void compute_face_ao(const Chunk* c, const ChunkNeighbors* nb,
                             int x, int y, int z, int face, uint8_t ao[4])
 {
-    /* Air block one step in face direction. */
-    static const int fdx[6] = { 1, -1,  0,  0,  0,  0 };
-    static const int fdy[6] = { 0,  0,  1, -1,  0,  0 };
-    static const int fdz[6] = { 0,  0,  0,  0,  1, -1 };
-
-    /* u and v basis vectors for each face (integer offsets in world space).
-     * Derived from the vertex positions in mesher_build's switch statement. */
-    static const int ux[6] = { 0,  0,  1,  1, -1,  1 };
-    static const int uy[6] = { 0,  0,  0,  0,  0,  0 };
-    static const int uz[6] = { 1, -1,  0,  0,  0,  0 };
-    static const int vx[6] = { 0,  0,  0,  0,  0,  0 };
-    static const int vy[6] = { 1,  1,  0,  0,  1,  1 };
-    static const int vz[6] = { 0,  0,  1, -1,  0,  0 };
-
-    /* Corners (in emit_quad order):
-     *   v0 = (-u, -v)
-     *   v1 = (+u, -v)
-     *   v2 = (+u, +v)
-     *   v3 = (-u, +v) */
-    static const int signs_u[4] = { -1, +1, +1, -1 };
-    static const int signs_v[4] = { -1, -1, +1, +1 };
-
     int ax = x + fdx[face], ay = y + fdy[face], az = z + fdz[face];
 
     for (int i = 0; i < 4; i++) {
@@ -333,159 +308,330 @@ static void compute_face_ao(const Chunk* c, const ChunkNeighbors* nb,
     }
 }
 
+/* Water and other special blocks are emitted on the legacy per-cell path
+ * (partial heights, per-cell UV rotation, surface lift) and never greedy
+ * merged. Returns true if the block must be emitted per-cell. */
+static bool needs_per_cell(BlockID block)
+{
+    return block == BLOCK_WATER;
+}
+
+/* ---- Per-cell (legacy) emit, for water / special blocks ----------------- */
+static void emit_cell_face(const Chunk* chunk, const ChunkNeighbors* neighbors,
+                           const uint8_t* meta_snapshot, MeshData* out,
+                           BlockID block, const BlockDef* def,
+                           int x, int y, int z, int face)
+{
+    float fx = (float)x, fy = (float)y, fz = (float)z;
+
+    uint8_t tex = get_tex_for_face(def, face);
+    float u0, v0, u1, v1;
+    get_tile_uv(tex, &u0, &v0, &u1, &v1);
+
+    float pos[4][3];
+    float uv[4][2];
+    uint8_t ao[4];
+    uint8_t light[4];
+    compute_face_ao   (chunk, neighbors, x, y, z, face, ao);
+    compute_face_light(chunk, neighbors, x, y, z, face, light);
+
+    if (block == BLOCK_WATER) {
+        ao[0] = ao[1] = ao[2] = ao[3] = 3;
+        uint8_t lmax = light[0];
+        if (light[1] > lmax) lmax = light[1];
+        if (light[2] > lmax) lmax = light[2];
+        if (light[3] > lmax) lmax = light[3];
+        light[0] = light[1] = light[2] = light[3] = lmax;
+    }
+
+    uv[0][0] = u0; uv[0][1] = v1;
+    uv[1][0] = u1; uv[1][1] = v1;
+    uv[2][0] = u1; uv[2][1] = v0;
+    uv[3][0] = u0; uv[3][1] = v0;
+
+    switch (face) {
+    case 0: /* +X */
+        pos[0][0] = fx+1; pos[0][1] = fy;   pos[0][2] = fz;
+        pos[1][0] = fx+1; pos[1][1] = fy;   pos[1][2] = fz+1;
+        pos[2][0] = fx+1; pos[2][1] = fy+1; pos[2][2] = fz+1;
+        pos[3][0] = fx+1; pos[3][1] = fy+1; pos[3][2] = fz;
+        break;
+    case 1: /* -X */
+        pos[0][0] = fx;   pos[0][1] = fy;   pos[0][2] = fz+1;
+        pos[1][0] = fx;   pos[1][1] = fy;   pos[1][2] = fz;
+        pos[2][0] = fx;   pos[2][1] = fy+1; pos[2][2] = fz;
+        pos[3][0] = fx;   pos[3][1] = fy+1; pos[3][2] = fz+1;
+        break;
+    case 2: /* +Y */
+    {
+        float fy_top = fy + 1.0f;
+        if (block == BLOCK_WATER && meta_snapshot) {
+            uint8_t wlvl = meta_snapshot[
+                x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z];
+            if (wlvl > 0 && wlvl < WATER_SOURCE_LEVEL)
+                fy_top = fy + (float)wlvl / (float)WATER_SOURCE_LEVEL;
+            fy_top += 0.005f;
+        }
+        if (block == BLOCK_WATER) {
+            uint32_t h = (uint32_t)x * 73856093u
+                       ^ (uint32_t)z * 19349663u
+                       ^ (uint32_t)y * 83492791u;
+            int rot = (int)((h >> 8) & 3u);
+            if (rot != 0) {
+                float tmp[4][2];
+                for (int k = 0; k < 4; k++) {
+                    int s = (k + rot) & 3;
+                    tmp[k][0] = uv[s][0];
+                    tmp[k][1] = uv[s][1];
+                }
+                for (int k = 0; k < 4; k++) {
+                    uv[k][0] = tmp[k][0];
+                    uv[k][1] = tmp[k][1];
+                }
+            }
+        }
+        pos[0][0] = fx;   pos[0][1] = fy_top; pos[0][2] = fz;
+        pos[1][0] = fx+1; pos[1][1] = fy_top; pos[1][2] = fz;
+        pos[2][0] = fx+1; pos[2][1] = fy_top; pos[2][2] = fz+1;
+        pos[3][0] = fx;   pos[3][1] = fy_top; pos[3][2] = fz+1;
+    }
+        break;
+    case 3: /* -Y */
+        pos[0][0] = fx;   pos[0][1] = fy;   pos[0][2] = fz+1;
+        pos[1][0] = fx+1; pos[1][1] = fy;   pos[1][2] = fz+1;
+        pos[2][0] = fx+1; pos[2][1] = fy;   pos[2][2] = fz;
+        pos[3][0] = fx;   pos[3][1] = fy;   pos[3][2] = fz;
+        break;
+    case 4: /* +Z */
+        pos[0][0] = fx+1; pos[0][1] = fy;   pos[0][2] = fz+1;
+        pos[1][0] = fx;   pos[1][1] = fy;   pos[1][2] = fz+1;
+        pos[2][0] = fx;   pos[2][1] = fy+1; pos[2][2] = fz+1;
+        pos[3][0] = fx+1; pos[3][1] = fy+1; pos[3][2] = fz+1;
+        break;
+    case 5: /* -Z */
+        pos[0][0] = fx;   pos[0][1] = fy;   pos[0][2] = fz;
+        pos[1][0] = fx+1; pos[1][1] = fy;   pos[1][2] = fz;
+        pos[2][0] = fx+1; pos[2][1] = fy+1; pos[2][2] = fz;
+        pos[3][0] = fx;   pos[3][1] = fy+1; pos[3][2] = fz;
+        break;
+    }
+
+    /* 255 = no tiling: use UVs verbatim (single in-tile quad). */
+    emit_quad(out, pos, uv, (uint8_t)face, ao, light, 255);
+}
+
+/* ---- Greedy meshing ----------------------------------------------------- *
+ *
+ * For each of the 6 face directions we sweep slices perpendicular to the face
+ * normal. Within each slice we build a per-cell descriptor for every visible,
+ * mergeable face (tile id + per-corner AO + per-corner light), then greedily
+ * extract maximal rectangles whose cells share an identical descriptor. Each
+ * rectangle becomes a single quad with stretched geometry and tile-repeat
+ * UVs (the fragment shader wraps them back into one atlas tile).
+ *
+ * The slice is addressed by two in-plane integer axes (a, b). For each face we
+ * map (a, b) and the fixed slice coordinate to world (x, y, z), and a/b to the
+ * quad's u (width) / v (height) directions so corner order / UV / AO / light
+ * all match the legacy per-cell emit exactly when W=H=1.
+ */
+
+#define MAX_DIM CHUNK_Y   /* largest of CHUNK_X/Y/Z */
+
+typedef struct FaceDesc {
+    uint8_t valid;     /* 1 if a visible mergeable face exists here */
+    uint8_t tile;
+    uint8_t ao[4];
+    uint8_t light[4];
+} FaceDesc;
+
+static bool desc_eq(const FaceDesc* p, const FaceDesc* q)
+{
+    if (!p->valid || !q->valid) return false;
+    if (p->tile != q->tile) return false;
+    for (int i = 0; i < 4; i++)
+        if (p->ao[i] != q->ao[i] || p->light[i] != q->light[i]) return false;
+    return true;
+}
+
 void mesher_build(const Chunk* chunk, const ChunkNeighbors* neighbors,
                   const uint8_t* meta_snapshot, MeshData* out)
 {
     out->vertex_count = 0;
     out->index_count = 0;
 
+    /* Slice/in-plane axis setup per face.
+     * normal axis: the axis the face normal runs along (0=X,1=Y,2=Z).
+     * The face is at world coord `slice` along that axis; the air cell is at
+     * slice + step. (a) spans the u direction, (b) spans the v direction.
+     * a_dim/b_dim are the extents; a_dir/b_dir are +1/-1 mapping a/b index to
+     * world offset along the quad's u/v so corner placement matches legacy. */
+    static const int normal_axis[6] = { 0, 0, 1, 1, 2, 2 };
+    /* a (u) axis and b (v) axis as world axis indices. */
+    static const int a_axis[6] = { 2, 2, 0, 0, 0, 0 }; /* +X,-X:Z  +Y,-Y:X  +Z,-Z:X */
+    static const int b_axis[6] = { 1, 1, 2, 2, 1, 1 }; /* +X,-X:Y  +Y,-Y:Z  +Z,-Z:Y */
+    /* direction (+1/-1) that index a/b advances along world u/v. Derived from
+     * ux/uz/vy/vz above: +X u=+Z(+1) v=+Y(+1); -X u=-Z(-1) v=+Y(+1);
+     * +Y u=+X(+1) v=+Z(+1); -Y u=+X(+1) v=-Z(-1); +Z u=-X(-1) v=+Y(+1);
+     * -Z u=+X(+1) v=+Y(+1). */
+    static const int a_dir[6] = { +1, -1, +1, +1, -1, +1 };
+    static const int b_dir[6] = { +1, +1, +1, -1, +1, +1 };
+
+    static const int dims[3] = { CHUNK_X, CHUNK_Y, CHUNK_Z };
+
+    /* Reusable per-slice descriptor mask and "used" bitmap. */
+    static FaceDesc mask[MAX_DIM * MAX_DIM];
+    static uint8_t  used[MAX_DIM * MAX_DIM];
+
+    for (int face = 0; face < 6; face++) {
+        int na = normal_axis[face];
+        int aa = a_axis[face];
+        int ba = b_axis[face];
+        int n_dim = dims[na];
+        int a_dim = dims[aa];
+        int b_dim = dims[ba];
+        int step  = (face & 1) ? -1 : +1;   /* +X/+Y/+Z = +1, -X/-Y/-Z = -1 */
+        int adir  = a_dir[face];
+        int bdir  = b_dir[face];
+
+        for (int slice = 0; slice < n_dim; slice++) {
+            /* ---- Build the descriptor mask for this slice. ---- */
+            for (int b = 0; b < b_dim; b++) {
+                for (int a = 0; a < a_dim; a++) {
+                    FaceDesc* fd = &mask[b * a_dim + a];
+                    fd->valid = 0;
+
+                    /* Map (slice, a, b) -> world (x,y,z). a/b index space is
+                     * 0..dim, mapped to the world cell. We iterate cells in
+                     * natural axis order (a along a_axis ascending, b along
+                     * b_axis ascending) so neighboring mask entries are
+                     * world-adjacent — required for correct rectangle merge.
+                     * The a_dir/b_dir only affect corner placement, not which
+                     * world cell a mask entry refers to. */
+                    int coord[3];
+                    coord[na] = slice;
+                    coord[aa] = a;
+                    coord[ba] = b;
+                    int x = coord[0], y = coord[1], z = coord[2];
+
+                    BlockID block = chunk_get_block(chunk, x, y, z);
+                    if (block == BLOCK_AIR) continue;
+                    if (needs_per_cell(block)) continue; /* handled elsewhere */
+
+                    int nx = x + fdx[face], ny = y + fdy[face], nz = z + fdz[face];
+                    BlockID nbk = get_neighbor_block(chunk, neighbors, nx, ny, nz);
+                    if (!face_visible(block, nbk)) continue;
+
+                    const BlockDef* def = block_get_def(block);
+                    fd->tile = get_tex_for_face(def, face);
+                    compute_face_ao   (chunk, neighbors, x, y, z, face, fd->ao);
+                    compute_face_light(chunk, neighbors, x, y, z, face, fd->light);
+                    fd->valid = 1;
+                }
+            }
+
+            memset(used, 0, (size_t)a_dim * b_dim);
+
+            /* ---- Greedy rectangle extraction over (a, b). ---- */
+            for (int b = 0; b < b_dim; b++) {
+                for (int a = 0; a < a_dim; a++) {
+                    int idx = b * a_dim + a;
+                    if (used[idx] || !mask[idx].valid) continue;
+                    FaceDesc base = mask[idx];
+
+                    /* Grow width along a. */
+                    int w = 1;
+                    while (a + w < a_dim) {
+                        int j = b * a_dim + (a + w);
+                        if (used[j] || !desc_eq(&base, &mask[j])) break;
+                        w++;
+                    }
+                    /* Grow height along b: each candidate row must match the
+                     * full run [a, a+w). */
+                    int h = 1;
+                    while (b + h < b_dim) {
+                        bool ok = true;
+                        for (int k = 0; k < w; k++) {
+                            int j = (b + h) * a_dim + (a + k);
+                            if (used[j] || !desc_eq(&base, &mask[j])) { ok = false; break; }
+                        }
+                        if (!ok) break;
+                        h++;
+                    }
+                    /* Mark used. */
+                    for (int hb = 0; hb < h; hb++)
+                        for (int wa = 0; wa < w; wa++)
+                            used[(b + hb) * a_dim + (a + wa)] = 1;
+
+                    /* ---- Emit the merged quad. ----
+                     * World cell of the (a,b) corner: */
+                    int coord[3];
+                    coord[na] = slice;
+                    coord[aa] = a;
+                    coord[ba] = b;
+                    int cx = coord[0], cy = coord[1], cz = coord[2];
+
+                    /* The face plane sits at slice+1 for +faces (step>0) and
+                     * slice for -faces (step<0) along the normal axis. */
+                    float plane[3] = { (float)cx, (float)cy, (float)cz };
+                    if (step > 0) plane[na] += 1.0f;
+
+                    /* World-space u/v edge vectors (unit per cell). */
+                    float uvec[3] = {0,0,0};
+                    float vvec[3] = {0,0,0};
+                    uvec[aa] = (float)adir;
+                    vvec[ba] = (float)bdir;
+
+                    /* Corner origin in world space: the (-u,-v) corner. The
+                     * legacy emit places v0 at the (-u,-v) corner. Because the
+                     * a/b loop starts at the minimal world cell while the u/v
+                     * basis may point negative, shift the origin so that the
+                     * merged quad still covers world cells [a,a+w)x[b,b+h). */
+                    float org[3] = { plane[0], plane[1], plane[2] };
+                    /* If adir<0, the -u corner is at the high world-a edge. */
+                    if (adir > 0) org[aa] += 0.0f; else org[aa] += (float)w;
+                    if (bdir > 0) org[ba] += 0.0f; else org[ba] += (float)h;
+                    /* Also: for +u the cell origin is the low edge; legacy uses
+                     * the block's low corner. For adir>0 that's coord[aa]; for
+                     * adir<0 the -u corner is the high edge = coord+ w. Same as
+                     * above. v0 = org. */
+
+                    float pos[4][3];
+                    for (int i = 0; i < 3; i++) {
+                        pos[0][i] = org[i];                                   /* (-u,-v) */
+                        pos[1][i] = org[i] + uvec[i] * w;                     /* (+u,-v) */
+                        pos[2][i] = org[i] + uvec[i] * w + vvec[i] * h;       /* (+u,+v) */
+                        pos[3][i] = org[i] + vvec[i] * h;                     /* (-u,+v) */
+                    }
+
+                    /* Tile-repeat UVs: span [0..w] x [0..h]; shader wraps. */
+                    float uv[4][2];
+                    uv[0][0] = 0;          uv[0][1] = (float)h;
+                    uv[1][0] = (float)w;   uv[1][1] = (float)h;
+                    uv[2][0] = (float)w;   uv[2][1] = 0;
+                    uv[3][0] = 0;          uv[3][1] = 0;
+
+                    emit_quad(out, pos, uv, (uint8_t)face,
+                              base.ao, base.light, base.tile);
+
+                    a += w - 1; /* skip consumed columns */
+                }
+            }
+        }
+    }
+
+    /* ---- Per-cell pass for water / special blocks. ---- */
     for (int y = 0; y < CHUNK_Y; y++) {
         for (int z = 0; z < CHUNK_Z; z++) {
             for (int x = 0; x < CHUNK_X; x++) {
                 BlockID block = chunk_get_block(chunk, x, y, z);
-                if (block == BLOCK_AIR) continue;
-
+                if (block == BLOCK_AIR || !needs_per_cell(block)) continue;
                 const BlockDef* def = block_get_def(block);
-
-                /* Neighbor offsets for 6 faces */
-                static const int dx[6] = { 1, -1,  0,  0,  0,  0};
-                static const int dy[6] = { 0,  0,  1, -1,  0,  0};
-                static const int dz[6] = { 0,  0,  0,  0,  1, -1};
-
-                float fx = (float)x;
-                float fy = (float)y;
-                float fz = (float)z;
-
                 for (int face = 0; face < 6; face++) {
-                    BlockID nb = get_neighbor_block(chunk, neighbors,
-                                                    x + dx[face],
-                                                    y + dy[face],
-                                                    z + dz[face]);
-
-                    if (!face_visible(block, nb)) continue;
-
-                    uint8_t tex = get_tex_for_face(def, face);
-                    float u0, v0, u1, v1;
-                    get_tile_uv(tex, &u0, &v0, &u1, &v1);
-
-                    float pos[4][3];
-                    float uv[4][2];
-                    uint8_t ao[4];
-                    uint8_t light[4];
-                    compute_face_ao   (chunk, neighbors, x, y, z, face, ao);
-                    compute_face_light(chunk, neighbors, x, y, z, face, light);
-
-                    /* Flatten AO *and* light on water so per-corner
-                     * variation doesn't draw visible bands across the
-                     * uniform liquid surface. With AO flat but light
-                     * still per-corner, the quad's two triangles linearly
-                     * interpolate light differently and a visible
-                     * diagonal "fold" shows per cell — at distance these
-                     * folds aggregate into faint horizontal banding. Use
-                     * the brightest corner's light so water near shadows
-                     * isn't artificially dark. */
-                    if (block == BLOCK_WATER) {
-                        ao[0] = ao[1] = ao[2] = ao[3] = 3;
-                        uint8_t lmax = light[0];
-                        if (light[1] > lmax) lmax = light[1];
-                        if (light[2] > lmax) lmax = light[2];
-                        if (light[3] > lmax) lmax = light[3];
-                        light[0] = light[1] = light[2] = light[3] = lmax;
-                    }
-
-                    /* UV mapping: v0=(u0,v1) v1=(u1,v1) v2=(u1,v0) v3=(u0,v0) */
-                    uv[0][0] = u0; uv[0][1] = v1;
-                    uv[1][0] = u1; uv[1][1] = v1;
-                    uv[2][0] = u1; uv[2][1] = v0;
-                    uv[3][0] = u0; uv[3][1] = v0;
-
-                    switch (face) {
-                    case 0: /* +X */
-                        pos[0][0] = fx+1; pos[0][1] = fy;   pos[0][2] = fz;
-                        pos[1][0] = fx+1; pos[1][1] = fy;   pos[1][2] = fz+1;
-                        pos[2][0] = fx+1; pos[2][1] = fy+1; pos[2][2] = fz+1;
-                        pos[3][0] = fx+1; pos[3][1] = fy+1; pos[3][2] = fz;
-                        break;
-                    case 1: /* -X */
-                        pos[0][0] = fx;   pos[0][1] = fy;   pos[0][2] = fz+1;
-                        pos[1][0] = fx;   pos[1][1] = fy;   pos[1][2] = fz;
-                        pos[2][0] = fx;   pos[2][1] = fy+1; pos[2][2] = fz;
-                        pos[3][0] = fx;   pos[3][1] = fy+1; pos[3][2] = fz+1;
-                        break;
-                    case 2: /* +Y */
-                    {
-                        float fy_top = fy + 1.0f;
-                        if (block == BLOCK_WATER && meta_snapshot) {
-                            uint8_t wlvl = meta_snapshot[
-                                x + z * CHUNK_X + y * CHUNK_X * CHUNK_Z];
-                            if (wlvl > 0 && wlvl < WATER_SOURCE_LEVEL)
-                                fy_top = fy + (float)wlvl / (float)WATER_SOURCE_LEVEL;
-                            /* Lift water surface by 0.005 above the block top.
-                             * Beach sand at h=SEA_LEVEL has its +Y face at
-                             * exactly the same y as water +Y in adjacent
-                             * columns (y = SEA_LEVEL + 1). At oblique view
-                             * angles the depth test flips between the two
-                             * per-sample under MSAA — producing the
-                             * "see-through to the lake floor" smudge across
-                             * a wide screen-space band. A 5mm lift settles
-                             * the depth test (invisible to the eye, several
-                             * orders of magnitude above 24-bit depth
-                             * precision at lake distances) without creating
-                             * a visible step at the shoreline. */
-                            fy_top += 0.005f;
-                        }
-                        /* Break per-tile moire on water by rotating UVs
-                         * 0/90/180/270° per cell using a position hash.
-                         * The water texture is symmetric enough that
-                         * rotation isn't visually noticeable, but adjacent
-                         * cells no longer share a tiling axis so the
-                         * regular pattern that produces concentric-ring
-                         * moire at oblique angles is broken. */
-                        if (block == BLOCK_WATER) {
-                            uint32_t h = (uint32_t)x * 73856093u
-                                       ^ (uint32_t)z * 19349663u
-                                       ^ (uint32_t)y * 83492791u;
-                            int rot = (int)((h >> 8) & 3u);
-                            if (rot != 0) {
-                                float tmp[4][2];
-                                for (int k = 0; k < 4; k++) {
-                                    int s = (k + rot) & 3;
-                                    tmp[k][0] = uv[s][0];
-                                    tmp[k][1] = uv[s][1];
-                                }
-                                for (int k = 0; k < 4; k++) {
-                                    uv[k][0] = tmp[k][0];
-                                    uv[k][1] = tmp[k][1];
-                                }
-                            }
-                        }
-                        pos[0][0] = fx;   pos[0][1] = fy_top; pos[0][2] = fz;
-                        pos[1][0] = fx+1; pos[1][1] = fy_top; pos[1][2] = fz;
-                        pos[2][0] = fx+1; pos[2][1] = fy_top; pos[2][2] = fz+1;
-                        pos[3][0] = fx;   pos[3][1] = fy_top; pos[3][2] = fz+1;
-                    }
-                        break;
-                    case 3: /* -Y */
-                        pos[0][0] = fx;   pos[0][1] = fy;   pos[0][2] = fz+1;
-                        pos[1][0] = fx+1; pos[1][1] = fy;   pos[1][2] = fz+1;
-                        pos[2][0] = fx+1; pos[2][1] = fy;   pos[2][2] = fz;
-                        pos[3][0] = fx;   pos[3][1] = fy;   pos[3][2] = fz;
-                        break;
-                    case 4: /* +Z */
-                        pos[0][0] = fx+1; pos[0][1] = fy;   pos[0][2] = fz+1;
-                        pos[1][0] = fx;   pos[1][1] = fy;   pos[1][2] = fz+1;
-                        pos[2][0] = fx;   pos[2][1] = fy+1; pos[2][2] = fz+1;
-                        pos[3][0] = fx+1; pos[3][1] = fy+1; pos[3][2] = fz+1;
-                        break;
-                    case 5: /* -Z */
-                        pos[0][0] = fx;   pos[0][1] = fy;   pos[0][2] = fz;
-                        pos[1][0] = fx+1; pos[1][1] = fy;   pos[1][2] = fz;
-                        pos[2][0] = fx+1; pos[2][1] = fy+1; pos[2][2] = fz;
-                        pos[3][0] = fx;   pos[3][1] = fy+1; pos[3][2] = fz;
-                        break;
-                    }
-
-                    emit_quad(out, pos, uv, (uint8_t)face, ao, light);
+                    BlockID nbk = get_neighbor_block(chunk, neighbors,
+                        x + fdx[face], y + fdy[face], z + fdz[face]);
+                    if (!face_visible(block, nbk)) continue;
+                    emit_cell_face(chunk, neighbors, meta_snapshot, out,
+                                   block, def, x, y, z, face);
                 }
             }
         }
