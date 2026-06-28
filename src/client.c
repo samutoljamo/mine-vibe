@@ -63,6 +63,26 @@ void client_set_chunk_unload_cb(Client* c, ClientChunkUnloadCb cb, void* user)
     (void)c; g_chunk_unload_cb = cb; g_chunk_unload_user = user;
 }
 
+/* Rate-limited malformed-packet drop log (a hostile/buggy server could spam
+ * truncated datagrams; cap to one line/sec and fold the rest into a count). */
+static void client_drop_malformed(const char* what)
+{
+    static double next_report = 0.0;
+    static unsigned long suppressed = 0;
+    double now = net_time();
+    if (now >= next_report) {
+        if (suppressed)
+            fprintf(stderr, "[client] dropped malformed %s packet "
+                            "(+%lu more suppressed)\n", what, suppressed);
+        else
+            fprintf(stderr, "[client] dropped malformed %s packet\n", what);
+        suppressed = 0;
+        next_report = now + 1.0;
+    } else {
+        suppressed++;
+    }
+}
+
 void client_set_shared_world(Client* c, bool shared) { c->shared_world = shared; }
 
 void client_set_render_distance(Client* c, int rd) {
@@ -235,6 +255,9 @@ int client_poll(Client* c)
         uint8_t type = msg->data[0];
 
         if (type == PKT_CONNECT_ACCEPT && c->state == CLIENT_CONNECTING) {
+            if (msg->len < HEADER_WIRE_SIZE) {
+                client_drop_malformed("connect-accept"); free(msg); continue;
+            }
             PacketHeader h;
             size_t off = 0;
             net_read_header(msg->data, &off, &h);
@@ -244,93 +267,110 @@ int client_poll(Client* c)
             printf("[client] connected as player %d\n", c->local_player_id);
 
         } else if (type == PKT_WORLD_STATE && c->state == CLIENT_CONNECTED) {
-            size_t off = 0;
+            /* Parse the whole packet through a bounds-checked cursor: every
+             * field (incl. each player entry and the trailing world clock) is
+             * length-checked, so a truncated/hostile snapshot drops cleanly. */
+            NetReader r = net_reader_init(msg->data, (size_t)msg->len);
             PacketHeader hdr;
-            net_read_header(msg->data, &off, &hdr);
+            net_reader_header(&r, &hdr);
 
             /* Per-stream broadcast seq (protocol v3): drop reordered/late
              * datagrams so a stale snapshot never overwrites a newer one. */
-            if (msg->len < (int)off + 4) { free(msg); continue; }
-            uint32_t bseq = net_read_u32(msg->data, &off);
+            uint32_t bseq = net_reader_u32(&r);
+            if (!net_reader_ok(&r)) {
+                client_drop_malformed("world-state"); free(msg); continue;
+            }
             if (c->world_state_seq_valid &&
                 !seq_is_newer(bseq, c->world_state_seq)) {
                 free(msg);
                 continue;
             }
 
-            uint8_t count = net_read_u8(msg->data, &off);
+            uint8_t count = net_reader_u8(&r);
+            if (!net_reader_ok(&r)) {
+                client_drop_malformed("world-state"); free(msg); continue;
+            }
 
-            /* Validate: packet must contain count * (1+5*4) player bytes plus
-             * a trailing u32 world_ticks (protocol v3), after header+seq+count. */
-            int required = (int)off + count * (1 + 5 * 4) + 4;
-            if (required > msg->len) {
-                fprintf(stderr, "[client] PKT_WORLD_STATE truncated "
-                        "(need %d bytes, have %d)\n", required, msg->len);
-                free(msg);
-                continue;
+            /* Stage all player entries, validating each against the cursor
+             * BEFORE committing the seq, so a truncated body neither over-reads
+             * nor advances world_state_seq past a packet we couldn't apply. */
+            ClientPlayerSnapshot staged[256];
+            int nstaged = 0;
+            for (int i = 0; i < count; i++) {
+                NetPlayerState ps;
+                net_reader_player_state(&r, &ps);
+                if (!net_reader_ok(&r)) break;
+                if (ps.player_id == c->local_player_id) continue;  /* our own pos */
+                staged[nstaged].player_id = ps.player_id;
+                staged[nstaged].x = ps.x; staged[nstaged].y = ps.y;
+                staged[nstaged].z = ps.z; staged[nstaged].yaw = ps.yaw;
+                staged[nstaged].pitch = ps.pitch;
+                staged[nstaged].recv_time = msg->recv_time;
+                nstaged++;
+            }
+            /* Trailing day/night clock (protocol v3). */
+            uint32_t world_ticks = net_reader_u32(&r);
+            if (!net_reader_ok(&r)) {
+                client_drop_malformed("world-state"); free(msg); continue;
             }
 
             /* Commit: this packet is being applied, so it becomes the newest. */
             c->world_state_seq       = bseq;
             c->world_state_seq_valid = true;
 
-            for (int i = 0; i < count; i++) {
-                uint8_t pid = net_read_u8(msg->data, &off);
-                float x     = net_read_float(msg->data, &off);
-                float y     = net_read_float(msg->data, &off);
-                float z     = net_read_float(msg->data, &off);
-                float yaw   = net_read_float(msg->data, &off);
-                float pitch = net_read_float(msg->data, &off);
+            if (g_snap_cb)
+                for (int i = 0; i < nstaged; i++)
+                    g_snap_cb(&staged[i], g_snap_user);
 
-                /* Skip our own position — we already simulate it locally */
-                if (pid == c->local_player_id) continue;
-
-                if (g_snap_cb) {
-                    ClientPlayerSnapshot snap = {
-                        .player_id = pid, .x = x, .y = y, .z = z,
-                        .yaw = yaw, .pitch = pitch,
-                        .recv_time = msg->recv_time,
-                    };
-                    g_snap_cb(&snap, g_snap_user);
-                }
-            }
-
-            /* Trailing day/night clock. Re-anchor every packet; the renderer
-             * extrapolates from here so missed packets keep the sky moving and
-             * a u32 wrap (or backward jump) simply re-anchors harmlessly. */
-            c->world_ticks           = net_read_u32(msg->data, &off);
+            /* Re-anchor every packet; the renderer extrapolates from here so
+             * missed packets keep the sky moving and a u32 wrap (or backward
+             * jump) simply re-anchors harmlessly. */
+            c->world_ticks           = world_ticks;
             c->world_ticks_recv_time = msg->recv_time;
             state_packets++;
 
         } else if (type == PKT_MOB_STATE && c->state == CLIENT_CONNECTED) {
-            size_t off = 0; PacketHeader hdr; net_read_header(msg->data, &off, &hdr);
+            NetReader r = net_reader_init(msg->data, (size_t)msg->len);
+            PacketHeader hdr; net_reader_header(&r, &hdr);
 
             /* Per-stream broadcast seq (protocol v3): drop stale reordered
              * snapshots before applying (see seq_is_newer in net.h). */
-            if (msg->len < (int)off + 4) { free(msg); continue; }
-            uint32_t bseq = net_read_u32(msg->data, &off);
+            uint32_t bseq = net_reader_u32(&r);
+            if (!net_reader_ok(&r)) {
+                client_drop_malformed("mob-state"); free(msg); continue;
+            }
             if (c->mob_state_seq_valid &&
                 !seq_is_newer(bseq, c->mob_state_seq)) {
                 free(msg);
                 continue;
             }
 
-            uint16_t count; net_read_mob_state_header(msg->data, &off, &count);
-            int required = (int)off + (int)count * MOB_STATE_ENTRY_SIZE;
-            if (count > MOB_MAX || required > msg->len) { free(msg); continue; }
+            uint16_t count = net_reader_u16(&r);
+            if (!net_reader_ok(&r) || count > MOB_MAX) {
+                client_drop_malformed("mob-state"); free(msg); continue;
+            }
 
-            c->mob_state_seq       = bseq;
-            c->mob_state_seq_valid = true;
+            /* Stage all entries through the cursor first; only commit the seq if
+             * the whole body was present (no over-read on a truncated tail). */
             ClientMobSnapshot snaps[MOB_MAX];
             for (uint16_t i = 0; i < count; i++) {
-                NetMobState m; net_read_mob_state_entry(msg->data, &off, &m);
+                NetMobState m; net_reader_mob_state_entry(&r, &m);
                 snaps[i].id = m.id; snaps[i].type = m.type;
                 snaps[i].x = m.x; snaps[i].y = m.y; snaps[i].z = m.z;
                 snaps[i].yaw = m.yaw; snaps[i].health = m.health;
             }
+            if (!net_reader_ok(&r)) {
+                client_drop_malformed("mob-state"); free(msg); continue;
+            }
+
+            c->mob_state_seq       = bseq;
+            c->mob_state_seq_valid = true;
             if (g_mobs_cb) g_mobs_cb(snaps, (int)count, msg->recv_time, g_mobs_user);
 
         } else if (type == PKT_PLAYER_JOIN || type == PKT_PLAYER_LEAVE) {
+            if (msg->len < HEADER_WIRE_SIZE) {
+                client_drop_malformed("player-join/leave"); free(msg); continue;
+            }
             PacketHeader h; size_t off = 0;
             net_read_header(msg->data, &off, &h);
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
@@ -344,12 +384,13 @@ int client_poll(Client* c)
             }
 
         } else if (type == PKT_BLOCK_CHANGE && c->state == CLIENT_CONNECTED) {
-            PacketHeader h; size_t off = 0;
-            net_read_header(msg->data, &off, &h);
+            BlockChangePacket bp;
+            if (!net_parse_block_change(msg->data, (size_t)msg->len, &bp)) {
+                client_drop_malformed("block-change"); free(msg); continue;
+            }
+            PacketHeader h = bp.header;
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
-            if (is_new && (size_t)msg->len >= 8 + 13) {
-                BlockChangePacket bp;
-                net_read_block_change(msg->data, &bp);
+            if (is_new) {
                 /* SFX hook: a change to AIR is a break, anything else a place.
                  * Positional so distant edits by other players are quieter. */
                 {
@@ -372,40 +413,37 @@ int client_poll(Client* c)
             }
 
         } else if (type == PKT_INVENTORY && c->state == CLIENT_CONNECTED) {
-            PacketHeader h; size_t off = 0;
-            net_read_header(msg->data, &off, &h);
+            /* Bounds-checked parse: clamps slot_count and rejects a body that
+             * doesn't cover the declared slots (no over-read on truncation). */
+            InventoryPacket ip;
+            if (!net_parse_inventory(msg->data, (size_t)msg->len, &ip)) {
+                client_drop_malformed("inventory"); free(msg); continue;
+            }
+            PacketHeader h = ip.header;
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
-            if (is_new && (size_t)msg->len >= 8 + 1) {
-                /* Peek slot_count from the wire and verify total length covers
-                 * the implied body (INVENTORY_NET_SLOT_SIZE bytes per slot). */
-                uint8_t declared_slots = ((const uint8_t*)msg->data)[8];
-                if (declared_slots > INVENTORY_NET_SLOTS) declared_slots = INVENTORY_NET_SLOTS;
-                if ((size_t)msg->len >=
-                        (size_t)(8 + 1 + declared_slots * INVENTORY_NET_SLOT_SIZE)) {
-                    InventoryPacket ip;
-                    net_read_inventory(msg->data, &ip);
-                    int prev_selected = c->inventory.selected;
-                    inventory_init(&c->inventory);
-                    c->inventory.selected = prev_selected;  /* preserve focus */
-                    for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
-                        ItemId it = (ItemId)ip.slots[i].item;
-                        if (!item_is_block(it) && !item_is_tool(it) &&
-                            !item_is_material(it) && !item_is_armor(it))
-                            continue;                       /* ignore garbage ids */
-                        c->inventory.slots[i].item       = it;
-                        c->inventory.slots[i].count      = ip.slots[i].count;
-                        c->inventory.slots[i].durability = ip.slots[i].durability;
-                    }
+            if (is_new) {
+                int prev_selected = c->inventory.selected;
+                inventory_init(&c->inventory);
+                c->inventory.selected = prev_selected;  /* preserve focus */
+                for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
+                    ItemId it = (ItemId)ip.slots[i].item;
+                    if (!item_is_block(it) && !item_is_tool(it) &&
+                        !item_is_material(it) && !item_is_armor(it))
+                        continue;                       /* ignore garbage ids */
+                    c->inventory.slots[i].item       = it;
+                    c->inventory.slots[i].count      = ip.slots[i].count;
+                    c->inventory.slots[i].durability = ip.slots[i].durability;
                 }
             }
 
         } else if (type == PKT_PLAYER_HEALTH && c->state == CLIENT_CONNECTED) {
-            PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
+            PacketHeader h; uint8_t hp, fl, food, air;
+            if (!net_parse_player_health(msg->data, (size_t)msg->len,
+                                         &h, &hp, &fl, &food, &air)) {
+                client_drop_malformed("player-health"); free(msg); continue;
+            }
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
-            if (is_new && (size_t)msg->len >= 10) {
-                uint8_t hp, fl, food, air;
-                net_read_player_health(msg->data, (size_t)msg->len,
-                                       &h, &hp, &fl, &food, &air);
+            if (is_new) {
                 /* SFX hook: a drop in health means the local player took
                  * damage. (Death is handled below, which also plays nothing
                  * extra — the hurt cue already fired here.) */
@@ -425,6 +463,9 @@ int client_poll(Client* c)
             }
 
         } else if (type == PKT_ARMOR && c->state == CLIENT_CONNECTED) {
+            if (msg->len < HEADER_WIRE_SIZE) {
+                client_drop_malformed("armor"); free(msg); continue;
+            }
             PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
             if (is_new) {
@@ -437,13 +478,15 @@ int client_poll(Client* c)
             }
 
         } else if (type == PKT_CHUNK_DATA && c->state == CLIENT_CONNECTED) {
-            PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
+            PacketHeader h; uint16_t msg_id, index, total;
+            if (!net_parse_chunk_data_frag_hdr(msg->data, (size_t)msg->len,
+                                               &h, &msg_id, &index, &total)) {
+                client_drop_malformed("chunk-data"); free(msg); continue;
+            }
             /* Each fragment is an ordinary reliable packet: ack it (and dedup
              * via is_new so a retransmitted fragment isn't counted twice). */
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
-            if (is_new && (size_t)msg->len >= CHUNK_DATA_FRAG_PREFIX) {
-                uint16_t msg_id, index, total;
-                net_read_chunk_data_frag_hdr(msg->data, &msg_id, &index, &total);
+            if (is_new) {
                 size_t flen = (size_t)msg->len - CHUNK_DATA_FRAG_PREFIX;
 
                 if (total >= 1 && total <= CHUNK_DATA_FRAG_MAX
@@ -491,11 +534,12 @@ int client_poll(Client* c)
             }
 
         } else if (type == PKT_CHUNK_UNLOAD && c->state == CLIENT_CONNECTED) {
-            PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
+            PacketHeader h; int32_t cx, cz;
+            if (!net_parse_chunk_unload(msg->data, (size_t)msg->len, &h, &cx, &cz)) {
+                client_drop_malformed("chunk-unload"); free(msg); continue;
+            }
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
-            if (is_new && (size_t)msg->len >= HEADER_WIRE_SIZE + 8) {
-                int32_t cx, cz;
-                net_read_chunk_unload(msg->data, &h, &cx, &cz);
+            if (is_new) {
                 if (g_chunk_unload_cb) g_chunk_unload_cb(cx, cz, g_chunk_unload_user);
             }
 
