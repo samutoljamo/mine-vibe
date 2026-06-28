@@ -7,7 +7,11 @@
 
 #define MOB_MAX 64   /* hard array/wire cap */
 
-typedef enum { MOB_ZOMBIE = 0, MOB_SKELETON, MOB_CREEPER, MOB_TYPE_COUNT } MobType;
+typedef enum {
+    MOB_ZOMBIE = 0, MOB_SKELETON, MOB_CREEPER,   /* hostile */
+    MOB_PIG, MOB_COW, MOB_CHICKEN,                /* passive */
+    MOB_TYPE_COUNT
+} MobType;
 
 /* ---- Tunables (v1) ---- */
 #define MOB_CAP             8       /* live mobs kept near the anchor */
@@ -42,15 +46,24 @@ typedef enum { MOB_ZOMBIE = 0, MOB_SKELETON, MOB_CREEPER, MOB_TYPE_COUNT } MobTy
 #define CREEPER_FUSE_TIME       1.5f    /* seconds from arming to boom */
 #define CREEPER_BLAST_DAMAGE    20      /* damage at point-blank */
 
+/* ---- Passive farm animals (pig/cow/chicken) tunables ---- */
+#define PIG_HEALTH          10
+#define COW_HEALTH          10
+#define CHICKEN_HEALTH      4
+#define PASSIVE_SPEED       1.0f    /* leisurely wander speed, blocks/s */
+#define PASSIVE_FLEE_SPEED  2.2f    /* panicked sprint when struck */
+#define MOB_PANIC_TIME      2.0f    /* seconds a struck animal keeps fleeing */
+
 /* Per-type derived stats (pure lookup, no globals). */
 typedef struct {
     int16_t health;
-    float   speed;            /* chase speed, blocks/s */
+    float   speed;            /* chase / wander speed, blocks/s */
     float   attack_range;     /* contact (melee) or shoot range */
-    int     attack_damage;
+    int     attack_damage;    /* 0 for passive mobs */
     float   attack_interval;  /* seconds between hits/shots */
     bool    ranged;           /* attacks from a distance (skeleton) */
     bool    explodes;         /* self-destructs on detonation (creeper) */
+    bool    passive;          /* never targets/attacks players (farm animals) */
 } MobStats;
 
 /* ---- Server simulation struct ---- */
@@ -68,6 +81,8 @@ typedef struct {
     float    wander_timer;
     float    fuse_timer;     /* creeper: seconds left on the lit fuse */
     bool     fuse_lit;       /* creeper: fuse currently burning */
+    float    panic_timer;    /* passive: seconds left fleeing after a hit */
+    float    wander_yaw;     /* passive: current wander heading (radians) */
 } Mob;
 
 typedef struct { Mob mobs[MOB_MAX]; } MobSet;
@@ -107,6 +122,22 @@ bool skeleton_in_shoot_range(float dist);
 bool creeper_should_arm_fuse(float dist);
 /* Creeper: within blast radius AND the fuse has burned out. */
 bool creeper_should_detonate(float dist, float fuse_timer);
+
+/* ---- Passive farm animals (pig/cow/chicken) AI helpers (all pure) ---- */
+
+/* True for pig/cow/chicken: never acquires a target, never attacks. */
+bool mob_is_passive(MobType type);
+
+/* Deterministic slow wander heading (radians, in [-PI, PI]) for a given mob.
+ * Pure: derived solely from the mob id and an elapsed-time value the caller
+ * passes in (no global RNG / clock). The heading drifts smoothly over time and
+ * differs per mob, so animals don't all walk in lockstep. */
+float mob_wander_step(uint16_t mob_id, float time_s);
+
+/* True while a struck passive mob should panic-flee from its attacker:
+ * passive type AND panic_timer still counting down (> 0). Hostiles fight back,
+ * so they never "flee" via this helper. */
+bool mob_flees_when_hit(MobType type, float panic_timer);
 
 /* ---- Client-side interpolated mob ---- */
 #define MOB_INTERP_DELAY 0.025   /* seconds, matches remote players */
