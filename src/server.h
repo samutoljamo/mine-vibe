@@ -59,6 +59,7 @@ typedef struct {
     int          seed;
     MobSet       mobs;           /* (added/used in Task 5)                  */
     float        mob_spawn_timer; /* accumulates time toward MOB_SPAWN_INTERVAL */
+    float        passive_spawn_timer; /* accumulates toward PASSIVE_SPAWN_INTERVAL */
     uint32_t     world_ticks;    /* day/night clock; advances once per tick  */
 
     /* Host shared-world mode: when a renderer is attached (host/singleplayer),
