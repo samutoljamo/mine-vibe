@@ -10,6 +10,7 @@
 #include "world_persist.h"
 #include "renderer.h"
 #include "agent.h"
+#include "workqueue.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,10 @@ typedef enum WorkType {
 } WorkType;
 
 typedef struct WorkItem {
+    /* MUST be first: the intrusive WorkQueue links nodes through their leading
+     * `next` pointer (see workqueue.h node-layout contract). */
+    struct WorkItem* next;
+
     WorkType         type;
     Chunk*           chunk;
     int              seed;
@@ -53,8 +58,6 @@ typedef struct WorkItem {
 
     /* Snapshot of chunk->meta at submission time (calloc if meta==NULL) */
     uint8_t*         meta_snapshot;
-
-    struct WorkItem* next;
 } WorkItem;
 
 typedef struct ResultItem {
@@ -83,9 +86,8 @@ struct World {
     int            worker_count;
     atomic_bool    shutdown;
 
-    /* Work queue (linked list, protected by mutex + condvar) */
-    WorkItem*      work_head;
-    WorkItem*      work_tail;
+    /* Work queue (intrusive FIFO, protected by mutex + condvar) */
+    WorkQueue      work_q;
     PT_Mutex       work_mutex;
     PT_Cond        work_cond;
 
@@ -110,21 +112,16 @@ static void* worker_func(void* arg)
     for (;;) {
         /* Pop work item */
         pt_mutex_lock(&world->work_mutex);
-        while (!world->work_head && !atomic_load(&world->shutdown)) {
+        while (workqueue_empty(&world->work_q) && !atomic_load(&world->shutdown)) {
             pt_cond_wait(&world->work_cond, &world->work_mutex);
         }
 
-        if (atomic_load(&world->shutdown) && !world->work_head) {
+        if (atomic_load(&world->shutdown) && workqueue_empty(&world->work_q)) {
             pt_mutex_unlock(&world->work_mutex);
             break;
         }
 
-        WorkItem* item = world->work_head;
-        if (item) {
-            world->work_head = item->next;
-            if (world->work_head == NULL)
-                world->work_tail = NULL;
-        }
+        WorkItem* item = (WorkItem*)workqueue_pop(&world->work_q);
         pt_mutex_unlock(&world->work_mutex);
 
         if (!item) continue;
@@ -266,15 +263,8 @@ static uint8_t* take_meta_snapshot(const Chunk* chunk)
 
 static void submit_work(World* world, WorkItem* item)
 {
-    item->next = NULL;
     pt_mutex_lock(&world->work_mutex);
-    if (world->work_head == NULL) {
-        world->work_head = item;
-        world->work_tail = item;
-    } else {
-        world->work_tail->next = item;
-        world->work_tail = item;
-    }
+    workqueue_push(&world->work_q, item);
     pt_cond_signal(&world->work_cond);
     pt_mutex_unlock(&world->work_mutex);
 }
@@ -292,6 +282,7 @@ World* world_create(Renderer* renderer, int seed, int render_distance)
 
     chunk_map_init(&world->map, 8192);
 
+    workqueue_init(&world->work_q);
     pt_mutex_init(&world->work_mutex);
     pt_cond_init(&world->work_cond);
     pt_mutex_init(&world->result_mutex);
@@ -349,9 +340,8 @@ void world_destroy(World* world)
     free(world->workers);
 
     /* Free remaining work items */
-    WorkItem* wi = world->work_head;
-    while (wi) {
-        WorkItem* next = wi->next;
+    WorkItem* wi;
+    while ((wi = (WorkItem*)workqueue_pop(&world->work_q)) != NULL) {
         if (wi->type == WORK_MESH) {
             free(wi->boundary_pos_x);
             free(wi->boundary_neg_x);
@@ -364,7 +354,6 @@ void world_destroy(World* world)
             free(wi->meta_snapshot);
         }
         free(wi);
-        wi = next;
     }
 
     /* Free remaining results */

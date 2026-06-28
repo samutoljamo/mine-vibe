@@ -1,7 +1,15 @@
 #include "physics.h"
-#include "world.h"
 #include "block.h"
 #include <math.h>
+
+/*
+ * Pure collision-resolution core. It queries the world only through a
+ * BlockQueryFn callback, so it carries no World/threading/Vulkan dependency and
+ * is directly unit-testable against an in-memory block grid (tests/test_physics.c).
+ *
+ * The thin World*-bound wrappers (physics_move / physics_check_water) live in
+ * physics_world.c so this TU links with nothing but block.c.
+ */
 
 /*
  * Sweep one axis: move pos[axis] by delta, then check the resulting
@@ -11,7 +19,8 @@
  * For Y-axis falling, sets *on_ground = true.
  */
 static void sweep_axis(vec3 pos, vec3 vel, float half_w, float height,
-                       int axis, float delta, World* world, bool* on_ground)
+                       int axis, float delta,
+                       BlockQueryFn query, void* ctx, bool* on_ground)
 {
     if (delta == 0.0f) return;
     pos[axis] += delta;
@@ -27,7 +36,7 @@ static void sweep_axis(vec3 pos, vec3 vel, float half_w, float height,
     for (int by = by0; by <= by1; by++)
     for (int bx = bx0; bx <= bx1; bx++)
     for (int bz = bz0; bz <= bz1; bz++) {
-        if (!block_is_solid(world_get_block(world, bx, by, bz)))
+        if (!block_is_solid(query(bx, by, bz, ctx)))
             continue;
 
         /* Verify real overlap (handles exact-boundary cases) */
@@ -63,15 +72,16 @@ static void sweep_axis(vec3 pos, vec3 vel, float half_w, float height,
  * At terminal velocity (78.4 m/s) a single tick moves 1.3 blocks,
  * enough to skip through a 1-block-thick floor without sub-stepping. */
 static void sweep_axis_substepped(vec3 pos, vec3 vel, float half_w, float height,
-                                   int axis, float total_delta, World* world,
-                                   bool* on_ground)
+                                  int axis, float total_delta,
+                                  BlockQueryFn query, void* ctx,
+                                  bool* on_ground)
 {
     float remaining = total_delta;
     while (fabsf(remaining) > 0.0001f) {
         float step = remaining;
         if (fabsf(step) > 0.999f)
             step = (remaining > 0.0f) ? 0.999f : -0.999f;
-        sweep_axis(pos, vel, half_w, height, axis, step, world, on_ground);
+        sweep_axis(pos, vel, half_w, height, axis, step, query, ctx, on_ground);
         remaining -= step;
         if (vel[axis] == 0.0f) break; /* velocity zeroed by collision */
     }
@@ -80,7 +90,7 @@ static void sweep_axis_substepped(vec3 pos, vec3 vel, float half_w, float height
 /* Is there a solid block under the player's footprint? Probes the slice
  * one texel below feet across the AABB column; any solid block keeps the
  * player supported. Used by crouch edge protection. */
-static bool aabb_supported(vec3 pos, float half_w, World* world)
+static bool aabb_supported(vec3 pos, float half_w, BlockQueryFn query, void* ctx)
 {
     int by = (int)floorf(pos[1] - 0.001f);
     int bx0 = (int)floorf(pos[0] - half_w);
@@ -89,14 +99,15 @@ static bool aabb_supported(vec3 pos, float half_w, World* world)
     int bz1 = (int)floorf(pos[2] + half_w);
     for (int bx = bx0; bx <= bx1; bx++)
     for (int bz = bz0; bz <= bz1; bz++) {
-        if (block_is_solid(world_get_block(world, bx, by, bz)))
+        if (block_is_solid(query(bx, by, bz, ctx)))
             return true;
     }
     return false;
 }
 
-PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
-                           float dt, bool crouching, World* world)
+PhysicsResult physics_move_q(vec3 pos, vec3 vel, float half_w, float height,
+                             float dt, bool crouching,
+                             BlockQueryFn query, void* ctx)
 {
     PhysicsResult result = { false, false };
 
@@ -107,10 +118,10 @@ PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
      * ground. (Gravity is gated on player->on_ground, which is the prior
      * tick's result; on a flat surface vel[1] oscillates 0 / -gravity*dt
      * every other tick.) Probing the floor directly is reliable. */
-    bool was_supported = aabb_supported(pos, half_w, world);
+    bool was_supported = aabb_supported(pos, half_w, query, ctx);
 
     /* Y first (sets on_ground from collisions), then X, then Z */
-    sweep_axis_substepped(pos, vel, half_w, height, 1, vel[1] * dt, world, &result.on_ground);
+    sweep_axis_substepped(pos, vel, half_w, height, 1, vel[1] * dt, query, ctx, &result.on_ground);
 
     /* Edge protection: when crouching and started supported, refuse any
      * horizontal sweep whose result would leave the player unsupported.
@@ -119,15 +130,15 @@ PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
     bool edge_protect = crouching && was_supported;
 
     float prev_x = pos[0];
-    sweep_axis_substepped(pos, vel, half_w, height, 0, vel[0] * dt, world, &result.on_ground);
-    if (edge_protect && !aabb_supported(pos, half_w, world)) {
+    sweep_axis_substepped(pos, vel, half_w, height, 0, vel[0] * dt, query, ctx, &result.on_ground);
+    if (edge_protect && !aabb_supported(pos, half_w, query, ctx)) {
         pos[0] = prev_x;
         vel[0] = 0.0f;
     }
 
     float prev_z = pos[2];
-    sweep_axis_substepped(pos, vel, half_w, height, 2, vel[2] * dt, world, &result.on_ground);
-    if (edge_protect && !aabb_supported(pos, half_w, world)) {
+    sweep_axis_substepped(pos, vel, half_w, height, 2, vel[2] * dt, query, ctx, &result.on_ground);
+    if (edge_protect && !aabb_supported(pos, half_w, query, ctx)) {
         pos[2] = prev_z;
         vel[2] = 0.0f;
     }
@@ -138,13 +149,14 @@ PhysicsResult physics_move(vec3 pos, vec3 vel, float half_w, float height,
      * fills in the "stably standing, vel[1]=0" case where Y-sweep was a
      * no-op so the prior-tick on_ground field doesn't oscillate. */
     if (!result.on_ground)
-        result.on_ground = aabb_supported(pos, half_w, world);
+        result.on_ground = aabb_supported(pos, half_w, query, ctx);
 
-    result.in_water = physics_check_water(pos, half_w, height, world);
+    result.in_water = physics_check_water_q(pos, half_w, height, query, ctx);
     return result;
 }
 
-bool physics_check_water(vec3 pos, float half_w, float height, World* world)
+bool physics_check_water_q(vec3 pos, float half_w, float height,
+                           BlockQueryFn query, void* ctx)
 {
     int bx0 = (int)floorf(pos[0] - half_w), bx1 = (int)floorf(pos[0] + half_w);
     int by0 = (int)floorf(pos[1]),           by1 = (int)floorf(pos[1] + height);
@@ -153,7 +165,7 @@ bool physics_check_water(vec3 pos, float half_w, float height, World* world)
     for (int by = by0; by <= by1; by++)
     for (int bx = bx0; bx <= bx1; bx++)
     for (int bz = bz0; bz <= bz1; bz++) {
-        if (world_get_block(world, bx, by, bz) == BLOCK_WATER)
+        if (query(bx, by, bz, ctx) == BLOCK_WATER)
             return true;
     }
     return false;

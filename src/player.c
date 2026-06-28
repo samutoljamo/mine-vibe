@@ -34,6 +34,7 @@ void player_init(Player* player, vec3 start_pos)
     player->on_ground       = false;
     player->in_water        = false;
     player->sprinting       = false;
+    player->crouching       = false;
     player->noclip          = true;
     player->prev_space      = false;
     player->prev_v          = false;
@@ -44,6 +45,7 @@ void player_init(Player* player, vec3 start_pos)
     player->agent_right     = 0.0f;
     player->agent_jump      = false;
     player->agent_sprint    = false;
+    player->agent_crouch    = false;
 }
 
 /* ------------------------------------------------------------------ */
