@@ -644,6 +644,43 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME player COMMAND test_player)
 
+# Frustum AABB culling (pure math, Vulkan-free: only cglm). Builds a view-proj
+# from glm_perspective/glm_lookat, extracts the 6 planes, and tests boxes that
+# are inside / behind / off to the side / beyond far / straddling the near plane.
+add_executable(test_frustum
+    tests/test_frustum.c
+    src/frustum.c
+)
+target_include_directories(test_frustum PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_frustum PRIVATE cglm)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_frustum PRIVATE m)
+endif()
+add_test(NAME frustum COMMAND test_frustum)
+
+# Chunk hash map (open-addressing linear-probe table keyed on (cx,cz)): insert/
+# get/miss, overwrite, remove + probe-chain back-shift, auto-grow rehash, signed
+# coordinate packing, iteration. Uses real Chunk objects; chunk.h pulls in
+# chunk_mesh.h (Vulkan headers), hence the VK_NO_PROTOTYPES + Vulkan::Headers
+# wiring mirrored from test_chunk.
+add_executable(test_chunkmap
+    tests/test_chunkmap.c
+    src/chunk_map.c
+    src/chunk.c
+    src/block.c
+)
+target_include_directories(test_chunkmap PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_chunkmap PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_chunkmap PRIVATE cglm Vulkan::Headers Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_chunkmap PRIVATE m)
+endif()
+add_test(NAME chunkmap COMMAND test_chunkmap)
+
 # World worker-thread work queue (pure intrusive FIFO extracted to workqueue.h:
 # enqueue/dequeue ordering, single-element boundary, interleaved traffic,
 # drain/refill cycles). Header-only, no deps.
@@ -656,6 +693,7 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_inventory test_raycast test_ore test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
           test_crafting test_item test_armor test_worldsave
-          test_physics test_chunk test_player test_worldqueue test_chunk_stream)
+          test_physics test_chunk test_player test_worldqueue test_chunk_stream
+          test_frustum test_chunkmap)
     msvc_enable_c11_atomics(${t})
 endforeach()
