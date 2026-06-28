@@ -176,6 +176,7 @@ add_executable(minecraft
     src/net_thread.c
     src/chunkwire.c
     src/chunk_stream.c
+    src/chunk_reasm.c
     src/server.c
     src/client.c
     src/audio.c
@@ -253,7 +254,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME agent_json COMMAND test_agent)
 
-add_executable(test_net tests/test_net.c src/net.c src/reliable.c src/chunkwire.c)
+add_executable(test_net tests/test_net.c src/net.c src/reliable.c src/chunkwire.c src/chunk_reasm.c)
 target_include_directories(test_net PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(WIN32)
     target_link_libraries(test_net PRIVATE ws2_32)
@@ -380,7 +381,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME lighting COMMAND test_lighting)
 
-add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c src/music.c src/audio_backend_null_msvc.c src/chunkwire.c)
+add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c src/music.c src/audio_backend_null_msvc.c src/chunkwire.c src/chunk_reasm.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads cglm)

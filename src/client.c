@@ -107,7 +107,9 @@ void client_init(Client* c, NetThread* net,
     c->armor_points = 0;
     c->pending_block_change_count = 0;
     c->shared_world = false;
-    /* memset(c,0) above already cleared chunk_reasm (active=false). */
+    chunk_reasm_init(&c->chunk_reasm);
+    c->last_server_recv_time = 0.0;
+    c->last_keepalive_time   = 0.0;
     /* Start at noon so the sky is daylit before the first PKT_WORLD_STATE. */
     c->world_ticks = DAY_LENGTH_TICKS / 4;
     c->world_ticks_recv_time = 0.0;
@@ -236,6 +238,17 @@ void client_send_craft(Client* c, uint16_t recipe_index) {
     reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
 }
 
+/* Send an unreliable header-only keepalive to the server. Holds the NAT pinhole
+ * open and refreshes the server's per-client last_recv_time while we are idle. */
+static void client_send_keepalive(Client* c) {
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_KEEPALIVE, .player_id = c->local_player_id };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[HEADER_WIRE_SIZE];
+    size_t len = net_write_keepalive(buf, &h);
+    net_thread_push_outbound(c->net, buf, (int)len, &c->server_addr);
+}
+
 void client_send_equip(Client* c, uint8_t slot) {
     if (c->state != CLIENT_CONNECTED) return;
     PacketHeader h = { .type = PKT_EQUIP, .player_id = c->local_player_id,
@@ -253,6 +266,10 @@ int client_poll(Client* c)
     while ((msg = net_thread_pop_inbound(c->net)) != NULL) {
         if (msg->len < 1) { free(msg); continue; }
         uint8_t type = msg->data[0];
+
+        /* Any inbound datagram from the server proves it is still alive (resets
+         * the dead-server watchdog). recv_time was stamped by the net thread. */
+        c->last_server_recv_time = msg->recv_time;
 
         if (type == PKT_CONNECT_ACCEPT && c->state == CLIENT_CONNECTING) {
             if (msg->len < HEADER_WIRE_SIZE) {
@@ -489,46 +506,24 @@ int client_poll(Client* c)
             if (is_new) {
                 size_t flen = (size_t)msg->len - CHUNK_DATA_FRAG_PREFIX;
 
-                if (total >= 1 && total <= CHUNK_DATA_FRAG_MAX
-                    && index < total && flen <= CHUNK_DATA_FRAG_BYTES) {
-                    /* New column (or first fragment) resets the reassembly. */
-                    if (!c->chunk_reasm.active || c->chunk_reasm.msg_id != msg_id
-                        || c->chunk_reasm.total != total) {
-                        memset(&c->chunk_reasm, 0, sizeof(c->chunk_reasm));
-                        c->chunk_reasm.active = true;
-                        c->chunk_reasm.msg_id = msg_id;
-                        c->chunk_reasm.total  = total;
-                    }
-                    size_t doff = (size_t)index * CHUNK_DATA_FRAG_BYTES;
-                    if (doff + flen <= sizeof(c->chunk_reasm.data)) {
-                        memcpy(c->chunk_reasm.data + doff,
-                               msg->data + CHUNK_DATA_FRAG_PREFIX, flen);
-                        if (!c->chunk_reasm.got[index]) {
-                            c->chunk_reasm.got[index] = 1;
-                            c->chunk_reasm.received++;
-                        }
-                        /* Last fragment fixes the total length (earlier ones are
-                         * full CHUNK_DATA_FRAG_BYTES). */
-                        if (index == (uint16_t)(total - 1))
-                            c->chunk_reasm.total_len = doff + flen;
-
-                        if (c->chunk_reasm.received == c->chunk_reasm.total) {
-                            int32_t cx, cz;
-                            uint8_t blocks[16 * 256 * 16];
-                            if (chunkwire_decode_chunk(c->chunk_reasm.data,
-                                                       c->chunk_reasm.total_len,
-                                                       &cx, &cz,
-                                                       blocks, sizeof blocks)) {
-                                if (g_chunk_cb)
-                                    g_chunk_cb(cx, cz, blocks, sizeof blocks,
-                                               g_chunk_user);
-                            } else {
-                                fprintf(stderr, "[client] PKT_CHUNK_DATA decode "
-                                        "failed (%zu body bytes)\n",
-                                        c->chunk_reasm.total_len);
-                            }
-                            c->chunk_reasm.active = false;
-                        }
+                /* Feed the fragment into the per-msg_id reassembly ring. Several
+                 * columns can be in flight at once, so an interleaved/retransmitted
+                 * fragment of an older column reassembles independently of a newer
+                 * one (mine-vibe-003). The ring validates geometry internally. */
+                static uint8_t reasm_body[CHUNK_DATA_FRAG_MAX * CHUNK_DATA_FRAG_BYTES];
+                size_t body_len = 0;
+                if (chunk_reasm_feed(&c->chunk_reasm, msg_id, index, total,
+                                     msg->data + CHUNK_DATA_FRAG_PREFIX, flen,
+                                     reasm_body, sizeof reasm_body, &body_len)) {
+                    int32_t cx, cz;
+                    uint8_t blocks[16 * 256 * 16];
+                    if (chunkwire_decode_chunk(reasm_body, body_len, &cx, &cz,
+                                               blocks, sizeof blocks)) {
+                        if (g_chunk_cb)
+                            g_chunk_cb(cx, cz, blocks, sizeof blocks, g_chunk_user);
+                    } else {
+                        fprintf(stderr, "[client] PKT_CHUNK_DATA decode "
+                                "failed (%zu body bytes)\n", body_len);
                     }
                 }
             }
@@ -542,6 +537,12 @@ int client_poll(Client* c)
             if (is_new) {
                 if (g_chunk_unload_cb) g_chunk_unload_cb(cx, cz, g_chunk_unload_user);
             }
+
+        } else if (type == PKT_KEEPALIVE) {
+            /* Liveness pong from the server. last_server_recv_time was already
+             * refreshed above; nothing else to do (acks piggyback the header,
+             * but keepalive is sent unreliable so we don't feed reliable_on_recv
+             * its seq — it carries no reliable payload). */
 
         } else if (type == PKT_DISCONNECT) {
             uint8_t reason = net_read_disconnect_reason(msg->data, (size_t)msg->len);
@@ -575,6 +576,32 @@ int client_poll(Client* c)
                    c->connect_attempts + 1, CLIENT_MAX_CONNECT_ATTEMPTS);
             c->connect_attempts++;
             client_connect(c);
+        }
+    }
+
+    /* Keepalive + dead-server detection (mine-vibe-6dp). Only while connected. */
+    if (c->state == CLIENT_CONNECTED) {
+        double now = net_time();
+
+        /* Seed the watchdog on the first poll after connect so a slow first
+         * snapshot doesn't trip an immediate false timeout. */
+        if (c->last_server_recv_time <= 0.0)
+            c->last_server_recv_time = now;
+
+        /* Periodic keepalive: holds the NAT pinhole open and keeps the server's
+         * per-client last_recv_time fresh even when we send nothing else. */
+        if (now - c->last_keepalive_time >= CLIENT_KEEPALIVE_INTERVAL) {
+            c->last_keepalive_time = now;
+            client_send_keepalive(c);
+        }
+
+        /* Dead-server watchdog: no inbound traffic for too long -> the server is
+         * gone (crashed, network partition). Surface a clean disconnect instead
+         * of rendering a frozen world forever. */
+        if (now - c->last_server_recv_time > CLIENT_SERVER_TIMEOUT_SEC) {
+            fprintf(stderr, "[client] server timed out (no traffic for %.0fs); "
+                            "disconnecting\n", CLIENT_SERVER_TIMEOUT_SEC);
+            c->state = CLIENT_DISCONNECTED;
         }
     }
 

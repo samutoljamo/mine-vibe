@@ -534,10 +534,19 @@ int main(int argc, char *argv[])
         net_fd = net_socket_client();
         net_thread_start(&net_thread, net_fd);
 
+        /* Resolve via getaddrinfo so --client accepts DNS hostnames and IP
+         * literals, not just dotted-quad IPv4 (mine-vibe-9xu). */
         struct sockaddr_in srv_addr = {0};
-        srv_addr.sin_family      = AF_INET;
-        srv_addr.sin_port        = htons(port);
-        inet_pton(AF_INET, connect_ip, &srv_addr.sin_addr);
+        NetResolveResult rr = net_resolve(connect_ip, port, &srv_addr);
+        if (rr == NET_RESOLVE_NO_IPV4) {
+            fprintf(stderr, "[main] FATAL: '%s' resolved only to IPv6; the UDP "
+                            "transport is currently IPv4-only.\n", connect_ip);
+            return 1;
+        } else if (rr != NET_RESOLVE_OK) {
+            fprintf(stderr, "[main] FATAL: could not resolve server host '%s'\n",
+                    connect_ip);
+            return 1;
+        }
 
         client_init(&client, &net_thread, &srv_addr);
         remote_player_set_init(&remote_players);

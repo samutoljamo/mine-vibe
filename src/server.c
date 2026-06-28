@@ -301,6 +301,27 @@ static void handle_connect_request(Server* s, const struct sockaddr_in* addr,
     server_send_armor(s, c);
 }
 
+/* Keepalive ping from a client: refresh its liveness timer (so SERVER_TIMEOUT
+ * never drops an otherwise-idle but connected client) and pong back so the
+ * client's own dead-server watchdog stays satisfied and its NAT pinhole open. */
+static void handle_keepalive(Server* s, ServerClient* c,
+                             const uint8_t* data, int len)
+{
+    PacketHeader h;
+    if (!net_parse_keepalive(data, (size_t)len, &h)) {
+        server_drop_malformed("keepalive");
+        return;
+    }
+    c->last_recv_time = net_time();
+
+    /* Unreliable pong (carries fresh ack/ack_bits like any packet). */
+    PacketHeader ph = { .type = PKT_KEEPALIVE, .player_id = 0 };
+    reliable_fill_ack(&c->reliable, &ph.ack, &ph.ack_bits);
+    uint8_t buf[HEADER_WIRE_SIZE];
+    size_t plen = net_write_keepalive(buf, &ph);
+    net_thread_push_outbound(s->net, buf, (int)plen, &c->addr);
+}
+
 static void handle_position(Server* s, ServerClient* c,
                               const uint8_t* data, int len)
 {
@@ -1303,6 +1324,7 @@ static void server_tick(Server* s, int tick_num)
             handle_connect_request(s, &msg->addr, msg->data, msg->len);
         } else if (c) {
             if      (type == PKT_POSITION)     handle_position(s, c, msg->data, msg->len);
+            else if (type == PKT_KEEPALIVE)    handle_keepalive(s, c, msg->data, msg->len);
             else if (type == PKT_DISCONNECT)   disconnect_client(s, c);
             else if (type == PKT_BLOCK_BREAK)  handle_block_break(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_BLOCK_PLACE)  handle_block_place(s, c, msg->data, (size_t)msg->len);
