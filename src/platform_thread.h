@@ -66,7 +66,9 @@ static inline void pt_sleep_ms(unsigned int ms)
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <stdio.h>  /* fprintf for thread-creation failure diagnostics */
+#include <stdio.h>   /* fprintf for thread-creation failure diagnostics */
+#include <stdlib.h>  /* malloc/free in the trampoline; must be declared before
+                        use or MSVC implicit-int clashes with <stdlib.h> later */
 
 typedef HANDLE             PT_Thread;
 typedef CRITICAL_SECTION   PT_Mutex;

@@ -961,11 +961,11 @@ static void server_simulate_mobs(Server* s, float dt) {
         }
 
         /* 5. Despawn if far from every player. */
-        bool near = false;
+        bool any_near = false;  /* not "near": it is a legacy macro in <windows.h> */
         for (int p = 0; p < pcount; p++)
             if (glm_vec3_distance((float*)players[p].position, m->position) <= MOB_DESPAWN_RANGE)
-                { near = true; break; }
-        if (pcount > 0 && !near) m->active = false;
+                { any_near = true; break; }
+        if (pcount > 0 && !any_near) m->active = false;
     }
 }
 

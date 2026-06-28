@@ -291,12 +291,13 @@ static void test_fragment_out_of_order(void) {
  * NOT recognized as a fragment packet on the wire — it goes through the plain
  * unfragmented reliable path untouched. */
 static void test_small_message_not_fragmented(void) {
-    uint8_t small[32];
-    for (size_t i = 0; i < sizeof(small); i++) small[i] = (uint8_t)i;
+    /* not "small": it is a legacy typedef macro (char) in <windows.h>/rpcndr.h */
+    uint8_t buf[32];
+    for (size_t i = 0; i < sizeof(buf); i++) buf[i] = (uint8_t)i;
 
-    assert(reliable_fragment_count(sizeof(small)) == 1);
+    assert(reliable_fragment_count(sizeof(buf)) == 1);
     /* The raw small payload must not be mistaken for a fragment packet. */
-    assert(!reliable_packet_is_fragment(small, sizeof(small)));
+    assert(!reliable_packet_is_fragment(buf, sizeof(buf)));
 
     /* Even a zero-length payload reports one fragment. */
     assert(reliable_fragment_count(0) == 1);
