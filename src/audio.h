@@ -82,7 +82,9 @@ bool audio_get_muted(void);
 float audio_effective_gain(float base_gain);
 
 /* Per-frame tick. `listener` is the current listener world position (may be
- * NULL). Advances the music generator and lets the backend refill. */
+ * NULL). Does NOT touch music — music is a single looping voice submitted once
+ * (audio_init / audio_set_music) and looped by the backend at the device rate.
+ * Reserved for 3D-listener updates and per-frame backend pumping. */
 void audio_update(const float listener[3]);
 
 /* ---- Introspection (for tests / debugging) ------------------------------ */
@@ -94,6 +96,25 @@ uint64_t audio_play_count(SoundId id);
 /* Pointer to the synthesized PCM buffer for `id` and its length in samples.
  * Valid between audio_init() and audio_shutdown(). Returns NULL if not init. */
 const int16_t* audio_sound_pcm(SoundId id, size_t* out_samples);
+
+/* The single looping music buffer rendered at audio_init()/audio_set_music(true)
+ * and its length in samples (== audio_music_loop_samples()). This is the ONE
+ * voice the backend loops forever — there is no per-frame music streaming.
+ * Returns NULL when not initialized. */
+const int16_t* audio_music_loop_pcm(size_t* out_samples);
+
+/* Number of times the looping music buffer has been submitted to the backend
+ * since init. The fix guarantees this is incremented ONCE per audio_set_music
+ * (true) transition and NEVER by audio_update(). */
+uint64_t audio_music_submit_count(void);
+
+/* Whether the looping music voice is currently active (music on + initialized). */
+bool audio_music_is_playing(void);
+
+/* The effective output gain currently applied to the looping music voice, after
+ * master volume + mute. Tracks volume/mute live (the loop is submitted once but
+ * its gain follows the current settings). 0 when muted. Exposed for tests. */
+float audio_music_effective_gain(void);
 
 /* ===================================================================== *
  *  Pure procedural DSP generators (no global state, fully testable).

@@ -25,6 +25,10 @@ typedef struct AudioBackend {
     void (*submit_pcm)(const int16_t* pcm, size_t samples, float gain, bool loop);
     /* Per-frame pump (a real ring-buffer backend refills here). */
     void (*update)(void);
+    /* Update the gain of the active looping voice IN PLACE (no buffer realloc,
+     * no cursor reset -> no artifacts). Used so master-volume/mute changes
+     * affect the single render-once music voice live. May be NULL. */
+    void (*set_loop_gain)(float gain);
     /* Stop the looping stream started with loop=true (used for music off). */
     void (*stop_loop)(void);
     /* Release the device. */

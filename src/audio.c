@@ -217,17 +217,19 @@ static void null_submit_pcm(const int16_t* pcm, size_t samples,
      * fprintf(stderr, "[audio:null] would play %zu samples gain=%.2f%s\n",
      *         samples, gain, loop ? " (loop)" : ""); */
 }
-static void null_update(void)   {}
-static void null_stop_loop(void){}
-static void null_shutdown(void) {}
+static void null_update(void)            {}
+static void null_set_loop_gain(float g)  { (void)g; }
+static void null_stop_loop(void)         {}
+static void null_shutdown(void)          {}
 
 static const AudioBackend NULL_BACKEND = {
-    .name       = "null",
-    .init       = null_init,
-    .submit_pcm = null_submit_pcm,
-    .update     = null_update,
-    .stop_loop  = null_stop_loop,
-    .shutdown   = null_shutdown,
+    .name          = "null",
+    .init          = null_init,
+    .submit_pcm    = null_submit_pcm,
+    .update        = null_update,
+    .set_loop_gain = null_set_loop_gain,
+    .stop_loop     = null_stop_loop,
+    .shutdown      = null_shutdown,
 };
 
 /* ============================ BACKEND PLUG-IN POINT ===================== *
@@ -269,11 +271,21 @@ static struct {
     SoundSlot            slots[SFX_COUNT];
     uint64_t             play_counts[SFX_COUNT];
     bool                 music_on;
-    uint64_t             music_pos;       /* absolute sample cursor for music */
+    /* The music is rendered ONCE into this buffer at init / music-on and handed
+     * to the backend as a single looping voice. audio_update() never touches it
+     * — that per-frame streaming was the P0 "music too fast + clipping" bug. */
+    int16_t*             music_pcm;       /* owned full-loop buffer, NULL if none */
+    size_t               music_samples;   /* length of music_pcm */
+    uint64_t             music_submits;   /* times the loop voice was submitted */
     float                master_volume;   /* linear 0..1, applied to all gains */
     bool                 muted;           /* forces effective gain to 0 */
     bool                 vol_inited;      /* master_volume/muted have defaults */
 } g_audio;
+
+/* Base mix level for the looping music voice (master volume + mute apply on top
+ * via audio_music_effective_gain). Matches the level the old per-frame stream
+ * used, so the music sits at the same volume under the SFX. */
+#define MUSIC_BASE_GAIN 0.5f
 
 /* Default master volume — comfortable but not blaring. */
 #define AUDIO_DEFAULT_VOLUME 0.6f
@@ -300,12 +312,28 @@ float audio_effective_gain(float base_gain)
     return g;
 }
 
+float audio_music_effective_gain(void)
+{
+    return audio_effective_gain(MUSIC_BASE_GAIN);
+}
+
+/* Push the current effective music gain to the backend's live looping voice.
+ * The buffer is submitted once; only its gain follows volume/mute (no realloc,
+ * no cursor reset -> no artifacts). Safe when music is off / not initialized. */
+static void audio_refresh_music_gain(void)
+{
+    if (!g_audio.initialized || !g_audio.music_on) return;
+    if (g_audio.backend && g_audio.backend->set_loop_gain)
+        g_audio.backend->set_loop_gain(audio_music_effective_gain());
+}
+
 void audio_set_master_volume(float v)
 {
     ensure_volume_defaults();
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
     g_audio.master_volume = v;
+    audio_refresh_music_gain();   /* music tracks volume live */
 }
 
 float audio_get_master_volume(void)
@@ -318,6 +346,7 @@ void audio_set_muted(bool muted)
 {
     ensure_volume_defaults();
     g_audio.muted = muted;
+    audio_refresh_music_gain();   /* mute => music truly silent, live */
 }
 
 bool audio_get_muted(void)
@@ -337,6 +366,58 @@ const int16_t* audio_sound_pcm(SoundId id, size_t* out_samples)
     if (!g_audio.initialized || (unsigned)id >= SFX_COUNT) return NULL;
     if (out_samples) *out_samples = g_audio.slots[id].samples;
     return g_audio.slots[id].pcm;
+}
+
+const int16_t* audio_music_loop_pcm(size_t* out_samples)
+{
+    if (!g_audio.initialized) { if (out_samples) *out_samples = 0; return NULL; }
+    if (out_samples) *out_samples = g_audio.music_samples;
+    return g_audio.music_pcm;
+}
+
+uint64_t audio_music_submit_count(void)
+{
+    return g_audio.music_submits;
+}
+
+bool audio_music_is_playing(void)
+{
+    return g_audio.initialized && g_audio.music_on;
+}
+
+/* Render the full music loop ONCE into g_audio.music_pcm (idempotent — reuses
+ * the buffer if already rendered). Returns true if a buffer is available. */
+static bool audio_render_music_loop(void)
+{
+    if (g_audio.music_pcm && g_audio.music_samples > 0) return true;
+    size_t n = audio_music_loop_samples();
+    if (n == 0) return false;
+    int16_t* buf = (int16_t*)malloc(sizeof(int16_t) * n);
+    if (!buf) return false;
+    /* audio_gen_music tiles by absolute position; starting at 0 fills the whole
+     * loop. It already bakes MUSIC_LEVEL and clamps with headroom, so this single
+     * voice is in-range with no overlap (the bug was overlapping per-frame chunks). */
+    audio_gen_music(buf, n, 0);
+    g_audio.music_pcm     = buf;
+    g_audio.music_samples = n;
+    return true;
+}
+
+/* Submit the rendered loop to the backend as the single looping voice at the
+ * current effective gain. Renders the buffer first if needed. No-op if muted
+ * away or no buffer. Increments the submit counter on each (re)submit. */
+static void audio_submit_music_loop(void)
+{
+    if (!g_audio.initialized) return;
+    if (!audio_render_music_loop()) return;
+    float g = audio_music_effective_gain();
+    if (g_audio.backend && g_audio.backend->submit_pcm) {
+        /* Submit even at gain 0 (muted) so the voice exists and unmuting is
+         * instant via set_loop_gain; the backend mixes a 0-gain voice silently. */
+        g_audio.backend->submit_pcm(g_audio.music_pcm, g_audio.music_samples,
+                                    g, true);
+        g_audio.music_submits++;
+    }
 }
 
 void audio_init(void)
@@ -380,6 +461,10 @@ void audio_init(void)
         }
     }
     g_audio.initialized = true;
+
+    /* Music defaults ON: render the loop once and start the single looping voice
+     * now. From here audio_update() never touches music. */
+    if (g_audio.music_on) audio_submit_music_loop();
 }
 
 void audio_shutdown(void)
@@ -391,6 +476,10 @@ void audio_shutdown(void)
         g_audio.slots[id].pcm = NULL;
         g_audio.slots[id].samples = 0;
     }
+    /* Free the single looping music buffer. */
+    free(g_audio.music_pcm);
+    g_audio.music_pcm     = NULL;
+    g_audio.music_samples = 0;
     g_audio.initialized = false;
     g_audio.backend = NULL;
 }
@@ -440,8 +529,12 @@ void audio_set_music(bool on)
     if (g_audio.music_on == on) return;
     g_audio.music_on = on;
     if (!g_audio.initialized) return;
-    if (!on && g_audio.backend && g_audio.backend->stop_loop)
+    if (on) {
+        /* (Re)submit the single looping voice. Rendered once and cached. */
+        audio_submit_music_loop();
+    } else if (g_audio.backend && g_audio.backend->stop_loop) {
         g_audio.backend->stop_loop();
+    }
 }
 
 void audio_update(const float listener[3])
@@ -449,17 +542,11 @@ void audio_update(const float listener[3])
     (void)listener;   /* reserved for future 3D listener orientation */
     if (!g_audio.initialized) return;
 
-    /* Advance the music cursor by roughly one frame's worth so a real backend
-     * could stream the next chunk. The NULL backend ignores the data. */
-    if (g_audio.music_on) {
-        enum { CHUNK = AUDIO_SAMPLE_RATE / 30 };   /* ~33ms */
-        static int16_t chunk[CHUNK];
-        size_t n = audio_gen_music(chunk, CHUNK, g_audio.music_pos);
-        g_audio.music_pos += n;
-        float mg = audio_effective_gain(0.5f);   /* music base gain * master */
-        if (mg > 0.0f && g_audio.backend && g_audio.backend->submit_pcm)
-            g_audio.backend->submit_pcm(chunk, n, mg, false);
-    }
-
+    /* NOTE: audio_update() deliberately does NOT touch music. Music is a single
+     * looping voice submitted once (see audio_submit_music_loop) and looped by
+     * the backend at the device rate. The old code generated+submitted a ~33ms
+     * music chunk here EVERY frame, which above 30fps pushed music faster than
+     * real-time and piled overlapping chunks into clipping — the P0 bug. This is
+     * now reserved purely for 3D-listener / per-frame backend pumping. */
     if (g_audio.backend && g_audio.backend->update) g_audio.backend->update();
 }
