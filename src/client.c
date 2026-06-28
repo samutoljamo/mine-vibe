@@ -259,6 +259,16 @@ void client_send_equip(Client* c, uint8_t slot) {
     reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
 }
 
+void client_send_eat(Client* c, uint8_t slot) {
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_EAT, .player_id = c->local_player_id,
+                       .seq = c->tick++ };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[16];
+    size_t len = net_write_eat(buf, &h, slot);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
+}
+
 int client_poll(Client* c)
 {
     int state_packets = 0;

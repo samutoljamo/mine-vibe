@@ -143,6 +143,13 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
         /* E opens/closes the inventory screen (no-op in menu/pause). */
         ui_set_state(game_ui_toggle_inventory(g_ui_state));
     }
+    if (key == GLFW_KEY_F && action == GLFW_PRESS) {
+        /* F eats the food item in the selected hotbar slot (server validates it
+         * is food and that hunger isn't full, then restores hunger). In-world
+         * only; never repurposes right-click (which places). */
+        if (g_client && game_ui_world_active(g_ui_state))
+            client_send_eat(g_client, (uint8_t)g_client->inventory.selected);
+    }
     if (key == GLFW_KEY_F3 && action == GLFW_PRESS)
         g_show_stats = !g_show_stats;   /* toggle the perf overlay */
     if (key == GLFW_KEY_M && action == GLFW_PRESS) {

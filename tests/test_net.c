@@ -219,6 +219,28 @@ static void test_craft_roundtrip(void) {
     printf("PASS: craft_roundtrip\n");
 }
 
+static void test_eat_roundtrip(void) {
+    uint8_t buf[64];
+    PacketHeader hdr = { .type = PKT_EAT, .player_id = 3 };
+    size_t off = net_write_eat(buf, &hdr, 4);
+    assert(off == HEADER_WIRE_SIZE + 1);
+
+    PacketHeader h; uint8_t slot;
+    net_read_eat(buf, &h, &slot);
+    assert(h.type == PKT_EAT && h.player_id == 3);
+    assert(slot == 4);
+
+    /* Bounds-checked parse: full packet ok, every truncation rejected. */
+    PacketHeader rh; uint8_t rslot;
+    assert(net_parse_eat(buf, off, &rh, &rslot));
+    assert(rslot == 4);
+    for (size_t L = 0; L < off; L++) {
+        uint8_t* t = malloc(L ? L : 1); memcpy(t, buf, L);
+        assert(!net_parse_eat(t, L, &rh, &rslot)); free(t);
+    }
+    printf("PASS: eat_roundtrip\n");
+}
+
 static void test_disconnect_reason_roundtrip(void) {
     uint8_t buf[64];
     size_t off = 0;
@@ -971,6 +993,7 @@ int main(void)
     test_connect_request_carries_version();
     test_legacy_connect_request_reads_version_zero();
     test_craft_roundtrip();
+    test_eat_roundtrip();
     test_disconnect_reason_roundtrip();
     test_fragment_roundtrip();
     test_fragment_out_of_order();

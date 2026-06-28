@@ -104,6 +104,19 @@ void survival_apply_exhaustion(float* food, float* saturation,
 bool survival_eat(float* food, float* saturation,
                   float restore_food, float restore_sat);
 
+/* Eating rule (server-authoritative): may a held item be eaten right now?
+ * True iff the item is a food item AND the player's food is below the max
+ * (so we never waste a food item at full hunger). Pure predicate. */
+bool survival_can_eat(bool is_food, float food, float max_food);
+
+/* Apply a food item worth `hunger_restore` hunger points to `s`, clamping food
+ * to SURVIVAL_MAX_FOOD and topping saturation up to (but not past) the new food
+ * level. Returns true if anything was consumed (false when already full or the
+ * restore value is non-positive). Thin wrapper over survival_eat that grants
+ * saturation equal to the hunger restored (a simple model; cooked > raw because
+ * cooked foods carry a higher hunger_restore). */
+bool survival_apply_food(SurvivalState* s, int hunger_restore);
+
 /* Regeneration step. Given current food/health and the accumulated
  * regen_timer (seconds), advance by `dt`. Returns hp to ADD this tick (0 or
  * more) and updates *regen_timer and *exhaustion accordingly. Heals only when
