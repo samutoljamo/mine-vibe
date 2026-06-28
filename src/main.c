@@ -311,6 +311,12 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--aniso") == 0 && i + 1 < argc) {
             gfx.aniso = atoi(argv[++i]);  /* clamped to device caps at init */
         }
+        else if (strcmp(argv[i], "--render-scale") == 0 && i + 1 < argc) {
+            /* 3D-scene resolution factor; clamped to 0.25..1.0 at renderer init.
+             * 1.0 = full res (legacy path); below 1.0 downsamples the world and
+             * upscales to the window — a fill-rate win on integrated GPUs. */
+            gfx.render_scale = (float)atof(argv[++i]);
+        }
         else if (strcmp(argv[i], "--present") == 0 && i + 1 < argc) {
             const char* m = argv[++i]; /* falls back to FIFO at init if unsupported */
             if      (strcmp(m, "mailbox")   == 0) gfx.present = PRESENT_PREF_MAILBOX;
@@ -327,10 +333,12 @@ int main(int argc, char *argv[])
         }
     }
 
-    printf("Settings: render-distance=%d chunks, msaa=%dx, aniso=%dx, present=%s\n",
+    printf("Settings: render-distance=%d chunks, msaa=%dx, aniso=%dx, present=%s, "
+           "render-scale=%.2f\n",
            gfx.render_distance, gfx.msaa, gfx.aniso,
            gfx.present == PRESENT_PREF_MAILBOX   ? "mailbox" :
-           gfx.present == PRESENT_PREF_IMMEDIATE ? "immediate" : "fifo");
+           gfx.present == PRESENT_PREF_IMMEDIATE ? "immediate" : "fifo",
+           (double)gfx.render_scale);
 
     /* Single-player is a loopback host: spawn an in-process server and
      * connect to it. Gameplay (inventory, block break/place) is server-

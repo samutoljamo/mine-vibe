@@ -32,18 +32,26 @@ typedef struct ChunkMesh ChunkMesh;
  *   aniso           : requested anisotropic-filtering level (1|4|8|16);
  *                     clamped to device caps. 1 = anisotropy off.
  *   present         : requested present mode; FIFO by default (iGPU-friendly),
- *                     falls back to FIFO if unavailable. */
+ *                     falls back to FIFO if unavailable.
+ *   render_scale    : 3D-scene resolution factor (0.25..1.0). 1.0 = render the
+ *                     world directly into the swapchain image (the byte-for-byte
+ *                     legacy path). Below 1.0 the 3D scene is rendered into an
+ *                     offscreen target sized floor(extent*scale) then linearly
+ *                     upscale-blitted into the full-res swapchain image; the
+ *                     HUD/UI is always drawn at full resolution on top. A big
+ *                     fill-rate win on integrated GPUs. */
 typedef struct RenderSettings {
     int             render_distance;
     int             msaa;
     int             aniso;
     PresentModePref present;
+    float           render_scale;
 } RenderSettings;
 
 /* Sensible defaults for an integrated GPU. */
 static inline RenderSettings render_settings_default(void) {
     RenderSettings s = { .render_distance = 12, .msaa = 1, .aniso = 4,
-                         .present = PRESENT_PREF_FIFO };
+                         .present = PRESENT_PREF_FIFO, .render_scale = 1.0f };
     return s;
 }
 
@@ -81,6 +89,32 @@ typedef struct Renderer {
 
     /* Swapchain */
     Swapchain                   swapchain;
+
+    /* Dynamic render-scale (resolution downsampling). When render_scale < 1.0
+     * the 3D scene is rendered into an offscreen target at scaled resolution,
+     * then linearly upscale-blitted into the full-res swapchain image before the
+     * HUD/UI pass. At render_scale == 1.0 none of this is allocated and the
+     * legacy direct-to-swapchain path is used unchanged.
+     *
+     * The offscreen color image is a single-sample blit source (matches the
+     * swapchain format). With MSAA, scene_msaa_* is the multisampled color
+     * attachment that resolves into scene_color (mirrors the swapchain layout);
+     * without MSAA scene_color is the direct color attachment. scene_depth is
+     * sized to the scaled extent. scene_framebuffer is built against the same
+     * world render_pass (render-pass-compatible: same formats + samples). */
+    float                       render_scale;     /* clamped 0.25..1.0 at init */
+    bool                        scale_active;      /* render_scale < 1.0 */
+    VkExtent2D                  scene_extent;      /* scaled render extent */
+    VkImage                     scene_color_image;
+    VmaAllocation               scene_color_alloc;
+    VkImageView                 scene_color_view;
+    VkImage                     scene_depth_image;
+    VmaAllocation               scene_depth_alloc;
+    VkImageView                 scene_depth_view;
+    VkImage                     scene_msaa_image;  /* MSAA only */
+    VmaAllocation               scene_msaa_alloc;
+    VkImageView                 scene_msaa_view;
+    VkFramebuffer               scene_framebuffer;
 
     /* Render pass */
     VkRenderPass                render_pass;
