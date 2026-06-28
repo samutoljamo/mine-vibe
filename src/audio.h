@@ -56,8 +56,30 @@ void audio_play(SoundId id);
  * distance. Either pointer may be NULL, in which case it falls back to 2D. */
 void audio_play_at(SoundId id, const float pos[3], const float listener[3]);
 
-/* Enable/disable the procedural background music loop. */
+/* Enable/disable the procedural background music loop. Music defaults to ON
+ * (it is real, quiet music now). */
 void audio_set_music(bool on);
+
+/* ---- Master volume / mute ------------------------------------------------ */
+
+/* Set the master output volume, a linear scale in [0,1] applied to every
+ * sound's gain in the mix path. Values are clamped. Default ~0.6. */
+void audio_set_master_volume(float v);
+
+/* Current master volume in [0,1]. */
+float audio_get_master_volume(void);
+
+/* Mute / unmute all audio. When muted, every submitted gain is forced to 0
+ * (silence) without losing the master-volume setting. */
+void audio_set_muted(bool muted);
+
+/* Whether audio is currently muted. */
+bool audio_get_muted(void);
+
+/* The effective output gain for a given per-sound base gain, after applying
+ * master volume and mute. Pure-ish (reads engine volume state). Exposed for
+ * tests: audio_effective_gain(1.0f) == master volume, 0 when muted. */
+float audio_effective_gain(float base_gain);
 
 /* Per-frame tick. `listener` is the current listener world position (may be
  * NULL). Advances the music generator and lets the backend refill. */

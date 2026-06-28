@@ -176,6 +176,7 @@ add_executable(minecraft
     src/server.c
     src/client.c
     src/audio.c
+    src/music.c
     src/audio_miniaudio.c
     src/remote_player.c
     src/mob.c
@@ -336,7 +337,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME lighting COMMAND test_lighting)
 
-add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c)
+add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c src/music.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads cglm)
@@ -407,7 +408,7 @@ add_test(NAME armor COMMAND test_armor)
 
 # Audio engine: pure procedural PCM/envelope generators, the sound-id table,
 # and null-backend lifecycle safety (no Vulkan/GLFW/audio device required).
-add_executable(test_audio tests/test_audio.c src/audio.c)
+add_executable(test_audio tests/test_audio.c src/audio.c src/music.c)
 target_include_directories(test_audio PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_audio PRIVATE m)
