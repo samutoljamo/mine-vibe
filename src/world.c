@@ -73,8 +73,23 @@ typedef struct ResultItem {
 struct World {
     Renderer*      renderer;
     ChunkMap       map;
+    /* Guards STRUCTURAL mutations of `map` (put/remove/rehash) so the server
+     * thread's world_ensure_chunk can add columns concurrently with the
+     * main/render thread's world_update in host shared-world mode. Block-byte
+     * reads/writes via world_get_block/world_set_block remain lock-free (they
+     * only touch a chunk's interior, never the map structure) — chunk pointers,
+     * once published into the map, are stable until that chunk is removed, and
+     * removal only happens in world_update for chunks far outside the server's
+     * read region (see the unload margin note there). */
+    PT_Mutex       map_mutex;
     int            seed;
     int            render_distance;
+    /* Network-fed mode: a remote client's world is populated exclusively from
+     * server-streamed PKT_CHUNK_DATA, so world_update must NOT submit
+     * WORK_GENERATE for missing chunks (that would regenerate terrain from the
+     * seed and diverge from the authoritative server). Lighting + meshing still
+     * run on chunks inserted via world_insert_network_chunk. */
+    bool           network_fed;
 
     /* Optional block-delta persistence overlay (server-owned, may be NULL).
      * Set once before chunk submission; workers read it (the overlay is
@@ -281,6 +296,7 @@ World* world_create(Renderer* renderer, int seed, int render_distance)
     world->render_distance = render_distance;
 
     chunk_map_init(&world->map, 8192);
+    pt_mutex_init(&world->map_mutex);
 
     workqueue_init(&world->work_q);
     pt_mutex_init(&world->work_mutex);
@@ -325,6 +341,120 @@ World* world_create_headless(int seed, int render_distance)
 void world_set_overlay(World* world, const BlockOverlay* overlay)
 {
     world->overlay = overlay;
+}
+
+void world_set_network_fed(World* world, bool network_fed)
+{
+    world->network_fed = network_fed;
+}
+
+Chunk* world_ensure_chunk(World* world, int cx, int cz)
+{
+    pt_mutex_lock(&world->map_mutex);
+    Chunk* c = chunk_map_get(&world->map, cx, cz);
+    if (c && atomic_load(&c->state) >= CHUNK_GENERATED) {
+        pt_mutex_unlock(&world->map_mutex);
+        return c;   /* already real terrain */
+    }
+
+    /* If a chunk struct exists but is still mid-generation by a worker (host
+     * mode), don't double-generate — just wait by returning it; the caller's
+     * AIR fallback covers the brief window. This is rare: validation chunks are
+     * near the player and almost always already GENERATED. */
+    if (c && atomic_load(&c->state) == CHUNK_GENERATING) {
+        pt_mutex_unlock(&world->map_mutex);
+        return NULL;
+    }
+
+    bool fresh = false;
+    if (!c) {
+        c = chunk_create(cx, cz);
+        if (!c) { pt_mutex_unlock(&world->map_mutex); return NULL; }
+        fresh = true;
+    }
+
+    /* Generate synchronously on the calling (server) thread. worldgen_generate
+     * fills blocks and sets state to GENERATED; we then replay the persistence
+     * overlay exactly as the worker path does. */
+    worldgen_generate(c, world->seed);
+    if (world->overlay)
+        overlay_apply_chunk(world->overlay, c);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    if (fresh)
+        chunk_map_put(&world->map, c);
+
+    pt_mutex_unlock(&world->map_mutex);
+    return c;
+}
+
+bool world_copy_chunk_blocks(World* world, int cx, int cz,
+                             uint8_t* out, size_t out_cap)
+{
+    if (out_cap < (size_t)CHUNK_BLOCKS) return false;
+    Chunk* c = world_ensure_chunk(world, cx, cz);
+    if (!c) return false;
+    /* Snapshot under the map lock so a concurrent world_set_block edit can't
+     * tear the copy mid-read. Block bytes are stable once GENERATED except for
+     * single-byte edits, but a streamed column should be self-consistent. */
+    pt_mutex_lock(&world->map_mutex);
+    memcpy(out, c->blocks, CHUNK_BLOCKS);
+    pt_mutex_unlock(&world->map_mutex);
+    return true;
+}
+
+bool world_insert_network_chunk(World* world, int cx, int cz,
+                                const uint8_t* blocks, size_t blocks_len)
+{
+    if (blocks_len < (size_t)CHUNK_BLOCKS) return false;
+
+    pt_mutex_lock(&world->map_mutex);
+    Chunk* c = chunk_map_get(&world->map, cx, cz);
+    bool fresh = false;
+    if (!c) {
+        c = chunk_create(cx, cz);
+        if (!c) { pt_mutex_unlock(&world->map_mutex); return false; }
+        fresh = true;
+    } else {
+        /* Don't stomp a chunk a worker is actively lighting/meshing — copying
+         * its blocks out from under a worker would tear the mesh. Drop the
+         * update; the server will resend or a later one supersedes it. */
+        int st = atomic_load(&c->state);
+        if (st == CHUNK_LIGHTING || st == CHUNK_MESHING) {
+            pt_mutex_unlock(&world->map_mutex);
+            return false;
+        }
+    }
+
+    memcpy(c->blocks, blocks, CHUNK_BLOCKS);
+    /* Re-enter the pipeline at GENERATED so world_update lights then meshes it.
+     * For an existing chunk this re-lights/re-meshes with the new blocks. */
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    if (fresh)
+        chunk_map_put(&world->map, c);
+    pt_mutex_unlock(&world->map_mutex);
+    return true;
+}
+
+void world_evict_chunk(World* world, int cx, int cz)
+{
+    pt_mutex_lock(&world->map_mutex);
+    Chunk* c = chunk_map_get(&world->map, cx, cz);
+    if (!c) { pt_mutex_unlock(&world->map_mutex); return; }
+    int st = atomic_load(&c->state);
+    if (st == CHUNK_GENERATING || st == CHUNK_LIGHTING || st == CHUNK_MESHING) {
+        /* A worker may hold a pointer to this chunk; defer the eviction.
+         * world_update's own distance-based unload will reclaim it later once
+         * it settles. */
+        pt_mutex_unlock(&world->map_mutex);
+        return;
+    }
+    chunk_map_remove(&world->map, cx, cz);
+    if (c->mesh.uploaded && world->renderer)
+        chunk_mesh_destroy(world->renderer->allocator, &c->mesh);
+    pt_mutex_unlock(&world->map_mutex);
+    chunk_destroy(c);
 }
 
 void world_destroy(World* world)
@@ -380,6 +510,7 @@ void world_destroy(World* world)
     chunk_map_free(&world->map);
 
     /* Destroy sync primitives */
+    pt_mutex_destroy(&world->map_mutex);
     pt_mutex_destroy(&world->work_mutex);
     pt_cond_destroy(&world->work_cond);
     pt_mutex_destroy(&world->result_mutex);
@@ -398,6 +529,13 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
     int rd_sq = rd * rd;
     int unload_rd = rd + 4;
     int unload_sq = unload_rd * unload_rd;
+
+    /* Hold the map mutex across the whole structural body. In host shared-world
+     * mode the server thread may call world_ensure_chunk concurrently (it also
+     * takes this lock), so all of world_update's map gets/iters/puts/removes
+     * must be serialized against it. Worker threads never touch the map (they
+     * operate on chunk pointers handed to them), so they don't contend here. */
+    pt_mutex_lock(&world->map_mutex);
 
     /* ---- Step 1: Process results ---- */
     {
@@ -545,8 +683,12 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
         }
     }
 
-    /* ---- Step 3: Load missing chunks (spiral from center) ---- */
-    {
+    /* ---- Step 3: Load missing chunks (spiral from center) ----
+     * Skipped entirely in network-fed mode: a remote client never generates
+     * terrain from the seed; its chunks arrive via world_insert_network_chunk
+     * (from PKT_CHUNK_DATA) and then flow through the lighting+mesh steps below
+     * exactly like generated chunks. */
+    if (!world->network_fed) {
         int submits = 0;
         for (int r = 0; r <= rd && submits < 16; r++) {
             if (r == 0) {
@@ -878,6 +1020,8 @@ void world_update(World* world, BlockPhysics* bp, vec3 player_pos)
             world->render_meshes[world->render_count++] = chunk->mesh;
         }
     }
+
+    pt_mutex_unlock(&world->map_mutex);
 }
 
 void world_get_meshes(World* world, ChunkMesh** out_meshes, uint32_t* out_count)
@@ -903,7 +1047,16 @@ BlockID world_get_block(World* world, int x, int y, int z)
     int cx = (x < 0) ? (x - 15) / 16 : x / 16;
     int cz = (z < 0) ? (z - 15) / 16 : z / 16;
 
+    /* Look up the chunk pointer under the map lock so a concurrent rehash
+     * (triggered by world_ensure_chunk / world_insert_network_chunk on another
+     * thread) can't realloc the entries array out from under the probe. Once we
+     * hold the chunk pointer it stays valid: chunks are only freed in
+     * world_update / world_evict_chunk, also under this lock, and only for
+     * chunks far from any concurrent reader. The block byte read itself is then
+     * safe lock-free (the array is fixed-size; a single block id is one byte). */
+    pt_mutex_lock(&world->map_mutex);
     Chunk* chunk = chunk_map_get(&world->map, cx, cz);
+    pt_mutex_unlock(&world->map_mutex);
     if (!chunk) return BLOCK_AIR;
     if (atomic_load(&chunk->state) < CHUNK_GENERATED) return BLOCK_AIR;
 
@@ -927,16 +1080,21 @@ bool world_set_block(World* world, int x, int y, int z, BlockID id) {
     int cx, cz, lx, lz;
     world_to_chunk(x, z, &cx, &cz, &lx, &lz);
 
+    /* Hold the map lock for the whole body: it looks up the target chunk and
+     * its four neighbours (for the inline relight + boundary dirty marks); all
+     * those pointers must stay valid against a concurrent rehash. */
+    pt_mutex_lock(&world->map_mutex);
+
     Chunk* chunk = chunk_map_get(&world->map, cx, cz);
-    if (!chunk) return false;
+    if (!chunk) { pt_mutex_unlock(&world->map_mutex); return false; }
 
     int state = atomic_load(&chunk->state);
-    if (state == CHUNK_MESHING) return false;  /* deferred — safe write rule */
-    if (state == CHUNK_LIGHTING) return false; /* deferred — same rule */
-    if (state < CHUNK_GENERATED) return false;
+    if (state == CHUNK_MESHING)  { pt_mutex_unlock(&world->map_mutex); return false; } /* deferred — safe write rule */
+    if (state == CHUNK_LIGHTING) { pt_mutex_unlock(&world->map_mutex); return false; } /* deferred — same rule */
+    if (state < CHUNK_GENERATED) { pt_mutex_unlock(&world->map_mutex); return false; }
 
     BlockID old_id = chunk_get_block(chunk, lx, y, lz);
-    if (old_id == id) return true;  /* no-op write; don't dirty chunk */
+    if (old_id == id) { pt_mutex_unlock(&world->map_mutex); return true; }  /* no-op write; don't dirty chunk */
     chunk_set_block(chunk, lx, y, lz, id);
 
     /* Run inline relight if the chunk has been lit at least once. The
@@ -977,6 +1135,7 @@ bool world_set_block(World* world, int x, int y, int z, BlockID id) {
         if (n) n->needs_remesh = true;
     }
 
+    pt_mutex_unlock(&world->map_mutex);
     return true;
 }
 
@@ -986,7 +1145,9 @@ bool world_set_meta(World* world, int x, int y, int z, uint8_t level) {
     int cx, cz, lx, lz;
     world_to_chunk(x, z, &cx, &cz, &lx, &lz);
 
+    pt_mutex_lock(&world->map_mutex);
     Chunk* chunk = chunk_map_get(&world->map, cx, cz);
+    pt_mutex_unlock(&world->map_mutex);
     if (!chunk) return false;
 
     int state = atomic_load(&chunk->state);
@@ -1005,7 +1166,9 @@ uint8_t world_get_meta(World* world, int x, int y, int z) {
     int cx, cz, lx, lz;
     world_to_chunk(x, z, &cx, &cz, &lx, &lz);
 
+    pt_mutex_lock(&world->map_mutex);
     Chunk* chunk = chunk_map_get(&world->map, cx, cz);
+    pt_mutex_unlock(&world->map_mutex);
     if (!chunk) return 0;
     if (atomic_load(&chunk->state) < CHUNK_GENERATED) return 0;
 

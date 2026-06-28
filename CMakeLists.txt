@@ -175,6 +175,7 @@ add_executable(minecraft
     src/reliable.c
     src/net_thread.c
     src/chunkwire.c
+    src/chunk_stream.c
     src/server.c
     src/client.c
     src/audio.c
@@ -262,6 +263,12 @@ add_test(NAME net COMMAND test_net)
 add_executable(test_chunkwire tests/test_chunkwire.c src/chunkwire.c)
 target_include_directories(test_chunkwire PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME chunkwire COMMAND test_chunkwire)
+
+# Chunk streaming policy (pure: in-range disc diff, nearest-first send ordering,
+# budget cap, unload of out-of-range chunks). No Vulkan/GLFW/net deps.
+add_executable(test_chunk_stream tests/test_chunk_stream.c src/chunk_stream.c)
+target_include_directories(test_chunk_stream PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME chunk_stream COMMAND test_chunk_stream)
 
 add_executable(test_ui
     tests/test_ui.c
@@ -367,7 +374,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME lighting COMMAND test_lighting)
 
-add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c src/music.c src/audio_backend_null_msvc.c)
+add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c src/music.c src/audio_backend_null_msvc.c src/chunkwire.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads cglm)
@@ -643,6 +650,6 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_inventory test_raycast test_ore test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
           test_crafting test_item test_armor test_worldsave
-          test_physics test_chunk test_player test_worldqueue)
+          test_physics test_chunk test_player test_worldqueue test_chunk_stream)
     msvc_enable_c11_atomics(${t})
 endforeach()

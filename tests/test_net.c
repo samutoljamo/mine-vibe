@@ -168,11 +168,27 @@ static void test_connect_request_carries_version(void) {
     size_t off = 0;
     PacketHeader hdr = { .type = PKT_CONNECT_REQUEST, .player_id = 0 };
     net_write_connect_request(buf, &off, &hdr);
-    assert(off == HEADER_WIRE_SIZE + 2);
+    /* protocol v8: header + version(u16) + shared_world(u8) + render_dist(u8). */
+    assert(off == HEADER_WIRE_SIZE + 4);
 
     PacketHeader h; size_t roff = 0; net_read_header(buf, &roff, &h);
     assert(h.type == PKT_CONNECT_REQUEST);
     assert(net_read_connect_version(buf, off) == NET_PROTOCOL_VERSION);
+    /* Default convenience writer marks a remote client with unspecified rd. */
+    assert(net_read_connect_shared(buf, off) == 0);
+    assert(net_read_connect_render_dist(buf, off) == 0);
+
+    /* Explicit shared-world host flag + render distance round-trip. */
+    size_t off2 = 0;
+    net_write_connect_request_ex(buf, &off2, &hdr, 1, 12);
+    assert(off2 == HEADER_WIRE_SIZE + 4);
+    assert(net_read_connect_version(buf, off2) == NET_PROTOCOL_VERSION);
+    assert(net_read_connect_shared(buf, off2) == 1);
+    assert(net_read_connect_render_dist(buf, off2) == 12);
+
+    /* A request missing the trailing fields reads them as 0 (remote, server-rd). */
+    assert(net_read_connect_shared(buf, HEADER_WIRE_SIZE + 2) == 0);
+    assert(net_read_connect_render_dist(buf, HEADER_WIRE_SIZE + 3) == 0);
     printf("PASS: connect_request_carries_version\n");
 }
 
@@ -221,7 +237,8 @@ static void test_disconnect_reason_roundtrip(void) {
  * packets, each of which fits within RELIABLE_MAX_PAYLOAD, and reassembles
  * back to the exact original bytes. */
 static void test_fragment_roundtrip(void) {
-    uint8_t payload[1000];
+    /* Larger than RELIABLE_FRAG_CHUNK so it actually splits into >1 fragment. */
+    uint8_t payload[3000];
     for (size_t i = 0; i < sizeof(payload); i++)
         payload[i] = (uint8_t)(i * 31 + 7);
 
@@ -231,7 +248,7 @@ static void test_fragment_roundtrip(void) {
     ReliableReassembler re;
     reliable_reassemble_init(&re);
 
-    uint8_t out[2048];
+    uint8_t out[4096];
     size_t out_len = 0;
     bool done = false;
     for (uint16_t i = 0; i < total; i++) {
@@ -251,7 +268,8 @@ static void test_fragment_roundtrip(void) {
 
 /* Fragments arriving out of order must still reassemble correctly. */
 static void test_fragment_out_of_order(void) {
-    uint8_t payload[600];
+    /* >= 3 fragments at the current RELIABLE_FRAG_CHUNK size. */
+    uint8_t payload[4000];
     for (size_t i = 0; i < sizeof(payload); i++)
         payload[i] = (uint8_t)(255 - (i % 251));
 
@@ -269,7 +287,7 @@ static void test_fragment_out_of_order(void) {
     /* Feed in reverse order. */
     ReliableReassembler re;
     reliable_reassemble_init(&re);
-    uint8_t out[2048];
+    uint8_t out[8192];
     size_t out_len = 0;
     bool done = false;
     for (int i = (int)total - 1; i >= 0; i--)
@@ -304,6 +322,41 @@ static void test_small_message_not_fragmented(void) {
     printf("PASS: small_message_not_fragmented\n");
 }
 
+/* PKT_CHUNK_DATA fragment subheader + PKT_CHUNK_UNLOAD round-trip. The
+ * fragment data capacity must leave room for the 14-byte prefix in one reliable
+ * packet, and the multi-fragment reassembly stride must be CHUNK_DATA_FRAG_BYTES
+ * (a value < the whole reliable payload). */
+static void test_chunk_packets_roundtrip(void) {
+    uint8_t buf[CHUNK_DATA_RELIABLE_MAX];
+    PacketHeader h = { .type = PKT_CHUNK_DATA, .player_id = 0 };
+    uint8_t frag[CHUNK_DATA_FRAG_BYTES];
+    for (size_t i = 0; i < sizeof(frag); i++) frag[i] = (uint8_t)(i * 7 + 1);
+
+    size_t len = net_write_chunk_data_frag(buf, &h, 0xABCD, 3, 9,
+                                           frag, sizeof frag);
+    assert(len == CHUNK_DATA_FRAG_PREFIX + sizeof(frag));
+    assert(len <= CHUNK_DATA_RELIABLE_MAX);   /* fits one reliable packet */
+
+    uint16_t msg_id, index, total;
+    net_read_chunk_data_frag_hdr(buf, &msg_id, &index, &total);
+    assert(msg_id == 0xABCD && index == 3 && total == 9);
+    assert(memcmp(buf + CHUNK_DATA_FRAG_PREFIX, frag, sizeof frag) == 0);
+
+    /* The prefix is header(8) + 3×u16(6) = 14; data capacity is the remainder. */
+    assert(CHUNK_DATA_FRAG_PREFIX == HEADER_WIRE_SIZE + 6);
+    assert(CHUNK_DATA_FRAG_BYTES == CHUNK_DATA_RELIABLE_MAX - CHUNK_DATA_FRAG_PREFIX);
+
+    /* Unload packet. */
+    uint8_t ubuf[HEADER_WIRE_SIZE + 8];
+    PacketHeader uh = { .type = PKT_CHUNK_UNLOAD, .player_id = 0 };
+    size_t ulen = net_write_chunk_unload(ubuf, &uh, -12345, 6789);
+    assert(ulen == HEADER_WIRE_SIZE + 8);
+    PacketHeader rh; int32_t cx, cz;
+    net_read_chunk_unload(ubuf, &rh, &cx, &cz);
+    assert(rh.type == PKT_CHUNK_UNLOAD && cx == -12345 && cz == 6789);
+    printf("PASS: chunk_packets_roundtrip\n");
+}
+
 int main(void)
 {
     test_serialize_position();
@@ -320,6 +373,7 @@ int main(void)
     test_fragment_roundtrip();
     test_fragment_out_of_order();
     test_small_message_not_fragmented();
+    test_chunk_packets_roundtrip();
     printf("All net tests passed.\n");
     return 0;
 }

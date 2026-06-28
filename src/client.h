@@ -35,6 +35,15 @@ typedef struct {
     double connect_sent_time;
     int   connect_attempts;  /* incremented on each retry; 0 = first send */
 
+    /* True when this client is the integrated host that renders the server's
+     * world in-process (host/singleplayer). Sent in PKT_CONNECT_REQUEST so the
+     * server does NOT stream chunks to us (we already share the world). A true
+     * remote (--client) leaves this false and receives streamed chunks. */
+    bool  shared_world;
+    /* Render distance (chunks) advertised to the server so it streams the disc
+     * we actually render (clamped to the server's cap). 0 = let the server pick. */
+    uint8_t render_distance;
+
     Inventory inventory;
 
     int16_t health;   /* last server-reported; PLAYER_MAX_HEALTH at init */
@@ -75,11 +84,35 @@ typedef struct {
         uint8_t block;
     } pending_block_changes[256];
     int pending_block_change_count;
+
+    /* Reassembly buffer for fragmented PKT_CHUNK_DATA columns. Each fragment is
+     * an ordinary (acked + retransmitted) reliable packet carrying a
+     * {msg_id,index,total} subheader; we reassemble per msg_id at our own
+     * CHUNK_DATA_FRAG_BYTES stride. One in-flight column at a time is enough:
+     * the server sends a column's fragments consecutively. A new msg_id resets
+     * the buffer. */
+    struct {
+        bool     active;
+        uint16_t msg_id;
+        uint16_t total;
+        uint16_t received;
+        uint8_t  got[CHUNK_DATA_FRAG_MAX];
+        size_t   total_len;
+        uint8_t  data[CHUNK_DATA_FRAG_MAX * CHUNK_DATA_FRAG_BYTES];
+    } chunk_reasm;
 } Client;
 
 void client_init(Client* c, NetThread* net,
                  const struct sockaddr_in* server_addr);
 void client_destroy(Client* c);
+
+/* Mark this client as the integrated shared-world host (or not). Call before
+ * client_connect. Defaults to false (remote client). */
+void client_set_shared_world(Client* c, bool shared);
+
+/* Advertise this client's render distance (chunks) to the server for chunk
+ * streaming. Call before client_connect. 0 (default) lets the server choose. */
+void client_set_render_distance(Client* c, int rd);
 
 /* Send PKT_CONNECT_REQUEST. Call once after client_init. */
 void client_connect(Client* c);
@@ -136,6 +169,18 @@ void client_set_mobs_cb(Client* c, ClientMobsCb cb, void* user);
 
 typedef void (*ClientDeathCb)(void* user);
 void client_set_death_cb(Client* c, ClientDeathCb cb, void* user);
+
+/* Streamed chunk received from the server (PKT_CHUNK_DATA, reassembled +
+ * RLE-decoded). `blocks` is CHUNK_BLOCKS bytes in flat x + z*16 + y*256 order;
+ * valid only for the duration of the callback (copy if retained). */
+typedef void (*ClientChunkCb)(int32_t cx, int32_t cz,
+                              const uint8_t* blocks, size_t blocks_len,
+                              void* user);
+void client_set_chunk_cb(Client* c, ClientChunkCb cb, void* user);
+
+/* Server told us to drop a now-distant chunk (PKT_CHUNK_UNLOAD). */
+typedef void (*ClientChunkUnloadCb)(int32_t cx, int32_t cz, void* user);
+void client_set_chunk_unload_cb(Client* c, ClientChunkUnloadCb cb, void* user);
 
 /* Smoothed estimate of the current server world_ticks, extrapolated from the
  * last received anchor at the server tick rate. Use this (not c->world_ticks

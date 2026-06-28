@@ -5,6 +5,7 @@
 #include "ui/hud.h"     /* hud_set_survival — latch food/air for the HUD */
 #include "audio.h"      /* audio_init/play/shutdown — client-side SFX hooks */
 #include "block.h"      /* BLOCK_AIR — distinguish break vs place events */
+#include "chunkwire.h"  /* decode streamed RLE columns (PKT_CHUNK_DATA) */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +22,10 @@ static ClientMobsCb      g_mobs_cb   = NULL;
 static void*             g_mobs_user = NULL;
 static ClientDeathCb     g_death_cb  = NULL;
 static void*             g_death_user = NULL;
+static ClientChunkCb        g_chunk_cb        = NULL;
+static void*                g_chunk_user      = NULL;
+static ClientChunkUnloadCb  g_chunk_unload_cb = NULL;
+static void*                g_chunk_unload_user = NULL;
 
 void client_set_snapshot_cb(Client* c, ClientSnapshotCb cb, void* user)
 {
@@ -48,6 +53,24 @@ void client_set_death_cb(Client* c, ClientDeathCb cb, void* user)
     (void)c; g_death_cb = cb; g_death_user = user;
 }
 
+void client_set_chunk_cb(Client* c, ClientChunkCb cb, void* user)
+{
+    (void)c; g_chunk_cb = cb; g_chunk_user = user;
+}
+
+void client_set_chunk_unload_cb(Client* c, ClientChunkUnloadCb cb, void* user)
+{
+    (void)c; g_chunk_unload_cb = cb; g_chunk_unload_user = user;
+}
+
+void client_set_shared_world(Client* c, bool shared) { c->shared_world = shared; }
+
+void client_set_render_distance(Client* c, int rd) {
+    if (rd < 0) rd = 0;
+    if (rd > 255) rd = 255;
+    c->render_distance = (uint8_t)rd;
+}
+
 void client_init(Client* c, NetThread* net,
                   const struct sockaddr_in* server_addr)
 {
@@ -63,6 +86,8 @@ void client_init(Client* c, NetThread* net,
     for (int i = 0; i < ARMOR_SLOT_COUNT; i++) c->armor[i] = (ItemId)BLOCK_AIR;
     c->armor_points = 0;
     c->pending_block_change_count = 0;
+    c->shared_world = false;
+    /* memset(c,0) above already cleared chunk_reasm (active=false). */
     /* Start at noon so the sky is daylit before the first PKT_WORLD_STATE. */
     c->world_ticks = DAY_LENGTH_TICKS / 4;
     c->world_ticks_recv_time = 0.0;
@@ -97,11 +122,12 @@ uint32_t client_estimate_world_ticks(const Client* c)
 
 void client_connect(Client* c)
 {
-    uint8_t buf[HEADER_WIRE_SIZE + 2];
+    uint8_t buf[HEADER_WIRE_SIZE + 4];
     size_t off = 0;
     PacketHeader h = { .type = PKT_CONNECT_REQUEST, .player_id = 0 };
     reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
-    net_write_connect_request(buf, &off, &h);
+    net_write_connect_request_ex(buf, &off, &h, c->shared_world ? 1 : 0,
+                                 c->render_distance);
     reliable_send(&c->reliable, c->net->fd, &c->server_addr,
                    buf, (uint16_t)off);
     c->state            = CLIENT_CONNECTING;
@@ -408,6 +434,69 @@ int client_poll(Client* c)
                     c->armor[i] = (ItemId)worn[i];
                 c->armor_points = pts;
                 hud_set_armor((const ItemId*)c->armor, pts);
+            }
+
+        } else if (type == PKT_CHUNK_DATA && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
+            /* Each fragment is an ordinary reliable packet: ack it (and dedup
+             * via is_new so a retransmitted fragment isn't counted twice). */
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new && (size_t)msg->len >= CHUNK_DATA_FRAG_PREFIX) {
+                uint16_t msg_id, index, total;
+                net_read_chunk_data_frag_hdr(msg->data, &msg_id, &index, &total);
+                size_t flen = (size_t)msg->len - CHUNK_DATA_FRAG_PREFIX;
+
+                if (total >= 1 && total <= CHUNK_DATA_FRAG_MAX
+                    && index < total && flen <= CHUNK_DATA_FRAG_BYTES) {
+                    /* New column (or first fragment) resets the reassembly. */
+                    if (!c->chunk_reasm.active || c->chunk_reasm.msg_id != msg_id
+                        || c->chunk_reasm.total != total) {
+                        memset(&c->chunk_reasm, 0, sizeof(c->chunk_reasm));
+                        c->chunk_reasm.active = true;
+                        c->chunk_reasm.msg_id = msg_id;
+                        c->chunk_reasm.total  = total;
+                    }
+                    size_t doff = (size_t)index * CHUNK_DATA_FRAG_BYTES;
+                    if (doff + flen <= sizeof(c->chunk_reasm.data)) {
+                        memcpy(c->chunk_reasm.data + doff,
+                               msg->data + CHUNK_DATA_FRAG_PREFIX, flen);
+                        if (!c->chunk_reasm.got[index]) {
+                            c->chunk_reasm.got[index] = 1;
+                            c->chunk_reasm.received++;
+                        }
+                        /* Last fragment fixes the total length (earlier ones are
+                         * full CHUNK_DATA_FRAG_BYTES). */
+                        if (index == (uint16_t)(total - 1))
+                            c->chunk_reasm.total_len = doff + flen;
+
+                        if (c->chunk_reasm.received == c->chunk_reasm.total) {
+                            int32_t cx, cz;
+                            uint8_t blocks[16 * 256 * 16];
+                            if (chunkwire_decode_chunk(c->chunk_reasm.data,
+                                                       c->chunk_reasm.total_len,
+                                                       &cx, &cz,
+                                                       blocks, sizeof blocks)) {
+                                if (g_chunk_cb)
+                                    g_chunk_cb(cx, cz, blocks, sizeof blocks,
+                                               g_chunk_user);
+                            } else {
+                                fprintf(stderr, "[client] PKT_CHUNK_DATA decode "
+                                        "failed (%zu body bytes)\n",
+                                        c->chunk_reasm.total_len);
+                            }
+                            c->chunk_reasm.active = false;
+                        }
+                    }
+                }
+            }
+
+        } else if (type == PKT_CHUNK_UNLOAD && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; size_t off = 0; net_read_header(msg->data, &off, &h);
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new && (size_t)msg->len >= HEADER_WIRE_SIZE + 8) {
+                int32_t cx, cz;
+                net_read_chunk_unload(msg->data, &h, &cx, &cz);
+                if (g_chunk_unload_cb) g_chunk_unload_cb(cx, cz, g_chunk_unload_user);
             }
 
         } else if (type == PKT_DISCONNECT) {
