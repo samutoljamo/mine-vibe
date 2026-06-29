@@ -168,6 +168,38 @@ static void test_per_type_stats(void) {
     printf("PASS: per_type_stats\n");
 }
 
+static void test_mob_max_health(void) {
+    /* All types have a positive max-health pool. */
+    for (int t = 0; t < MOB_TYPE_COUNT; t++)
+        assert(mob_max_health((MobType)t) > 0);
+
+    /* Matches the per-type stat table (single source of truth). */
+    for (int t = 0; t < MOB_TYPE_COUNT; t++)
+        assert(mob_max_health((MobType)t) == mob_stats((MobType)t).health);
+
+    /* Hostiles are tankier than every passive farm animal. */
+    int min_hostile = mob_max_health(MOB_ZOMBIE);
+    if (mob_max_health(MOB_SKELETON) < min_hostile) min_hostile = mob_max_health(MOB_SKELETON);
+    if (mob_max_health(MOB_CREEPER)  < min_hostile) min_hostile = mob_max_health(MOB_CREEPER);
+    int max_passive = mob_max_health(MOB_PIG);
+    if (mob_max_health(MOB_COW)     > max_passive) max_passive = mob_max_health(MOB_COW);
+    if (mob_max_health(MOB_CHICKEN) > max_passive) max_passive = mob_max_health(MOB_CHICKEN);
+    assert(min_hostile > max_passive);
+
+    /* Chicken is the frailest mob. */
+    for (int t = 0; t < MOB_TYPE_COUNT; t++)
+        if (t != MOB_CHICKEN)
+            assert(mob_max_health(MOB_CHICKEN) <= mob_max_health((MobType)t));
+
+    /* A freshly spawned mob starts at full (max) health. */
+    MobSet s; mob_set_init(&s);
+    Mob* z = mob_set_spawn(&s, MOB_ZOMBIE, (vec3){0,64,0});
+    assert(z && z->health == mob_max_health(MOB_ZOMBIE));
+    Mob* ch = mob_set_spawn(&s, MOB_CHICKEN, (vec3){1,64,0});
+    assert(ch && ch->health == mob_max_health(MOB_CHICKEN));
+    printf("PASS: mob_max_health\n");
+}
+
 static void test_skeleton_retreat_and_shoot(void) {
     /* Too close -> wants to back off. */
     assert(skeleton_wants_to_retreat(SKELETON_RETREAT_RANGE - 0.5f) == true);
@@ -302,6 +334,7 @@ int main(void) {
     test_client_interpolate_midpoint();
     test_mob_ray_hit();
     test_per_type_stats();
+    test_mob_max_health();
     test_skeleton_retreat_and_shoot();
     test_creeper_detonation();
     test_passive_classification();

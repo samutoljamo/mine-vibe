@@ -5,6 +5,7 @@
 #include "inventory.h"
 #include "item.h"      /* ItemId, tool_break_time, starter tools */
 #include "crafting.h"  /* recipe table + pure matching for PKT_CRAFT */
+#include "combat.h"    /* weapon_damage: weapon-scaled melee vs mobs (pure) */
 #include "raycast.h"   /* for block_face_offset / FACE_PZ */
 #include "gameplay.h"  /* for MAX_REACH */
 #include "mob.h"
@@ -736,6 +737,26 @@ static void award_mob_loot(Server* s, ServerClient* c, MobType type) {
     if (gained) server_send_inventory(s, c);
 }
 
+/* Melee damage the attacker deals to a mob this swing, in hit-points.
+ *
+ * Ideally this would use the player's *selected* hotbar item, but the
+ * PKT_MOB_ATTACK wire form carries only the mob id and the server never learns
+ * the client's selected slot (inventory is server->client only). So, staying
+ * server-authoritative, we use the strongest weapon the attacker is carrying as
+ * the swing weapon, falling back to the bare-hand (fist) baseline when they hold
+ * no weapon. weapon_damage() returns COMBAT_FIST_DAMAGE for non-weapon items, so
+ * an empty/block-only inventory naturally yields a fist punch. Result >= 1. */
+static int server_player_mob_damage(const ServerClient* c) {
+    float best = COMBAT_FIST_DAMAGE;
+    for (int i = 0; i < INVENTORY_SLOTS; i++) {
+        if (c->inventory.slots[i].count == 0) continue;
+        float d = weapon_damage(c->inventory.slots[i].item);
+        if (d > best) best = d;
+    }
+    int dmg = (int)(best + 0.5f);   /* round to whole hit-points */
+    return dmg < 1 ? 1 : dmg;
+}
+
 static void handle_mob_attack(Server* s, ServerClient* c,
                               const uint8_t* data, size_t len) {
     PacketHeader h; uint16_t mob_id;
@@ -761,8 +782,14 @@ static void handle_mob_attack(Server* s, ServerClient* c,
     if (dx*dx + dy*dy + dz*dz > (MAX_REACH + 1.0f) * (MAX_REACH + 1.0f)) return;
 
     c->last_attack_time = now;
-    if (mob_combat_apply(&m->health, PLAYER_ATTACK_DAMAGE)) {
-        award_mob_loot(s, c, m->type);      /* drops go to the killer */
+
+    /* Subtract the attacker's weapon damage from the mob's health pool; the mob
+     * only dies once health hits 0. Per-type max health (mob_max_health) means
+     * tanky hostiles take several hits while frail animals drop fast. */
+    int dmg = server_player_mob_damage(c);
+    if (mob_combat_apply(&m->health, dmg)) {
+        MobType killed = m->type;           /* m is invalidated by removal below */
+        award_mob_loot(s, c, killed);       /* type-appropriate drops to killer */
         mob_set_remove(&s->mobs, mob_id);   /* dead → vanishes next broadcast */
     }
 }

@@ -101,6 +101,10 @@ MobStats mob_stats(MobType type) {
     }
 }
 
+int mob_max_health(MobType type) {
+    return mob_stats(type).health;
+}
+
 bool mob_is_passive(MobType type) {
     return mob_stats(type).passive;
 }

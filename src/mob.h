@@ -113,6 +113,12 @@ bool mob_combat_apply(int16_t* health, int dmg);
 /* Per-type stat block. Unknown types fall back to the zombie profile. */
 MobStats mob_stats(MobType type);
 
+/* Per-type maximum (spawn) health pool, in hit-points. Pure lookup over the
+ * same stat table as mob_stats; always > 0. Hostiles (zombie/skeleton/creeper)
+ * are tankier than the passive farm animals (pig/cow/chicken). A mob spawns at
+ * this value and dies when its health drops to <= 0. */
+int mob_max_health(MobType type);
+
 /* Skeleton: back away when the target is closer than the standoff distance. */
 bool skeleton_wants_to_retreat(float dist);
 /* Skeleton: target is within hitscan shooting range (point-blank included). */
