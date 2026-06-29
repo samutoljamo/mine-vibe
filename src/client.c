@@ -201,6 +201,15 @@ uint32_t client_estimate_world_ticks(const Client* c)
     return c->world_ticks + delta;
 }
 
+WeatherState client_get_weather(const Client* c)
+{
+    /* rng stays server-side; only {kind,time_left} are synced. */
+    WeatherState w = { .kind = c->weather_kind,
+                       .time_left = c->weather_time_left,
+                       .rng = 0 };
+    return w;
+}
+
 void client_connect(Client* c)
 {
     uint8_t buf[HEADER_WIRE_SIZE + 4];
@@ -620,6 +629,21 @@ int client_poll(Client* c)
                 c->kb_dy += dy;
                 c->kb_dz += dz;
                 c->kb_pending = true;
+            }
+
+        } else if (type == PKT_WEATHER && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; uint8_t kind; float time_left;
+            if (!net_parse_weather(msg->data, (size_t)msg->len,
+                                   &h, &kind, &time_left)) {
+                client_drop_malformed("weather"); free(msg); continue;
+            }
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new) {
+                /* Store the authoritative weather; the rain-render step (a
+                 * separate ticket) reads it via client_get_weather(). */
+                if (kind > (uint8_t)WEATHER_STORM) kind = (uint8_t)WEATHER_STORM;
+                c->weather_kind      = (WeatherKind)kind;
+                c->weather_time_left = time_left;
             }
 
         } else if (type == PKT_ARMOR && c->state == CLIENT_CONNECTED) {

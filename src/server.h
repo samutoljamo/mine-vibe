@@ -17,6 +17,7 @@
 #include "survival.h"
 #include "chunk_stream.h"   /* ChunkCoord + streaming-policy diff */
 #include "worldsave.h"      /* GameMode + gamemode_allows_damage (read-only) */
+#include "weather.h"        /* server-authoritative WeatherState */
 
 typedef struct Renderer Renderer;
 
@@ -89,6 +90,14 @@ typedef struct {
     float        mob_spawn_timer; /* accumulates time toward MOB_SPAWN_INTERVAL */
     float        passive_spawn_timer; /* accumulates toward PASSIVE_SPAWN_INTERVAL */
     uint32_t     world_ticks;    /* day/night clock; advances once per tick  */
+
+    /* Server-authoritative weather. Seeded from the world seed at startup and
+     * ticked once per server tick (the rng stays here, never sent). Only the
+     * observable {kind,time_left} is broadcast (PKT_WEATHER): on every KIND
+     * transition, once to each late-joiner, and periodically for resync. */
+    WeatherState weather;
+    WeatherKind  weather_last_kind;    /* last broadcast kind; transition detect */
+    float        weather_resync_timer; /* accumulates toward a low-freq resync   */
 
     /* Host shared-world mode: when a renderer is attached (host/singleplayer),
      * the renderer's main thread owns the chunk pipeline (it must own GPU
