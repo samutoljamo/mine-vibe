@@ -161,6 +161,7 @@ add_executable(minecraft
     src/daynight.c
     src/village.c
     src/dungeon.c
+    src/loot.c
     src/mesher.c
     src/lighting.c
     src/world.c
@@ -482,7 +483,7 @@ add_test(NAME cave COMMAND test_cave)
 # Dungeon room placement (pure decision core): determinism, cross-chunk
 # continuity, vertical band, rarity, and shell/interior/chest voxel roles.
 # Pure model only — no Vulkan/GLFW/FastNoiseLite needed.
-add_executable(test_dungeon tests/test_dungeon.c src/dungeon.c)
+add_executable(test_dungeon tests/test_dungeon.c src/dungeon.c src/loot.c)
 target_include_directories(test_dungeon PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_dungeon PRIVATE m)
@@ -625,6 +626,7 @@ add_executable(test_village
     src/biome.c
     src/cave.c
     src/dungeon.c
+    src/loot.c
     src/chunk.c
     src/block.c
 )
@@ -654,6 +656,7 @@ add_executable(test_worldgen
     src/biome.c
     src/cave.c
     src/dungeon.c
+    src/loot.c
     src/chunk.c
     src/block.c
 )

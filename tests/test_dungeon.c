@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include "../src/dungeon.h"
+#include "../src/loot.h"
 
 #define SEED 1337u
 
@@ -168,6 +169,124 @@ static void test_voxel_roles(void) {
     printf("PASS: voxel_roles\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  Chest loot roller (ado core)                                        */
+/* ------------------------------------------------------------------ */
+
+/* Look up the loot-table entry that produced `item`, or NULL if `item` is not
+ * a member of LOOT_DUNGEON_CHEST at all. */
+static const LootEntry *find_entry(ItemId item) {
+    for (int i = 0; i < LOOT_DUNGEON_CHEST.count; i++)
+        if (LOOT_DUNGEON_CHEST.entries[i].item == item)
+            return &LOOT_DUNGEON_CHEST.entries[i];
+    return NULL;
+}
+
+/* Same chest_seed must always yield byte-identical loot. */
+static void test_loot_deterministic(void) {
+    for (uint32_t s = 1; s < 500; s++) {
+        ItemStack a[CHEST_SLOTS], b[CHEST_SLOTS];
+        int na = dungeon_roll_chest(s, a, CHEST_SLOTS);
+        int nb = dungeon_roll_chest(s, b, CHEST_SLOTS);
+        assert(na == nb);
+        for (int i = 0; i < na; i++) {
+            assert(a[i].item == b[i].item);
+            assert(a[i].count == b[i].count);
+        }
+    }
+    printf("PASS: loot_deterministic\n");
+}
+
+/* Different chest seeds should (at least sometimes) produce different loot. */
+static void test_loot_seed_sensitive(void) {
+    int diffs = 0;
+    for (uint32_t s = 1; s < 500; s++) {
+        ItemStack a[CHEST_SLOTS], b[CHEST_SLOTS];
+        int na = dungeon_roll_chest(s, a, CHEST_SLOTS);
+        int nb = dungeon_roll_chest(s + 1u, b, CHEST_SLOTS);
+        if (na != nb) { diffs++; continue; }
+        for (int i = 0; i < na; i++)
+            if (a[i].item != b[i].item || a[i].count != b[i].count) { diffs++; break; }
+    }
+    assert(diffs > 0);
+    printf("PASS: loot_seed_sensitive\n");
+}
+
+/* Every produced stack is a valid loot-table item with a count inside that
+ * entry's [min_count, max_count] band, and within container limits. Stack count
+ * is bounded by [DUNGEON_CHEST_MIN_STACKS, DUNGEON_CHEST_MAX_STACKS]. Output
+ * slots are distinct and never overflow max_slots. */
+static void test_loot_valid_and_bounded(void) {
+    for (uint32_t s = 1; s < 2000; s++) {
+        ItemStack out[CHEST_SLOTS];
+        int n = dungeon_roll_chest(s, out, CHEST_SLOTS);
+
+        assert(n >= DUNGEON_CHEST_MIN_STACKS);
+        assert(n <= DUNGEON_CHEST_MAX_STACKS);
+        assert(n <= CHEST_SLOTS);
+
+        for (int i = 0; i < n; i++) {
+            const LootEntry *e = find_entry(out[i].item);
+            assert(e != NULL); /* item is a real loot-table entry */
+            assert(out[i].count >= e->min_count);
+            assert(out[i].count <= e->max_count);
+            assert(out[i].count >= 1);
+            assert(out[i].count <= CONTAINER_STACK_MAX);
+        }
+    }
+    printf("PASS: loot_valid_and_bounded\n");
+}
+
+/* The roller must honour a tight max_slots: never produce more than max_slots
+ * stacks and never write past out[max_slots-1]. Probe with a guard sentinel. */
+static void test_loot_respects_max_slots(void) {
+    for (int cap = 1; cap <= DUNGEON_CHEST_MAX_STACKS; cap++) {
+        for (uint32_t s = 1; s < 300; s++) {
+            ItemStack out[CHEST_SLOTS + 1];
+            /* Sentinel just past the cap to catch overflow writes. */
+            out[cap].item = (ItemId)0xBEEF;
+            out[cap].count = 0xAB;
+            int n = dungeon_roll_chest(s, out, cap);
+            assert(n <= cap);
+            assert(out[cap].item == (ItemId)0xBEEF); /* untouched */
+            assert(out[cap].count == 0xAB);
+        }
+    }
+    printf("PASS: loot_respects_max_slots\n");
+}
+
+/* A zero/negative budget yields nothing and writes nothing. */
+static void test_loot_zero_budget(void) {
+    ItemStack out[CHEST_SLOTS];
+    out[0].item = (ItemId)0xBEEF;
+    out[0].count = 0xAB;
+    assert(dungeon_roll_chest(1234u, out, 0) == 0);
+    assert(out[0].item == (ItemId)0xBEEF);
+    assert(dungeon_roll_chest(1234u, out, -5) == 0);
+    printf("PASS: loot_zero_budget\n");
+}
+
+/* Loot for an actual generated room is reproducible from its derived seed,
+ * confirming the deferred server step can re-roll the same contents. */
+static void test_loot_from_room_seed(void) {
+    DungeonRoom r = { 0 };
+    for (int cgx = 0; cgx < 1000 && !r.present; cgx++)
+        for (int cgz = 0; cgz < 1000 && !r.present; cgz++) {
+            DungeonRoom c = dungeon_cell_at(cgx, cgz, SEED);
+            if (c.present) r = c;
+        }
+    assert(r.present);
+
+    ItemStack a[CHEST_SLOTS], b[CHEST_SLOTS];
+    int na = dungeon_roll_chest((uint32_t)r.seed, a, CHEST_SLOTS);
+    int nb = dungeon_roll_chest((uint32_t)r.seed, b, CHEST_SLOTS);
+    assert(na == nb && na > 0);
+    for (int i = 0; i < na; i++) {
+        assert(a[i].item == b[i].item && a[i].count == b[i].count);
+    }
+    printf("PASS: loot_from_room_seed\n");
+}
+
 int main(void) {
     test_deterministic();
     test_cell_index();
@@ -176,6 +295,12 @@ int main(void) {
     test_rarity();
     test_seed_sensitive();
     test_voxel_roles();
+    test_loot_deterministic();
+    test_loot_seed_sensitive();
+    test_loot_valid_and_bounded();
+    test_loot_respects_max_slots();
+    test_loot_zero_budget();
+    test_loot_from_room_seed();
     printf("ALL DUNGEON TESTS PASSED\n");
     return 0;
 }

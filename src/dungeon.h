@@ -4,6 +4,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* ItemStack {ItemId item; uint8_t count;} comes from container.h — the same
+ * 27-slot chest type the deferred server step will fill. We use container.h's
+ * ItemStack (not crafting.h's identically-named typedef): dungeon never needs
+ * crafting, so only one ItemStack definition is ever in scope and the two
+ * typedefs can't collide here. */
+#include "container.h"
+
 /* Pure, deterministic placement model for underground dungeon rooms.
  *
  * A dungeon is a small hollow room (mossy-cobblestone shell, air interior, one
@@ -83,5 +90,39 @@ int dungeon_cell_index(int world_coord);
  * The chest voxel is part of the interior (category 2); callers place the chest
  * block themselves at (chest_x,chest_y,chest_z). Pure. */
 int dungeon_voxel_role(const DungeonRoom *room, int wx, int wy, int wz);
+
+/* ------------------------------------------------------------------ */
+/*  Deterministic dungeon-chest loot roller (ado core)                  */
+/*                                                                     */
+/*  Rolls the CONTENTS of a dungeon chest from a single seed. Pure and  */
+/*  deterministic: the same chest_seed always produces byte-identical   */
+/*  stacks, so the authoritative server can re-roll a chest's loot at    */
+/*  chunk-load and any client/host agrees on what is inside without      */
+/*  storing it. Draws come from LOOT_DUNGEON_CHEST via the splitmix32    */
+/*  PRNG (loot_rng_next) seeded from chest_seed — no rand/time/globals.  */
+/*                                                                     */
+/*  DEFERRED FOLLOW-UP (do NOT do here): wiring this into real chest     */
+/*  block-entities at worldgen — i.e. server.c constructing a Container  */
+/*  at (chest_x,chest_y,chest_z) on chunk generation and filling it via  */
+/*  this roller — is a separate ticket and touches server.c (owned by    */
+/*  another agent). This module only computes the contents.             */
+/* ------------------------------------------------------------------ */
+
+/* Inclusive bounds on how many loot stacks a single chest yields. */
+#define DUNGEON_CHEST_MIN_STACKS 3
+#define DUNGEON_CHEST_MAX_STACKS 7
+
+/* Roll the deterministic loot contents for one dungeon chest.
+ *
+ * Draws a seed-derived number of stacks in [DUNGEON_CHEST_MIN_STACKS,
+ * DUNGEON_CHEST_MAX_STACKS] from LOOT_DUNGEON_CHEST and writes them into the
+ * first distinct slots of `out` (one stack per slot, in order). Returns the
+ * number of stacks produced (>= 0).
+ *
+ * The number written is clamped to `max_slots`; a non-positive `max_slots`
+ * produces nothing and leaves `out` untouched. Never writes past
+ * out[max_slots-1]. Each written stack's count lies within its loot entry's
+ * [min_count, max_count]. Pure / deterministic in `chest_seed`. */
+int dungeon_roll_chest(uint32_t chest_seed, ItemStack out[], int max_slots);
 
 #endif /* DUNGEON_H */

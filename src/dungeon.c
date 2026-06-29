@@ -1,4 +1,5 @@
 #include "dungeon.h"
+#include "loot.h"
 
 /* Deterministic spatial hash, same mixing style as worldgen's hash_pos /
  * village.c's vhash. Pure and stable across runs/platforms; all arithmetic in
@@ -91,4 +92,39 @@ int dungeon_voxel_role(const DungeonRoom *room, int wx, int wy, int wz)
         return 1; /* shell */
 
     return 2; /* hollow interior */
+}
+
+int dungeon_roll_chest(uint32_t chest_seed, ItemStack out[], int max_slots)
+{
+    if (!out || max_slots <= 0)
+        return 0;
+
+    /* Single PRNG stream seeded from the chest seed: the same chest_seed always
+     * walks the same sequence, so the contents are server-reproducible. */
+    uint32_t state = chest_seed;
+
+    /* How many stacks this chest holds: a value in
+     * [DUNGEON_CHEST_MIN_STACKS, DUNGEON_CHEST_MAX_STACKS]. */
+    uint32_t span = (uint32_t)(DUNGEON_CHEST_MAX_STACKS - DUNGEON_CHEST_MIN_STACKS + 1);
+    int want = DUNGEON_CHEST_MIN_STACKS + (int)(loot_rng_next(&state) % span);
+
+    if (want > max_slots)
+        want = max_slots;
+
+    int n = 0;
+    for (int i = 0; i < want; i++) {
+        LootDrop d = loot_roll(&LOOT_DUNGEON_CHEST, loot_rng_next(&state));
+        if (d.count <= 0)
+            continue; /* empty/zero-weight table guard; normally never hit */
+
+        int c = d.count;
+        if (c > CONTAINER_STACK_MAX)
+            c = CONTAINER_STACK_MAX;
+
+        /* One stack per distinct slot, in order. */
+        out[n].item  = d.item;
+        out[n].count = (uint8_t)c;
+        n++;
+    }
+    return n;
 }
