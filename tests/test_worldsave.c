@@ -114,6 +114,69 @@ static void test_meta_parse_rejects_garbage(void) {
     printf("PASS: meta_parse_rejects_garbage\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  Game mode: enum default, persistence round-trip, backward-compat   */
+/* ------------------------------------------------------------------ */
+
+static void test_gamemode_default_is_survival(void) {
+    /* meta_init must default to survival for backward compatibility. */
+    WorldMeta m;
+    worldsave_meta_init(&m, "Default", 1, 2);
+    assert(m.gamemode == GAMEMODE_SURVIVAL);
+    assert(world_meta_gamemode(&m) == GAMEMODE_SURVIVAL);
+    printf("PASS: gamemode_default_is_survival\n");
+}
+
+static void test_gamemode_roundtrips(void) {
+    /* Creative gamemode survives a format/parse cycle. */
+    WorldMeta m;
+    worldsave_meta_init(&m, "Creative", 7, 8);
+    m.gamemode = GAMEMODE_CREATIVE;
+
+    char buf[WORLDSAVE_META_BUF];
+    size_t n = worldsave_meta_format(&m, buf, sizeof(buf));
+    assert(n > 0 && n < sizeof(buf));
+
+    WorldMeta out;
+    assert(worldsave_meta_parse(buf, &out));
+    assert(out.gamemode == GAMEMODE_CREATIVE);
+    assert(world_meta_gamemode(&out) == GAMEMODE_CREATIVE);
+    printf("PASS: gamemode_roundtrips\n");
+}
+
+static void test_gamemode_old_save_defaults_survival(void) {
+    /* An old meta file with no gamemode= line must load as survival, not
+     * fail to parse and not corrupt the other fields. */
+    WorldMeta out;
+    bool ok = worldsave_meta_parse(
+        "name=Legacy\nseed=99\nlast_played=5\n", &out);
+    assert(ok);
+    assert(strcmp(out.name, "Legacy") == 0);
+    assert(out.seed == 99);
+    assert(out.last_played == 5);
+    assert(out.gamemode == GAMEMODE_SURVIVAL);
+    printf("PASS: gamemode_old_save_defaults_survival\n");
+}
+
+static void test_gamemode_bad_value_defaults_survival(void) {
+    /* Out-of-range / garbage gamemode value falls back to survival. */
+    WorldMeta out;
+    assert(worldsave_meta_parse(
+        "name=X\nseed=1\nlast_played=1\ngamemode=99\n", &out));
+    assert(out.gamemode == GAMEMODE_SURVIVAL);
+
+    assert(worldsave_meta_parse(
+        "name=X\nseed=1\nlast_played=1\ngamemode=junk\n", &out));
+    assert(out.gamemode == GAMEMODE_SURVIVAL);
+    printf("PASS: gamemode_bad_value_defaults_survival\n");
+}
+
+static void test_gamemode_allows_damage(void) {
+    assert(gamemode_allows_damage(GAMEMODE_SURVIVAL) == true);
+    assert(gamemode_allows_damage(GAMEMODE_CREATIVE) == false);
+    printf("PASS: gamemode_allows_damage\n");
+}
+
 static void test_meta_parse_field_order_independent(void) {
     /* Parser keys off field names, not positions. */
     WorldMeta out;
@@ -192,6 +255,11 @@ int main(void) {
     test_meta_roundtrip();
     test_meta_parse_rejects_garbage();
     test_meta_parse_field_order_independent();
+    test_gamemode_default_is_survival();
+    test_gamemode_roundtrips();
+    test_gamemode_old_save_defaults_survival();
+    test_gamemode_bad_value_defaults_survival();
+    test_gamemode_allows_damage();
     test_new_name_from_counter();
     test_seed_from_counter_deterministic();
     test_world_list_roundtrip();

@@ -39,12 +39,20 @@
 /* Max worlds the Load-World list will hold/show. */
 #define WORLDSAVE_LIST_MAX  64
 
+/* Per-world game mode. Survival is the default (and the value old saves with
+ * no gamemode field load as). Stored as an int in the meta file. */
+typedef enum GameMode {
+    GAMEMODE_SURVIVAL = 0,
+    GAMEMODE_CREATIVE = 1
+} GameMode;
+
 /* Per-world metadata persisted alongside the overlay. */
 typedef struct WorldMeta {
-    char    name[WORLDSAVE_NAME_MAX];  /* sanitized, also the directory name */
-    int32_t seed;                      /* worldgen seed                       */
-    int64_t last_played;               /* monotone "recency" counter (not a   */
+    char     name[WORLDSAVE_NAME_MAX]; /* sanitized, also the directory name */
+    int32_t  seed;                     /* worldgen seed                       */
+    int64_t  last_played;              /* monotone "recency" counter (not a   */
                                        /* wall clock; bumped on save/load)    */
+    GameMode gamemode;                 /* survival/creative; default survival */
 } WorldMeta;
 
 /* In-memory list of discovered worlds (for the Load-World UI). */
@@ -77,6 +85,15 @@ size_t worldsave_meta_format(const WorldMeta* m, char* buf, size_t cap);
 /* Parse a meta text buffer. Returns false if name/seed/last_played missing or
  * malformed. Field order independent (keys off "key=value" lines). */
 bool worldsave_meta_parse(const char* buf, WorldMeta* out);
+
+/* ---- Game-mode helpers (pure) ---- */
+
+/* Return the world's game mode, defaulting to survival if m is NULL. */
+GameMode world_meta_gamemode(const WorldMeta* m);
+
+/* True if the given mode takes/deals damage (survival), false for creative.
+ * The damage-gating ticket (1uh) calls this. */
+bool gamemode_allows_damage(GameMode mode);
 
 /* Derive a directory-safe new-world name from an incrementing counter (no rand
  * / no Date globals). Distinct counters yield distinct names. */

@@ -94,12 +94,22 @@ void worldsave_meta_init(WorldMeta* m, const char* name,
     worldsave_sanitize_name(name, m->name, sizeof(m->name));
     m->seed = seed;
     m->last_played = last_played;
+    m->gamemode = GAMEMODE_SURVIVAL;   /* default for backward compatibility */
+}
+
+GameMode world_meta_gamemode(const WorldMeta* m) {
+    return m ? m->gamemode : GAMEMODE_SURVIVAL;
+}
+
+bool gamemode_allows_damage(GameMode mode) {
+    return mode == GAMEMODE_SURVIVAL;
 }
 
 size_t worldsave_meta_format(const WorldMeta* m, char* buf, size_t cap) {
     int n = snprintf(buf, cap,
-                     "name=%s\nseed=%d\nlast_played=%lld\n",
-                     m->name, (int)m->seed, (long long)m->last_played);
+                     "name=%s\nseed=%d\nlast_played=%lld\ngamemode=%d\n",
+                     m->name, (int)m->seed, (long long)m->last_played,
+                     (int)m->gamemode);
     if (n < 0 || (size_t)n >= cap) return 0;
     return (size_t)n;
 }
@@ -146,9 +156,22 @@ bool worldsave_meta_parse(const char* buf, WorldMeta* out) {
     long long lv = strtoll(last_s, &end, 10);
     if (end == last_s) return false;
 
+    /* gamemode is optional: old saves predate it. A missing line, an
+     * unparseable value, or an out-of-range value all default to survival so
+     * existing worlds keep loading and never get silently corrupted. */
+    GameMode gm = GAMEMODE_SURVIVAL;
+    char gm_s[32];
+    if (ws_find_field(buf, "gamemode", gm_s, sizeof(gm_s))) {
+        char* gend = NULL;
+        long gv = strtol(gm_s, &gend, 10);
+        if (gend != gm_s && (gv == GAMEMODE_SURVIVAL || gv == GAMEMODE_CREATIVE))
+            gm = (GameMode)gv;
+    }
+
     snprintf(out->name, sizeof(out->name), "%s", name);
     out->seed = (int32_t)sv;
     out->last_played = (int64_t)lv;
+    out->gamemode = gm;
     return true;
 }
 
