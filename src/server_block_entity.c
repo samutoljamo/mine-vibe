@@ -3,6 +3,8 @@
 #include "block.h"         /* BLOCK_FURNACE / BLOCK_CHEST */
 #include "smelting.h"      /* FurnaceState + furnace_tick */
 #include "container.h"     /* Container + transfer helpers (ItemStack lives here) */
+#include "dungeon.h"       /* dungeon placement query + loot roller (uses container.h's ItemStack) */
+#include "chunk.h"         /* CHUNK_X / CHUNK_Y / CHUNK_Z */
 #include <stdlib.h>
 #include <string.h>
 
@@ -148,6 +150,65 @@ void sbe_transfer(BlockEntity* be, uint8_t slot, uint8_t dir, uint8_t count,
     f->input  = tmp.slots[0].item;  f->input_count  = tmp.slots[0].count;
     f->fuel   = tmp.slots[1].item;  f->fuel_count   = tmp.slots[1].count;
     f->output = tmp.slots[2].item;  f->output_count = tmp.slots[2].count;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Dungeon chest loot population (63k)                                 */
+/* ------------------------------------------------------------------ */
+
+int sbe_dungeon_chests_in_chunk(int cx, int cz, uint32_t seed,
+                                int xs[], int ys[], int zs[],
+                                uint32_t chest_seeds[], int max) {
+    if (max <= 0) return 0;
+    int base_x = cx * CHUNK_X;
+    int base_z = cz * CHUNK_Z;
+    int chunk_x0 = base_x, chunk_x1 = base_x + CHUNK_X - 1;
+    int chunk_z0 = base_z, chunk_z1 = base_z + CHUNK_Z - 1;
+
+    int ccx = dungeon_cell_index(base_x);
+    int ccz = dungeon_cell_index(base_z);
+
+    int n = 0;
+    /* Mirror worldgen's generate_dungeons: own cell + 8 neighbours, since a
+     * jittered room can reach in from an adjacent (larger) cell. We only care
+     * about rooms whose CHEST cell lands in this chunk — that is exactly where
+     * worldgen writes the BLOCK_CHEST. */
+    for (int dcx = -1; dcx <= 1; dcx++)
+        for (int dcz = -1; dcz <= 1; dcz++) {
+            DungeonRoom r = dungeon_cell_at(ccx + dcx, ccz + dcz, seed);
+            if (!r.present) continue;
+            if (r.chest_x < chunk_x0 || r.chest_x > chunk_x1) continue;
+            if (r.chest_z < chunk_z0 || r.chest_z > chunk_z1) continue;
+            if (r.chest_y <= 0 || r.chest_y >= CHUNK_Y) continue;
+            if (n >= max) return n;
+            xs[n] = r.chest_x;
+            ys[n] = r.chest_y;
+            zs[n] = r.chest_z;
+            chest_seeds[n] = (uint32_t)r.seed;
+            n++;
+        }
+    return n;
+}
+
+void sbe_fill_chest_loot(BlockEntity* be, uint32_t chest_seed) {
+    if (!be || be->type != SBE_CHEST) return;
+    Container* c = &be->u.chest;
+    container_init(c);
+    ItemStack rolled[CHEST_SLOTS];
+    int got = dungeon_roll_chest(chest_seed, rolled, CHEST_SLOTS);
+    for (int i = 0; i < got; i++)
+        c->slots[i] = rolled[i];
+}
+
+BlockEntity* sbe_populate_dungeon_chest(Server* s, int x, int y, int z,
+                                        uint32_t chest_seed) {
+    /* Idempotent + save-safe: never touch a chest already tracked this session
+     * (a player may have opened/looted it, or it was already populated). */
+    if (sbe_find(s, x, y, z)) return NULL;
+    BlockEntity* be = sbe_create(s, x, y, z, SBE_CHEST);
+    if (!be) return NULL;
+    sbe_fill_chest_loot(be, chest_seed);
+    return be;
 }
 
 void sbe_tick_furnaces(Server* s, int dt_ticks,
