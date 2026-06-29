@@ -199,6 +199,7 @@ add_executable(minecraft
     src/combat.c
     src/smelting.c
     src/survival.c
+    src/particle.c
     src/raycast.c
     src/assets_generated.c
     src/shaders_generated.c
@@ -595,6 +596,15 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME survival COMMAND test_survival)
 
+# CPU particle simulation core (pure: emit/integrate/compact, no Vulkan/GLFW).
+# GPU rendering integration is deferred to a follow-up ticket.
+add_executable(test_particle tests/test_particle.c src/particle.c)
+target_include_directories(test_particle PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_particle PRIVATE m)
+endif()
+add_test(NAME particle COMMAND test_particle)
+
 # Day/night cycle math (pure, no Vulkan/GLFW required)
 add_executable(test_daynight tests/test_daynight.c src/daynight.c)
 target_include_directories(test_daynight PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -803,6 +813,6 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_daynight test_village test_worldgen test_survival test_world_persist
           test_crafting test_smelting test_item test_mining test_armor test_combat test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
-          test_frustum test_chunkmap test_mob_model)
+          test_frustum test_chunkmap test_mob_model test_particle)
     msvc_enable_c11_atomics(${t})
 endforeach()
