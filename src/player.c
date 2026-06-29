@@ -22,7 +22,16 @@
 typedef struct KeyInput {
     bool w, s, a, d;
     bool space, shift, ctrl;
+    bool jump_edge;   /* space just transitioned up->down this frame (rising
+                         edge). Drives the on-ground jump impulse; `space`
+                         (continuous) still drives water/swim ascent. */
 } KeyInput;
+
+bool jump_should_fire(bool space_now, bool space_prev, bool on_ground,
+                      bool in_water)
+{
+    return space_now && !space_prev && on_ground && !in_water;
+}
 
 void player_init(Player* player, vec3 start_pos)
 {
@@ -37,6 +46,7 @@ void player_init(Player* player, vec3 start_pos)
     player->crouching       = false;
     player->noclip          = true;
     player->prev_space      = false;
+    player->jump_space_prev = false;
     player->prev_v          = false;
     player->last_space_time = -1.0f;
     player->accumulator     = 0.0f;
@@ -238,9 +248,12 @@ static void tick_walking(Player* player, const KeyInput* in, World* world)
     if (player->velocity[1] < -TERMINAL_VEL)
         player->velocity[1] = -TERMINAL_VEL;
 
-    /* 5. Jump */
-    bool do_jump = player->agent_mode ? player->agent_jump : in->space;
-    if (do_jump && player->on_ground && !player->in_water) {
+    /* 5. Jump (edge-triggered). Agent mode supplies an already-edged one-frame
+     * pulse (agent_jump, reset each frame in main.c); the keyboard path uses the
+     * rising-edge flag computed in player_update. Either way, holding the key
+     * does not re-jump. Swim ascent (step 3) stays continuous. */
+    bool do_jump = player->agent_mode ? player->agent_jump : in->jump_edge;
+    if (jump_should_fire(do_jump, false, player->on_ground, player->in_water)) {
         player->velocity[1] = JUMP_VEL;
     }
 
@@ -315,6 +328,12 @@ void player_update(Player* player, GLFWwindow* window, World* world, float dt)
         in.space = glfwGetKey(window, GLFW_KEY_SPACE)        == GLFW_PRESS;
         in.shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT)   == GLFW_PRESS;
         in.ctrl  = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
+        /* Rising edge of space for the jump impulse: pressed this frame but not
+         * the previous one. Tracked here (per frame) rather than per physics
+         * tick so a held key fires exactly once per press, independent of how
+         * many ticks the accumulator runs this frame. */
+        in.jump_edge = in.space && !player->jump_space_prev;
+        player->jump_space_prev = in.space;
     }
 
     /* Fixed timestep physics */

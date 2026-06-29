@@ -102,14 +102,26 @@ static void sweep_axis_substepped(vec3 pos, vec3 vel, float half_w, float height
 
 /* Is there a solid block under the player's footprint? Probes the slice
  * one texel below feet across the AABB column; any solid block keeps the
- * player supported. Used by crouch edge protection. */
+ * player supported. Used by crouch edge protection and by the "stably
+ * standing" on_ground fallback.
+ *
+ * The horizontal footprint is shrunk by SUPPORT_INSET so a side wall that the
+ * AABB is merely *touching* at its face (the collision sweep leaves the AABB
+ * edge flush against the wall, i.e. max_x == wall_x) is NOT counted as ground
+ * underneath. Without this inset, sliding down a wall whose blocks reach to
+ * feet level would falsely report on_ground for a tick, granting an in-air
+ * "double jump" off the sidewall (bug 01h.2). A real floor spans the interior
+ * of the footprint, so the inset never costs a genuine landing. */
 static bool aabb_supported(vec3 pos, float half_w, BlockQueryFn query, void* ctx)
 {
+    const float SUPPORT_INSET = 0.01f;
+    float fw = half_w - SUPPORT_INSET;
+    if (fw < 0.0f) fw = 0.0f;
     int by = (int)floorf(pos[1] - 0.001f);
-    int bx0 = (int)floorf(pos[0] - half_w);
-    int bx1 = (int)floorf(pos[0] + half_w);
-    int bz0 = (int)floorf(pos[2] - half_w);
-    int bz1 = (int)floorf(pos[2] + half_w);
+    int bx0 = (int)floorf(pos[0] - fw);
+    int bx1 = (int)floorf(pos[0] + fw);
+    int bz0 = (int)floorf(pos[2] - fw);
+    int bz1 = (int)floorf(pos[2] + fw);
     for (int bx = bx0; bx <= bx1; bx++)
     for (int bz = bz0; bz <= bz1; bz++) {
         if (block_is_solid(query(bx, by, bz, ctx)))

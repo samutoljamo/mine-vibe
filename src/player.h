@@ -34,7 +34,10 @@ typedef struct Player {
     bool        crouching;      /* walking mode: shift held — slows movement,
                                    dips eye, and prevents stepping off block edges */
     bool        noclip;         /* free mode: collision toggle */
-    bool        prev_space;     /* edge detection */
+    bool        prev_space;     /* edge detection (mode double-tap) */
+    bool        jump_space_prev;/* edge detection (jump impulse) — last frame's
+                                   space state, so the on-ground jump only fires
+                                   on the up->down transition, not while held */
     bool        prev_v;         /* edge detection */
     float       last_space_time;
     float       accumulator;    /* fixed-timestep dt accumulator */
@@ -49,5 +52,13 @@ typedef struct Player {
 
 void player_init(Player* player, vec3 start_pos);
 void player_update(Player* player, GLFWwindow* window, World* world, float dt);
+
+/* Pure edge-trigger for the on-ground jump impulse. Returns true only on the
+ * rising edge of the jump key (space pressed this frame but not the previous)
+ * while grounded and out of water. Holding the key does NOT re-fire — the
+ * player must release and press again. Swimming/water ascent is handled
+ * separately (continuous), so in_water suppresses the on-ground impulse here. */
+bool jump_should_fire(bool space_now, bool space_prev, bool on_ground,
+                      bool in_water);
 
 #endif

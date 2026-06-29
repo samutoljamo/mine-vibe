@@ -168,8 +168,46 @@ static void test_walking_jump(void) {
     printf("PASS: walking_jump  (y=%.4f)\n", (double)p.position[1]);
 }
 
+/* Edge-triggered jump (pure helper). A jump fires ONLY on the rising edge of
+ * the jump key (up->down) while grounded and out of water. Holding the key
+ * across frames must NOT re-fire. Regression for the hold-space repeat bug. */
+static void test_jump_should_fire_edge(void) {
+    /* Rising edge, grounded, dry: fires. */
+    assert(jump_should_fire(true,  false, true,  false));
+    /* Held (space_prev already true): no re-fire even though still grounded. */
+    assert(!jump_should_fire(true,  true,  true,  false));
+    /* Not grounded: never fires. */
+    assert(!jump_should_fire(true,  false, false, false));
+    /* In water: on-ground jump impulse suppressed (swim handled separately). */
+    assert(!jump_should_fire(true,  false, true,  true));
+    /* Key not pressed: no jump. */
+    assert(!jump_should_fire(false, false, true,  false));
+    /* Released then nothing: no jump. */
+    assert(!jump_should_fire(false, true,  true,  false));
+    printf("PASS: jump_should_fire_edge\n");
+}
+
+/* Two consecutive grounded frames with the jump key HELD throughout must
+ * produce exactly ONE jump impulse: the player jumps on the first frame and,
+ * after landing again with the key still held, does NOT re-jump. */
+static void test_held_jump_fires_once(void) {
+    int fires = 0;
+    bool prev = false;
+    bool on_ground = true;       /* grounded both frames (lands back each time) */
+    for (int frame = 0; frame < 2; frame++) {
+        bool space_now = true;   /* key held the whole time */
+        if (jump_should_fire(space_now, prev, on_ground, false))
+            fires++;
+        prev = space_now;
+    }
+    assert(fires == 1);
+    printf("PASS: held_jump_fires_once  (fires=%d)\n", fires);
+}
+
 int main(void) {
     test_init_defaults();
+    test_jump_should_fire_edge();
+    test_held_jump_fires_once();
     test_eye_position_and_crouch_dip();
     test_free_noclip_movement();
     test_free_noclip_vertical();

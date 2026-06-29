@@ -305,8 +305,36 @@ static void test_crouch_edge_protection(void) {
     printf("PASS: crouch_edge_protection\n");
 }
 
+/* Sidewall must NOT grant ground state. An airborne player pressed against a
+ * vertical wall (wall blocks span the player's whole vertical extent, with the
+ * floor far below) must report on_ground == false: only a block BELOW the feet
+ * (a downward landing) sets on_ground, never lateral contact with a side wall.
+ * Regression for the sidewall double-jump bug (01h.2). */
+static void test_sidewall_no_ground(void) {
+    grid_clear();
+    grid_floor(0);                  /* floor far below */
+    /* Wall column at x=2, spanning a tall range so it brackets the feet. */
+    for (int y = 1; y <= 40; y++) grid_set(2, y, 0, BLOCK_STONE);
+    /* Player airborne at feet y=20.5, drifting +x into the wall while falling. */
+    vec3 pos = { 1.2f, 20.5f, 0.0f };
+    vec3 vel = { 6.0f, -2.0f, 0.0f };
+    PhysicsResult r = {0};
+    for (int i = 0; i < 30; i++) {
+        vel[0] = 6.0f;              /* keep pressing into the wall each tick */
+        vel[1] = -2.0f;            /* keep falling */
+        r = physics_move_q(pos, vel, HW, HT, 1.0f/60.0f, false, grid_query, NULL);
+        /* While airborne and pressed against the side wall, never grounded. */
+        assert(!r.on_ground);
+    }
+    /* Sanity: the wall actually stopped horizontal motion. */
+    assert(pos[0] + HW <= 2.0f + 1e-3f);
+    printf("PASS: sidewall_no_ground  (final x=%.4f y=%.4f)\n",
+           (double)pos[0], (double)pos[1]);
+}
+
 int main(void) {
     test_land_on_floor();
+    test_sidewall_no_ground();
     test_grounded_detection_stationary();
     test_not_grounded_in_air();
     test_wall_stops_x();
