@@ -493,6 +493,34 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME dungeon COMMAND test_dungeon)
 
+# Server-side dungeon chest loot population (63k): the pure enumeration
+# (sbe_dungeon_chests_in_chunk) and the container-landing of rolled loot.
+# Links server_block_entity.c, which includes server.h (and thus world.h /
+# Vulkan headers) at compile time but at link time only needs the pure cores
+# below — same Vulkan-headers pattern as test_world_persist.
+add_executable(test_server_dungeon_loot
+    tests/test_server_dungeon_loot.c
+    src/server_block_entity.c
+    src/dungeon.c
+    src/loot.c
+    src/container.c
+    src/inventory.c
+    src/item.c
+    src/block.c
+    src/smelting.c
+)
+target_include_directories(test_server_dungeon_loot PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${volk_SOURCE_DIR}
+    ${vulkanmemoryallocator_SOURCE_DIR}/include
+)
+target_compile_definitions(test_server_dungeon_loot PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(test_server_dungeon_loot PRIVATE cglm Vulkan::Headers Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_server_dungeon_loot PRIVATE m)
+endif()
+add_test(NAME server_dungeon_loot COMMAND test_server_dungeon_loot)
+
 # Weighted loot-table model (pure, no Vulkan/GLFW required)
 add_executable(test_loot tests/test_loot.c src/loot.c src/item.c src/block.c)
 target_include_directories(test_loot PRIVATE ${CMAKE_SOURCE_DIR}/src)

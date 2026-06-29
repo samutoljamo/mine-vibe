@@ -617,6 +617,36 @@ static void server_container_on_change(void* user, const BlockEntity* be) {
     server_broadcast_container_state((Server*)user, be);
 }
 
+/* Populate the loot of every dungeon chest whose chest cell lies in chunk
+ * (cx,cz). Idempotent + save-safe:
+ *   - skips any chest already tracked as a block-entity this session (a player
+ *     may have opened/looted it, or it was populated on a prior visit);
+ *   - skips any chest whose authoritative world block is no longer BLOCK_CHEST
+ *     (e.g. the player broke it — the persistence overlay replayed that, leaving
+ *     AIR), so we never resurrect loot in a chest the save says is gone.
+ * The loot seed is the dungeon's derived per-chest seed (deterministic in the
+ * world seed + room position), so the same dungeon always rolls the same loot.
+ * Runs on the server tick thread (same thread that owns the block-entity store),
+ * so no extra locking is needed. */
+static void server_populate_dungeon_chunk(Server* s, int cx, int cz) {
+    if (!s->world) return;
+    int   xs[SBE_DUNGEON_CHESTS_PER_CHUNK];
+    int   ys[SBE_DUNGEON_CHESTS_PER_CHUNK];
+    int   zs[SBE_DUNGEON_CHESTS_PER_CHUNK];
+    uint32_t seeds[SBE_DUNGEON_CHESTS_PER_CHUNK];
+    int n = sbe_dungeon_chests_in_chunk(cx, cz, (uint32_t)s->seed,
+                                        xs, ys, zs, seeds,
+                                        SBE_DUNGEON_CHESTS_PER_CHUNK);
+    for (int i = 0; i < n; i++) {
+        if (sbe_find(s, xs[i], ys[i], zs[i])) continue;     /* already tracked */
+        /* Ensure the column is generated (applies the overlay) so the block read
+         * reflects the TRUE world, then only populate if the chest still stands. */
+        world_ensure_chunk(s->world, cx, cz);
+        if (world_get_block(s->world, xs[i], ys[i], zs[i]) != BLOCK_CHEST) continue;
+        sbe_populate_dungeon_chest(s, xs[i], ys[i], zs[i], seeds[i]);
+    }
+}
+
 static void handle_block_break(Server* s, ServerClient* c,
                                 const uint8_t* data, size_t len)
 {
@@ -803,6 +833,17 @@ static void handle_container_open(Server* s, ServerClient* c,
     if (!server_block_in_reach(c, x, y, z)) return;
 
     BlockEntity* be = sbe_find(s, x, y, z);
+    if (!be) {
+        /* No tracked entity yet. On the shared-world host we never stream chunks
+         * (so server_send_chunk's dungeon-population hook never fired for this
+         * column), and a player can reach an unstreamed dungeon chest. Lazily
+         * populate it here: this is the same idempotent + save-safe path used at
+         * stream time, keyed off the chunk's deterministic dungeon placement. */
+        int ccx = (x < 0) ? (x - 15) / 16 : x / 16;
+        int ccz = (z < 0) ? (z - 15) / 16 : z / 16;
+        server_populate_dungeon_chunk(s, ccx, ccz);
+        be = sbe_find(s, x, y, z);
+    }
     if (!be) return;                        /* not a container (or not tracked) */
 
     sbe_add_viewer(be, server_client_index(s, c));
@@ -1521,6 +1562,10 @@ static bool server_send_chunk(Server* s, ServerClient* c, int32_t cx, int32_t cz
     uint8_t blocks[CHUNK_BLOCKS];
     if (!world_copy_chunk_blocks(s->world, cx, cz, blocks, sizeof blocks))
         return false;
+
+    /* First time this column becomes available to the world: fill any dungeon
+     * chest loot in it (idempotent + save-safe; see helper). */
+    server_populate_dungeon_chunk(s, cx, cz);
 
     /* Worst-case encoded body (chunkwire_encode_bound()): 12-byte header +
      * 2*CHUNK_BLOCKS + slack. Static, so it never lands on the stack. The

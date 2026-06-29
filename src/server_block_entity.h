@@ -66,4 +66,42 @@ void sbe_tick_furnaces(Server* s, int dt_ticks,
 /* Iterate viewers: returns the viewer bitmask so the caller can fan out. */
 uint32_t sbe_viewers(const BlockEntity* be);
 
+/* ------------------------------------------------------------------ */
+/*  Dungeon chest loot population (63k)                                 */
+/*                                                                     */
+/*  These live here (not server.c) on purpose: rolling dungeon loot     */
+/*  needs dungeon.h, which pulls in container.h, whose `ItemStack`      */
+/*  typedef clashes with crafting.h's (which server.c includes). This   */
+/*  TU already isolates container.h, so server.c drives population      */
+/*  through these primitives-only entry points and never sees the clash.*/
+/* ------------------------------------------------------------------ */
+
+/* Max dungeon chests that can have their chest cell inside one chunk. A chunk
+ * consults its own placement cell plus the 8 neighbours, and each cell yields at
+ * most one room/chest, so 9 is the hard upper bound. */
+#define SBE_DUNGEON_CHESTS_PER_CHUNK 9
+
+/* Pure: enumerate every dungeon chest whose chest cell falls inside chunk
+ * (cx,cz) for `seed`, mirroring worldgen's placement query exactly (depends only
+ * on world coords + seed, so it matches the generated BLOCK_CHEST). Writes the
+ * chest world position and per-chest loot seed into the parallel arrays (each at
+ * least `max` long) and returns the count written (0..SBE_DUNGEON_CHESTS_PER_CHUNK,
+ * clamped to `max`). No I/O, no globals — unit-tested directly. */
+int sbe_dungeon_chests_in_chunk(int cx, int cz, uint32_t seed,
+                                int xs[], int ys[], int zs[],
+                                uint32_t chest_seeds[], int max);
+
+/* Fill a SBE_CHEST block-entity's container with the deterministic loot for
+ * `chest_seed` (via dungeon_roll_chest). Clears the chest first so the result is
+ * exactly the rolled stacks. No-op for a non-chest entity or NULL. */
+void sbe_fill_chest_loot(BlockEntity* be, uint32_t chest_seed);
+
+/* Create (idempotently) a pre-filled dungeon chest block-entity at (x,y,z) and
+ * roll its loot from `chest_seed`. Does NOT overwrite an already-tracked entity
+ * at that cell (so a chest a player has opened/looted this session, or one
+ * already populated, is left untouched). Returns the entity (new or existing),
+ * or NULL on allocation failure. */
+BlockEntity* sbe_populate_dungeon_chest(Server* s, int x, int y, int z,
+                                        uint32_t chest_seed);
+
 #endif /* SERVER_BLOCK_ENTITY_H */
