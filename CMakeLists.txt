@@ -189,6 +189,7 @@ add_executable(minecraft
     src/mob.c
     src/mob_ai.c
     src/mob_render.c
+    src/mob_model.c
     src/inventory.c
     src/container.c
     src/item.c
@@ -351,6 +352,18 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_mob_render PRIVATE m)
 endif()
 add_test(NAME mob_render COMMAND test_mob_render)
+
+# Per-type mob box-model data layer (pure geometry data; no Vulkan/GLFW).
+add_executable(test_mob_model
+    tests/test_mob_model.c
+    src/mob_model.c
+)
+target_include_directories(test_mob_model PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_mob_model PRIVATE cglm)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mob_model PRIVATE m)
+endif()
+add_test(NAME mob_model COMMAND test_mob_model)
 
 add_executable(test_mesher
     tests/test_mesher.c
@@ -781,6 +794,6 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_daynight test_village test_worldgen test_survival test_world_persist
           test_crafting test_smelting test_item test_mining test_armor test_combat test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
-          test_frustum test_chunkmap)
+          test_frustum test_chunkmap test_mob_model)
     msvc_enable_c11_atomics(${t})
 endforeach()
