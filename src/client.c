@@ -27,6 +27,16 @@ static void*                g_chunk_user      = NULL;
 static ClientChunkUnloadCb  g_chunk_unload_cb = NULL;
 static void*                g_chunk_unload_user = NULL;
 
+/* Live particle pool of the active client, published by client_init so the
+ * renderer can read it via client_active_particles() without a Client pointer
+ * being threaded through main.c. Cleared by client_destroy. */
+static ParticleSystem* g_active_particles = NULL;
+
+const ParticleSystem* client_active_particles(void)
+{
+    return g_active_particles;
+}
+
 void client_set_snapshot_cb(Client* c, ClientSnapshotCb cb, void* user)
 {
     (void)c;
@@ -178,9 +188,18 @@ void client_init(Client* c, NetThread* net,
      * and idempotent, so this is fine even with multiple clients in a test. */
     audio_init();
     audio_set_music(true);
+
+    /* Particle pool: deterministic seed (the visual effect doesn't need
+     * cryptographic randomness). Publish it for the renderer to read. */
+    particle_system_init(&c->particles, 0xC0FFEEu);
+    c->particles_last_update = net_time();
+    g_active_particles = &c->particles;
 }
 
-void client_destroy(Client* c) { (void)c; audio_shutdown(); }
+void client_destroy(Client* c) {
+    if (g_active_particles == &c->particles) g_active_particles = NULL;
+    audio_shutdown();
+}
 
 /* Server runs the world clock at 20 Hz; mirror that here for extrapolation.
  * Kept local so client.c doesn't need to pull in server.h. */
@@ -550,6 +569,28 @@ int client_poll(Client* c)
                                                         : SFX_BLOCK_PLACE,
                                   pos, listener);
                 }
+                /* Visual particle burst at the edit cell (centered on the block).
+                 * On a break (-> AIR) we can't see the OLD block id in this
+                 * packet, so debris uses a neutral grey-brown tint; tinting a
+                 * break by the removed block's colour needs the pre-edit world
+                 * state (only known where pending changes are applied) and is
+                 * deferred. On a place we DO have the new block id, so the puff
+                 * is tinted by its representative colour. */
+                {
+                    float px = (float)bp.x + 0.5f;
+                    float py = (float)bp.y + 0.5f;
+                    float pz = (float)bp.z + 0.5f;
+                    if (bp.block == BLOCK_AIR) {
+                        particle_emit_block_break(&c->particles, px, py, pz,
+                                                  0.55f, 0.50f, 0.42f);
+                    } else {
+                        uint8_t cr, cg, cb;
+                        block_representative_color((BlockID)bp.block, &cr, &cg, &cb);
+                        particle_emit_block_break(&c->particles, px, py, pz,
+                                                  cr / 255.0f, cg / 255.0f,
+                                                  cb / 255.0f);
+                    }
+                }
                 if (c->pending_block_change_count < 256) {
                     int i = c->pending_block_change_count++;
                     c->pending_block_changes[i].x     = bp.x;
@@ -784,6 +825,19 @@ int client_poll(Client* c)
                             "disconnecting\n", CLIENT_SERVER_TIMEOUT_SEC);
             c->state = CLIENT_DISCONNECTED;
         }
+    }
+
+    /* Integrate the particle pool once per poll. dt is measured against the last
+     * poll's wall clock so the sim advances at real time independent of the
+     * frame rate; clamp to a sane ceiling so a long stall (loading) doesn't fling
+     * debris across the map in one giant step. */
+    {
+        double pnow = net_time();
+        double dt = pnow - c->particles_last_update;
+        c->particles_last_update = pnow;
+        if (dt < 0.0) dt = 0.0;
+        if (dt > 0.1) dt = 0.1;
+        if (dt > 0.0) particle_update(&c->particles, (float)dt);
     }
 
     /* Pump the audio engine once per frame (client_poll is the per-frame drain

@@ -8,6 +8,8 @@
 #include "raycast.h"
 #include "agent.h"
 #include "ui/ui.h"
+#include "client.h"          /* client_active_particles() — live particle pool */
+#include "particle_render.h" /* pure billboard expansion */
 #include <stdio.h>
 #include <string.h>
 
@@ -68,6 +70,7 @@ void renderer_draw_frame(Renderer* r,
     /* Per-frame outline state reset. Must happen before any
      * renderer_outline_emit_block call this frame. */
     r->outline_vert_count = 0;
+    r->particle_vert_count = 0;
     /* Per-frame perf counters (read back by the caller for the stats HUD). */
     r->stat_visible_chunks = 0;
     r->stat_culled_chunks  = 0;
@@ -96,6 +99,23 @@ void renderer_draw_frame(Renderer* r,
     ubo.ambient = 0.06f + 0.24f * day_brightness;
     ubo.underwater = underwater;
     memcpy(r->ubo_mapped[fi], &ubo, sizeof(ubo));
+
+    /* 4b. Build this frame's particle billboards from the client's live pool.
+     * Camera right/up are the first two rows of the view's rotation (column-major
+     * view matrix: right = column-extracted row 0, up = row 1), so the quads face
+     * the camera. The pure expander writes interleaved vertices straight into the
+     * mapped per-frame VB; the draw below binds it. No client pointer is threaded
+     * through main.c — we read the published live pool here. */
+    {
+        const ParticleSystem* ps = client_active_particles();
+        if (ps && ps->count > 0 && r->particle_vb_mapped[fi]) {
+            float cam_right[3] = { view[0][0], view[1][0], view[2][0] };
+            float cam_up[3]    = { view[0][1], view[1][1], view[2][1] };
+            size_t verts = particle_render_build(ps, cam_right, cam_up,
+                                                 (float*)r->particle_vb_mapped[fi]);
+            r->particle_vert_count = (uint32_t)verts;
+        }
+    }
 
     /* 5. Record command buffer */
     VkCommandBuffer cmd = r->command_buffers[fi];
@@ -250,6 +270,20 @@ void renderer_draw_frame(Renderer* r,
         VkDeviceSize off = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &r->outline_vb[fi], &off);
         vkCmdDraw(cmd, r->outline_vert_count, 1, 0, 0);
+        r->stat_draw_calls++;
+    }
+
+    /* Particle billboards: drawn last inside the world renderpass so they
+     * depth-test against world + mobs (depth-write off) and alpha-blend over
+     * them. Same descriptor set 0 (GlobalUBO view/proj) as the world pass. */
+    if (r->particle_vert_count > 0 && r->particle_pipeline) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r->particle_pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                r->particle_pipeline_layout, 0, 1,
+                                &r->descriptor_sets[fi], 0, NULL);
+        VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &r->particle_vb[fi], &off);
+        vkCmdDraw(cmd, r->particle_vert_count, 1, 0, 0);
         r->stat_draw_calls++;
     }
 

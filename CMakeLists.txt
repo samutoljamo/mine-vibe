@@ -127,6 +127,8 @@ compile_shader(${SHADER_DIR}/ui.vert)
 compile_shader(${SHADER_DIR}/ui.frag)
 compile_shader(${SHADER_DIR}/outline.vert)
 compile_shader(${SHADER_DIR}/outline.frag)
+compile_shader(${SHADER_DIR}/particle.vert)
+compile_shader(${SHADER_DIR}/particle.frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
 
 # ---- Executable ----
@@ -201,6 +203,7 @@ add_executable(minecraft
     src/smelting.c
     src/survival.c
     src/particle.c
+    src/particle_render.c
     src/raycast.c
     src/assets_generated.c
     src/shaders_generated.c
@@ -405,7 +408,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME lighting COMMAND test_lighting)
 
-add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c src/music.c src/audio_backend_null_msvc.c src/chunkwire.c src/chunk_reasm.c)
+add_executable(test_client tests/test_client.c tests/hud_stub.c src/client.c src/net.c src/reliable.c src/net_thread.c src/inventory.c src/item.c src/block.c src/audio.c src/music.c src/audio_backend_null_msvc.c src/chunkwire.c src/chunk_reasm.c src/particle.c)
 target_include_directories(test_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME client COMMAND test_client)
 target_link_libraries(test_client PRIVATE Threads::Threads cglm)
@@ -606,6 +609,17 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_particle PRIVATE m)
 endif()
 add_test(NAME particle COMMAND test_particle)
+
+# CPU billboard expansion for particle rendering (pure: life->alpha fade and
+# camera-facing quad geometry, no Vulkan/GLFW). The GPU upload/draw is in
+# renderer_frame.c and not unit-tested (GPU code).
+add_executable(test_particle_render
+    tests/test_particle_render.c src/particle_render.c src/particle.c)
+target_include_directories(test_particle_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_particle_render PRIVATE m)
+endif()
+add_test(NAME particle_render COMMAND test_particle_render)
 
 # Day/night cycle math (pure, no Vulkan/GLFW required)
 add_executable(test_daynight tests/test_daynight.c src/daynight.c)
@@ -817,6 +831,6 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_daynight test_village test_worldgen test_survival test_world_persist
           test_crafting test_smelting test_item test_mining test_armor test_combat test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
-          test_frustum test_chunkmap test_mob_model test_particle)
+          test_frustum test_chunkmap test_mob_model test_particle test_particle_render)
     msvc_enable_c11_atomics(${t})
 endforeach()

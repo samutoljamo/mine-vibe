@@ -721,6 +721,180 @@ void renderer_outline_emit_block(Renderer* r, int x, int y, int z)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Particle pipeline                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Each particle expands to 2 triangles = 6 vertices; each vertex is
+ * { vec3 pos, vec4 color, vec2 quad } = 9 floats. PARTICLE_MAX is 1024. */
+#define PARTICLE_VERT_FLOATS 9
+#define PARTICLE_MAX_VERTS   (1024 * 6)
+
+static bool create_particle_buffers(Renderer* r)
+{
+    VkBufferCreateInfo bci = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size  = (VkDeviceSize)PARTICLE_MAX_VERTS * sizeof(float) * PARTICLE_VERT_FLOATS,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    };
+    VmaAllocationCreateInfo aci = {
+        .usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+    };
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(r->allocator, &bci, &aci,
+                            &r->particle_vb[i], &r->particle_vb_alloc[i],
+                            &info) != VK_SUCCESS) {
+            fprintf(stderr, "Failed to create particle VB %d\n", i);
+            return false;
+        }
+        r->particle_vb_mapped[i] = info.pMappedData;
+    }
+    return true;
+}
+
+static bool create_particle_pipeline(Renderer* r)
+{
+    /* Vertex input: vec3 pos (loc0), vec4 color (loc1), vec2 quad (loc2). */
+    VkVertexInputBindingDescription bind = {
+        .binding   = 0,
+        .stride    = sizeof(float) * PARTICLE_VERT_FLOATS,
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    VkVertexInputAttributeDescription attrs[3] = {
+        { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,
+          .offset = 0 },
+        { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+          .offset = sizeof(float) * 3 },
+        { .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,
+          .offset = sizeof(float) * 7 },
+    };
+    VkPipelineVertexInputStateCreateInfo vi = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount   = 1, .pVertexBindingDescriptions   = &bind,
+        .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = attrs,
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo ia = {
+        .sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+
+    VkPipelineViewportStateCreateInfo vp = {
+        .sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1, .scissorCount = 1,
+    };
+
+    VkPipelineRasterizationStateCreateInfo rs = {
+        .sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode    = VK_CULL_MODE_NONE,   /* quads can face either winding */
+        .frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth   = 1.0f,
+    };
+
+    VkPipelineMultisampleStateCreateInfo ms = {
+        .sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = r->sample_count,
+    };
+
+    /* Depth-test against the scene so particles are occluded by world geometry,
+     * but don't write depth (they're translucent, order-independent enough). */
+    VkPipelineDepthStencilStateCreateInfo ds = {
+        .sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable  = VK_TRUE,
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp   = VK_COMPARE_OP_LESS,
+    };
+
+    /* Standard alpha blend (the frag shader pre-multiplies the round falloff
+     * into alpha). */
+    VkPipelineColorBlendAttachmentState cba = {
+        .blendEnable         = VK_TRUE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp        = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp        = VK_BLEND_OP_ADD,
+        .colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    VkPipelineColorBlendStateCreateInfo cb = {
+        .sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1, .pAttachments = &cba,
+    };
+
+    VkDynamicState dyn_states[] = {
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dyn = {
+        .sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2, .pDynamicStates = dyn_states,
+    };
+
+    /* Reuse the world descriptor set layout (binding 0 = GlobalUBO); the
+     * particle shaders only read view/proj from it. */
+    VkPipelineLayoutCreateInfo pl_ci = {
+        .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1, .pSetLayouts = &r->descriptor_set_layout,
+    };
+    if (vkCreatePipelineLayout(r->device, &pl_ci, NULL,
+                               &r->particle_pipeline_layout) != VK_SUCCESS) {
+        fprintf(stderr, "Failed to create particle pipeline layout\n");
+        return false;
+    }
+
+    VkShaderModule vs_mod = pipeline_create_shader_module(r->device,
+        g_particle_vert_spv, g_particle_vert_spv_size);
+    VkShaderModule fs_mod = pipeline_create_shader_module(r->device,
+        g_particle_frag_spv, g_particle_frag_spv_size);
+    if (vs_mod == VK_NULL_HANDLE || fs_mod == VK_NULL_HANDLE) {
+        if (vs_mod) vkDestroyShaderModule(r->device, vs_mod, NULL);
+        if (fs_mod) vkDestroyShaderModule(r->device, fs_mod, NULL);
+        vkDestroyPipelineLayout(r->device, r->particle_pipeline_layout, NULL);
+        r->particle_pipeline_layout = VK_NULL_HANDLE;
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+          .stage  = VK_SHADER_STAGE_VERTEX_BIT, .module = vs_mod, .pName = "main" },
+        { .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+          .stage  = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs_mod, .pName = "main" },
+    };
+
+    VkGraphicsPipelineCreateInfo gp_ci = {
+        .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount          = 2, .pStages = stages,
+        .pVertexInputState   = &vi,
+        .pInputAssemblyState = &ia,
+        .pViewportState      = &vp,
+        .pRasterizationState = &rs,
+        .pMultisampleState   = &ms,
+        .pDepthStencilState  = &ds,
+        .pColorBlendState    = &cb,
+        .pDynamicState       = &dyn,
+        .layout              = r->particle_pipeline_layout,
+        .renderPass          = r->render_pass,
+        .subpass             = 0,
+    };
+
+    VkResult res = vkCreateGraphicsPipelines(r->device, VK_NULL_HANDLE, 1,
+                                             &gp_ci, NULL, &r->particle_pipeline);
+    vkDestroyShaderModule(r->device, vs_mod, NULL);
+    vkDestroyShaderModule(r->device, fs_mod, NULL);
+
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "Failed to create particle pipeline\n");
+        vkDestroyPipelineLayout(r->device, r->particle_pipeline_layout, NULL);
+        r->particle_pipeline_layout = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Framebuffer resize callback                                       */
 /* ------------------------------------------------------------------ */
 
@@ -1098,6 +1272,12 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
     if (!create_outline_pipeline(r))
         return false;
 
+    /* --- Particle pipeline + per-frame VBs --- */
+    if (!create_particle_buffers(r))
+        return false;
+    if (!create_particle_pipeline(r))
+        return false;
+
     /* --- Framebuffer resize callback --- */
     glfwSetWindowUserPointer(window, r);
     glfwSetFramebufferSizeCallback(window, framebuffer_resize_cb);
@@ -1380,6 +1560,16 @@ void renderer_cleanup(Renderer* r)
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         if (r->outline_vb[i])
             vmaDestroyBuffer(r->allocator, r->outline_vb[i], r->outline_vb_alloc[i]);
+    }
+
+    /* Particle pipeline + per-frame VBs */
+    if (r->particle_pipeline)
+        vkDestroyPipeline(r->device, r->particle_pipeline, NULL);
+    if (r->particle_pipeline_layout)
+        vkDestroyPipelineLayout(r->device, r->particle_pipeline_layout, NULL);
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (r->particle_vb[i])
+            vmaDestroyBuffer(r->allocator, r->particle_vb[i], r->particle_vb_alloc[i]);
     }
 
     /* Player placeholder mesh */

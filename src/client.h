@@ -27,6 +27,7 @@
 #include "mob.h"
 #include "chunk_reasm.h"
 #include "weather.h"   /* WeatherKind — server-authoritative weather sync */
+#include "particle.h"  /* client-owned CPU particle pool, rendered by the GPU */
 
 typedef enum {
     CLIENT_DISCONNECTED,
@@ -150,6 +151,14 @@ typedef struct {
      * only receives + stores it (no rendering here). Defaults to CLEAR. */
     WeatherKind weather_kind;
     float       weather_time_left;
+
+    /* Client-owned CPU particle pool for short-lived visual debris (block-break
+     * bursts, etc). client_poll integrates it each frame (particle_update) and
+     * emits into it on gameplay events (PKT_BLOCK_CHANGE). The renderer reads
+     * the live pool via client_active_particles() and uploads it to a GPU vertex
+     * buffer each frame — so no main.c plumbing is needed to draw it. */
+    ParticleSystem particles;
+    double         particles_last_update;  /* net_time() of last integrate */
 } Client;
 
 void client_init(Client* c, NetThread* net,
@@ -265,6 +274,12 @@ uint32_t client_estimate_world_ticks(const Client* c);
  * weather_is_raining/weather_rain_intensity still work on it. The future
  * rain-render step reads this. Defaults to CLEAR before the first packet. */
 WeatherState client_get_weather(const Client* c);
+
+/* Returns the live particle pool of the most recently initialized client, or
+ * NULL when no client is active. Lets the renderer upload + draw particles each
+ * frame without threading a Client pointer through main.c. The pointer is owned
+ * by the Client; valid only between client_init and client_destroy. */
+const ParticleSystem* client_active_particles(void);
 
 void client_disconnect(Client* c);
 
