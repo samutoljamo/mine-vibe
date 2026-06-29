@@ -56,6 +56,14 @@ typedef enum {
                                * short decaying positional nudge — the local
                                * player owns its position, so server knockback
                                * has to be sent rather than ride snapshots (v13).*/
+    PKT_WEATHER         = 26, /* server → all: authoritative weather state —
+                               * {u8 kind, f32 time_left}. The server owns the
+                               * WeatherState (rng stays server-side) and ticks
+                               * it; this is broadcast on every weather KIND
+                               * transition, sent once to a client shortly after
+                               * it joins (late-joiner sync), and re-broadcast at
+                               * a low frequency for resync. Clients store the
+                               * {kind,time_left} for the rain-render step (v14). */
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -67,7 +75,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 13   /* 13: added PKT_KNOCKBACK (server→client melee/contact shove impulse) */
+#define NET_PROTOCOL_VERSION 14   /* 14: added PKT_WEATHER (server→all authoritative weather sync) */
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -1095,6 +1103,46 @@ static inline int net_parse_knockback(const uint8_t* buf, size_t len,
     *dx = net_reader_f32(&r);
     *dy = net_reader_f32(&r);
     *dz = net_reader_f32(&r);
+    return net_reader_ok(&r);
+}
+
+/* ------------------------------------------------------------------ */
+/*  PKT_WEATHER — server → all, 13 wire bytes (8 header + u8 + f32).   */
+/*                                                                     */
+/*  Authoritative weather sync. The server owns a WeatherState and     */
+/*  ticks it (the rng stays server-side and is NOT sent); only the     */
+/*  observable {kind, time_left} crosses the wire. `kind` is a         */
+/*  WeatherKind (0 clear / 1 rain / 2 storm) carried as a u8.          */
+/*  Broadcast on every weather KIND transition, sent once to a late    */
+/*  joiner so it starts in sync, and re-broadcast at a low frequency   */
+/*  for resync. Sent reliably so a transition isn't silently lost.     */
+/* ------------------------------------------------------------------ */
+static inline size_t net_write_weather(uint8_t* buf, const PacketHeader* hdr,
+                                       uint8_t kind, float time_left) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_u8(buf, &off, kind);
+    net_write_float(buf, &off, time_left);
+    return off;
+}
+
+static inline void net_read_weather(const uint8_t* buf, PacketHeader* hdr,
+                                    uint8_t* kind, float* time_left) {
+    size_t off = 0;
+    net_read_header(buf, &off, hdr);
+    *kind = net_read_u8(buf, &off);
+    *time_left = net_read_float(buf, &off);
+}
+
+/* Bounds-checked parse (13 wire bytes). Returns 1 only if both fields were
+ * present; on a short buffer returns 0 and never over-reads. */
+static inline int net_parse_weather(const uint8_t* buf, size_t len,
+                                    PacketHeader* hdr,
+                                    uint8_t* kind, float* time_left) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *kind = net_reader_u8(&r);
+    *time_left = net_reader_f32(&r);
     return net_reader_ok(&r);
 }
 

@@ -100,6 +100,8 @@ _Static_assert(SERVER_STREAM_MAX_FRAGS <= RELIABLE_WINDOW,
 
 /* Forward decl: armour snapshot is sent on connect (before its definition). */
 static void server_send_armor(Server* s, ServerClient* c);
+/* Forward decl: weather snapshot is sent on connect (before its definition). */
+static void server_send_weather(Server* s, ServerClient* c);
 
 static ServerClient* find_client_by_addr(Server* s,
                                            const struct sockaddr_in* addr)
@@ -312,6 +314,8 @@ static void handle_connect_request(Server* s, const struct sockaddr_in* addr,
 
     /* Initial state snapshots for the new client (armour starts empty). */
     server_send_armor(s, c);
+    /* Sync the late-joiner to the authoritative weather phase. */
+    server_send_weather(s, c);
 }
 
 /* Keepalive ping from a client: refresh its liveness timer (so SERVER_TIMEOUT
@@ -427,6 +431,29 @@ static void server_send_armor(Server* s, ServerClient* c) {
     size_t  len = net_write_armor(buf, &h, worn,
                                   (uint8_t)server_armor_points(c));
     send_reliable(s, c, buf, (uint16_t)len);
+}
+
+/* Send the current authoritative weather state to a single client (used to sync
+ * a late-joiner so it starts in the right phase). */
+static void server_send_weather(Server* s, ServerClient* c) {
+    PacketHeader h = { .type = PKT_WEATHER, .player_id = 0 };
+    uint8_t buf[32];
+    size_t  len = net_write_weather(buf, &h, (uint8_t)s->weather.kind,
+                                    s->weather.time_left);
+    send_reliable(s, c, buf, (uint16_t)len);
+}
+
+/* Broadcast the current authoritative weather state to every connected client
+ * (used on a KIND transition and for the low-frequency resync). */
+static void server_broadcast_weather(Server* s) {
+    PacketHeader h = { .type = PKT_WEATHER, .player_id = 0 };
+    uint8_t buf[32];
+    size_t  len = net_write_weather(buf, &h, (uint8_t)s->weather.kind,
+                                    s->weather.time_left);
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        if (!s->clients[i].active) continue;
+        send_reliable(s, &s->clients[i], buf, (uint16_t)len);
+    }
 }
 
 /* Equip the armour item held in inventory slot `slot` into its body slot.
@@ -1616,6 +1643,24 @@ static void server_tick(Server* s, int tick_num)
      * takes it modulo DAY_LENGTH_TICKS. */
     s->world_ticks++;
 
+    /* Advance the authoritative weather. The rng stays server-side and is
+     * never sent; only {kind,time_left} is broadcast. On a KIND transition
+     * push the new phase to all clients immediately; otherwise re-broadcast at
+     * a low frequency (resync for any client that missed a transition). */
+    {
+        const float dt = 1.0f / SERVER_TICK_RATE;
+        weather_tick(&s->weather, dt);
+        s->weather_resync_timer += dt;
+        if (s->weather.kind != s->weather_last_kind) {
+            s->weather_last_kind = s->weather.kind;
+            s->weather_resync_timer = 0.0f;
+            server_broadcast_weather(s);
+        } else if (s->weather_resync_timer >= 30.0f) {
+            s->weather_resync_timer = 0.0f;
+            server_broadcast_weather(s);
+        }
+    }
+
     /* Compute once per tick; shared by terrain streaming (here) and mob
      * simulation/spawning (Task 5). */
     vec3 anchor;
@@ -1800,6 +1845,12 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
     atomic_store(&g_server_save_req, false);
 
     s.seed  = seed;
+
+    /* Server-authoritative weather, seeded from the world seed so the timeline
+     * is deterministic per world. The rng lives here and is never sent. */
+    weather_init(&s.weather, (uint32_t)seed);
+    s.weather_last_kind   = s.weather.kind;
+    s.weather_resync_timer = 0.0f;
 
     /* Start the world at noon (phase 0.25) so a fresh server begins in
      * full daylight rather than mid-transition. */

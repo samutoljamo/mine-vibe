@@ -260,6 +260,28 @@ static void test_knockback_roundtrip(void) {
     printf("PASS: knockback_roundtrip\n");
 }
 
+static void test_weather_roundtrip(void) {
+    uint8_t buf[64];
+    PacketHeader hdr = { .type = PKT_WEATHER, .player_id = 0 };
+    size_t off = net_write_weather(buf, &hdr, 1 /*RAIN*/, 123.5f);
+    assert(off == HEADER_WIRE_SIZE + 1 + 4);
+
+    PacketHeader h; uint8_t kind; float time_left;
+    net_read_weather(buf, &h, &kind, &time_left);
+    assert(h.type == PKT_WEATHER);
+    assert(kind == 1 && time_left == 123.5f);
+
+    /* Bounds-checked parse: full packet ok, every truncation rejected. */
+    PacketHeader rh; uint8_t rkind; float rtl;
+    assert(net_parse_weather(buf, off, &rh, &rkind, &rtl));
+    assert(rh.type == PKT_WEATHER && rkind == 1 && rtl == 123.5f);
+    for (size_t L = 0; L < off; L++) {
+        uint8_t* t = malloc(L ? L : 1); memcpy(t, buf, L);
+        assert(!net_parse_weather(t, L, &rh, &rkind, &rtl)); free(t);
+    }
+    printf("PASS: weather_roundtrip\n");
+}
+
 static void test_container_open_roundtrip(void) {
     uint8_t buf[64];
     PacketHeader hdr = { .type = PKT_CONTAINER_OPEN, .player_id = 2 };
@@ -1114,6 +1136,7 @@ int main(void)
     test_craft_roundtrip();
     test_eat_roundtrip();
     test_knockback_roundtrip();
+    test_weather_roundtrip();
     test_container_open_roundtrip();
     test_container_action_roundtrip();
     test_container_state_roundtrip();

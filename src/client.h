@@ -26,6 +26,7 @@
 #include "inventory.h"
 #include "mob.h"
 #include "chunk_reasm.h"
+#include "weather.h"   /* WeatherKind — server-authoritative weather sync */
 
 typedef enum {
     CLIENT_DISCONNECTED,
@@ -141,6 +142,14 @@ typedef struct {
      * Accumulated so several hits in one frame stack instead of clobbering. */
     bool  kb_pending;
     float kb_dx, kb_dy, kb_dz;
+
+    /* Server-authoritative weather, mirrored from PKT_WEATHER (the rng stays
+     * server-side and is never sent). Updated on every transition broadcast,
+     * the initial late-joiner sync, and the periodic resync. The rain-render
+     * step (a separate ticket) reads this via client_get_weather(); this client
+     * only receives + stores it (no rendering here). Defaults to CLEAR. */
+    WeatherKind weather_kind;
+    float       weather_time_left;
 } Client;
 
 void client_init(Client* c, NetThread* net,
@@ -250,6 +259,12 @@ void client_set_chunk_unload_cb(Client* c, ClientChunkUnloadCb cb, void* user);
  * directly) to drive the sky so it animates between packets and rides through
  * dropped ones. Re-anchors on every PKT_WORLD_STATE; safe across u32 wrap. */
 uint32_t client_estimate_world_ticks(const Client* c);
+
+/* Last server-reported weather state (PKT_WEATHER). The rng is server-side and
+ * not synced, so the returned WeatherState carries {kind,time_left} with rng=0;
+ * weather_is_raining/weather_rain_intensity still work on it. The future
+ * rain-render step reads this. Defaults to CLEAR before the first packet. */
+WeatherState client_get_weather(const Client* c);
 
 void client_disconnect(Client* c);
 
