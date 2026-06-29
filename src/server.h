@@ -137,7 +137,7 @@ void server_run(uint16_t port, int max_clients, int seed, const char* save_path)
  * drives its own pipeline). */
 void server_run_ex(uint16_t port, int max_clients, int seed,
                    const char* save_path, Renderer* renderer,
-                   int render_distance);
+                   int render_distance, GameMode gamemode);
 
 /* Returns the server's authoritative World* once the server loop has created
  * it, or NULL before that (and after teardown). Thread-safe; the host spins on
