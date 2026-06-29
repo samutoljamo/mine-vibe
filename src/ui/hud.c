@@ -5,7 +5,9 @@
 #include "../item.h"
 #include "../net.h"        /* ContainerStatePacket + CONTAINER_NET_* tags */
 #include "../smelting.h"   /* SMELT_TICKS_PER_ITEM for the cook arrow */
+#include "../survival.h"   /* SURVIVAL_MAX_HEALTH for the low-health threshold */
 #include <stdio.h>
+#include <math.h>
 
 #define SLOT_SIZE   40
 #define SLOT_GAP     4
@@ -48,17 +50,53 @@ void hud_set_survival(int food, int air)
 #define HUD_HURT_FLASH_SEC 0.35f
 static float g_hurt_flash = 0.0f;
 
+/* Free-running clock (seconds) advanced by hud_tick. Drives the persistent
+ * low-health pulse so it breathes independently of the transient hurt flash. */
+static float g_hud_time = 0.0f;
+
+/* Latched "player eyes submerged" flag. Set from main.c each frame (deferred
+ * one-liner; hud_build's signature can't grow an in_water param). When true,
+ * hud_build paints a blue full-screen tint. */
+static bool g_hud_underwater = false;
+
 void hud_trigger_hurt_flash(void)
 {
     g_hurt_flash = 1.0f;
 }
 
+void hud_set_underwater(bool underwater)
+{
+    g_hud_underwater = underwater;
+}
+
 void hud_tick(float dt)
 {
+    if (dt > 0.0f) g_hud_time += dt;
     if (g_hurt_flash > 0.0f) {
         g_hurt_flash -= dt / HUD_HURT_FLASH_SEC;
         if (g_hurt_flash < 0.0f) g_hurt_flash = 0.0f;
     }
+}
+
+/* Pure: low-health overlay intensity (0 above threshold, ramps to 1 at 0 HP). */
+float hud_low_health_intensity(int health, int max_health)
+{
+    if (max_health <= 0) return 0.0f;
+    if (health < 0) health = 0;
+    float frac = (float)health / (float)max_health;   /* 0..1 health fraction */
+    if (frac >= HUD_LOW_HEALTH_FRAC) return 0.0f;
+    /* Linear ramp: 0 at the threshold, 1 at 0 HP. */
+    float t = 1.0f - (frac / HUD_LOW_HEALTH_FRAC);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t;
+}
+
+/* Pure: raised-cosine pulse in [0,1] at HUD_LOW_HEALTH_PULSE_HZ. */
+float hud_pulse_factor(float t)
+{
+    float w = 6.28318530717958647692f * HUD_LOW_HEALTH_PULSE_HZ * t;
+    return 0.5f - 0.5f * cosf(w);
 }
 
 /* Eat progress: 0 = not eating, (0,1] = fraction of the eat hold elapsed. The
@@ -732,6 +770,36 @@ static void hud_draw_hurt_flash(float sw, float sh)
     ui_rect(sw - bandx,   0,            bandx, sh,   red);   /* right  */
 }
 
+/* Persistent low-health vignette: a pulsing red screen-edge frame while health
+ * is at/under the threshold. Distinct from the transient hurt flash — this one
+ * stays up and breathes (via the hud_tick clock) the whole time the player is
+ * low, and its strength scales as health drops toward 0. Center stays clear. */
+static void hud_draw_low_health(int player_health, float sw, float sh)
+{
+    float intensity = hud_low_health_intensity(player_health, SURVIVAL_MAX_HEALTH);
+    if (intensity <= 0.0f) return;
+    /* Pulse between ~55% and 100% of the intensity-scaled peak so it never
+     * fully vanishes while low (always a visible warning) but still breathes. */
+    float pulse = 0.55f + 0.45f * hud_pulse_factor(g_hud_time);
+    float a = intensity * pulse * 0.5f;   /* peak alpha ~0.5 at 0 HP */
+    vec4 red = { 0.7f, 0.0f, 0.0f, a };
+    float band  = sh * 0.20f;
+    float bandx = sw * 0.15f;
+    ui_rect(0,          0,         sw,    band, red);   /* top    */
+    ui_rect(0,          sh - band, sw,    band, red);   /* bottom */
+    ui_rect(0,          0,         bandx, sh,   red);   /* left   */
+    ui_rect(sw - bandx, 0,         bandx, sh,   red);   /* right  */
+}
+
+/* Underwater tint: a flat blue overlay across the whole screen while the
+ * player's eyes are submerged (latched via hud_set_underwater from main.c). */
+static void hud_draw_underwater(float sw, float sh)
+{
+    if (!g_hud_underwater) return;
+    vec4 blue = { 0.06f, 0.22f, 0.45f, 0.30f };
+    ui_rect(0, 0, sw, sh, blue);
+}
+
 /* Small eating-progress nibble: a thin bar centred just above the hotbar that
  * fills as the eat hold completes. Drawn only while actively eating (progress in
  * (0,1)); the full bar disappears the moment the eat fires. */
@@ -766,6 +834,10 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
      * doesn't sit under the dim. */
     if (screen == GAME_PLAYING) {
         hud_draw_crosshair(sw, sh);
+        /* Underwater tint sits behind the damage vignettes so red hurt cues
+         * still read clearly through the blue while submerged. */
+        hud_draw_underwater(sw, sh);
+        hud_draw_low_health(player_health, sw, sh);
         hud_draw_hurt_flash(sw, sh);
         hud_draw_eat_progress(sw, sh);
     }

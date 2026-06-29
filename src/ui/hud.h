@@ -300,9 +300,38 @@ void    hud_set_survival(int food, int air);
  * player's health drops. Idempotent (re-arming just restarts the fade). */
 void    hud_trigger_hurt_flash(void);
 
-/* Advance time-based HUD effects (currently the hurt flash) by dt seconds.
- * Called once per frame from the main loop. */
+/* Advance time-based HUD effects (hurt flash decay + the low-health pulse
+ * clock) by dt seconds. Called once per frame from the main loop. */
 void    hud_tick(float dt);
+
+/* ------------------------------------------------------------------ */
+/*  Persistent screen feedback (low-health pulse / underwater tint)     */
+/* ------------------------------------------------------------------ */
+
+/* Health fraction at/under which the persistent low-health pulse vignette
+ * kicks in (0.25 => 25% => 5 of 20 HP). */
+#define HUD_LOW_HEALTH_FRAC  0.25f
+
+/* Pulse rate (cycles/second) of the low-health vignette. */
+#define HUD_LOW_HEALTH_PULSE_HZ  1.8f
+
+/* Low-health overlay intensity in [0,1] for a given health/max. Returns 0 at
+ * or above the HUD_LOW_HEALTH_FRAC threshold and ramps linearly to 1 as health
+ * falls to 0 (clamped). A non-positive `max` yields 0 (never NaN/negative).
+ * Pure; drives the persistent low-health vignette alpha and is unit-tested. */
+float   hud_low_health_intensity(int health, int max_health);
+
+/* Pulse factor in [0,1] for a monotonically increasing time `t` (seconds).
+ * A raised-cosine at HUD_LOW_HEALTH_PULSE_HZ so the low-health vignette
+ * breathes rather than blinks. Pure; unit-tested. */
+float   hud_pulse_factor(float t);
+
+/* Latch whether the local player's eyes are submerged in a fluid (water). When
+ * true, hud_build draws a blue full-screen tint. main.c is expected to call
+ * this each frame from the player/camera state (deferred one-liner: hud.c does
+ * not receive an in-water flag through hud_build's fixed signature). Defaults
+ * to false. */
+void    hud_set_underwater(bool underwater);
 
 /* Latch the current eating progress (0 = not eating, (0,1] = fraction of the
  * eat hold elapsed) so hud_build can draw a progress nibble above the hotbar.
