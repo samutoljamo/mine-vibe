@@ -368,6 +368,51 @@ static void test_bar_fill_fraction(void)
     printf("PASS: test_bar_fill_fraction\n");
 }
 
+static void test_low_health_intensity(void)
+{
+    /* At/above the threshold (25% of 20 = 5 HP) there is no low-health pulse. */
+    assert(hud_low_health_intensity(20, 20) == 0.0f && "full health => 0");
+    assert(hud_low_health_intensity(10, 20) == 0.0f && "half health => 0");
+    assert(hud_low_health_intensity(6, 20)  == 0.0f && "just above threshold => 0");
+    assert(hud_low_health_intensity(5, 20)  == 0.0f && "at threshold => 0");
+    /* Below the threshold it ramps up as health drops toward 0. */
+    float i4 = hud_low_health_intensity(4, 20);
+    float i2 = hud_low_health_intensity(2, 20);
+    float i1 = hud_low_health_intensity(1, 20);
+    assert(i4 > 0.0f && i4 < 1.0f && "below threshold ramps in (0,1)");
+    assert(i2 > i4 && "intensity increases as health drops");
+    assert(i1 > i2 && "intensity increases as health drops");
+    /* At/below 0 HP it saturates at 1. */
+    assert(hud_low_health_intensity(0, 20)  == 1.0f && "0 HP => full intensity");
+    assert(hud_low_health_intensity(-5, 20) == 1.0f && "negative clamps to 1");
+    /* Degenerate max never produces NaN / out-of-range. */
+    assert(hud_low_health_intensity(5, 0)  == 0.0f && "zero max => 0");
+    assert(hud_low_health_intensity(5, -3) == 0.0f && "negative max => 0");
+    /* Monotonic non-increasing in health. */
+    float prev = 2.0f;
+    for (int h = 0; h <= 20; h++) {
+        float v = hud_low_health_intensity(h, 20);
+        assert(v >= 0.0f && v <= 1.0f && "intensity stays in [0,1]");
+        assert(v <= prev && "intensity is non-increasing as health rises");
+        prev = v;
+    }
+    printf("PASS: test_low_health_intensity\n");
+}
+
+static void test_pulse_factor(void)
+{
+    /* Pulse oscillates in [0,1] regardless of time. */
+    for (float t = 0.0f; t < 10.0f; t += 0.123f) {
+        float p = hud_pulse_factor(t);
+        assert(p >= 0.0f && p <= 1.0f && "pulse stays in [0,1]");
+    }
+    /* Periodicity: the pulse repeats over its period (2*pi/freq). */
+    float a = hud_pulse_factor(0.0f);
+    float b = hud_pulse_factor((float)(2.0 * 3.14159265358979 / HUD_LOW_HEALTH_PULSE_HZ));
+    assert(fabsf(a - b) < 0.01f && "pulse is periodic");
+    printf("PASS: test_pulse_factor\n");
+}
+
 static void test_chest_slot_layout(void)
 {
     float sw = 1280.0f, sh = 720.0f;
@@ -596,6 +641,8 @@ int main(void)
     test_inventory_slot_layout();
     test_hotbar_slot_layout();
     test_bar_fill_fraction();
+    test_low_health_intensity();
+    test_pulse_factor();
     test_chest_slot_layout();
     test_furnace_slot_layout();
     test_furnace_progress_fill();
