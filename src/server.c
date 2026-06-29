@@ -1819,12 +1819,14 @@ static void server_tick(Server* s, int tick_num)
 
 void server_run(uint16_t port, int max_clients, int seed, const char* save_path)
 {
-    server_run_ex(port, max_clients, seed, save_path, NULL, 0);
+    /* Convenience wrapper / dedicated-headless default: survival, so existing
+     * behaviour is unchanged for callers without a loaded WorldMeta. */
+    server_run_ex(port, max_clients, seed, save_path, NULL, 0, GAMEMODE_SURVIVAL);
 }
 
 void server_run_ex(uint16_t port, int max_clients, int seed,
                    const char* save_path, Renderer* renderer,
-                   int render_distance)
+                   int render_distance, GameMode gamemode)
 {
     int fd = net_socket_server(port);
     if (fd < 0) { fprintf(stderr, "[server] bind failed on port %d\n", port); return; }
@@ -1843,6 +1845,11 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
     s.running     = true;
     atomic_store(&g_server_stop, false);   /* reset for a clean (re)start */
     atomic_store(&g_server_save_req, false);
+
+    /* Deliver the world's game mode BEFORE the first tick so creative worlds
+     * take zero damage from the very first server_tick (gamemode_allows_damage
+     * gates all player damage in server_tick). */
+    server_set_gamemode(&s, gamemode);
 
     s.seed  = seed;
 

@@ -336,12 +336,13 @@ typedef struct {
     Renderer* renderer;        /* host shared-world: server creates the world
                                 * with this renderer; NULL -> headless server   */
     int       render_distance; /* client render distance for the shared world   */
+    GameMode  gamemode;        /* world's mode; gates all player damage server-side */
 } ServerArgs;
 static void* server_thread_func(void* arg)
 {
     ServerArgs* a = (ServerArgs*)arg;
     server_run_ex(a->port, a->max, a->seed, a->save_path,
-                  a->renderer, a->render_distance);
+                  a->renderer, a->render_distance, a->gamemode);
     free(a);
     return NULL;
 }
@@ -474,6 +475,7 @@ int main(int argc, char *argv[])
      * the player quits (clean restart) and relaunches. */
     int  session_seed = WORLD_SEED;
     char session_path[WORLDSAVE_PATH_MAX] = {0};   /* empty -> legacy world.dat */
+    GameMode session_gamemode = GAMEMODE_SURVIVAL; /* per-world; survival default */
     bool want_quit = false;
 
     /* A valid (placeholder) player so the world-selection menu can build a view
@@ -541,6 +543,7 @@ int main(int argc, char *argv[])
                 worldsave_write_meta(&m);   /* creates saves/<name>/ + meta */
                 session_seed = sd;
                 worldsave_dat_path(m.name, session_path, sizeof(session_path));
+                session_gamemode = m.gamemode;
                 chosen = true;
             } else if (hit == HUD_ID_LOAD_WORLD) {
                 hud_set_menu_page(MENU_PAGE_LOAD);
@@ -554,6 +557,7 @@ int main(int argc, char *argv[])
                 WorldMeta* m = &list.entries[hit - HUD_ID_WORLD0];
                 session_seed = m->seed;
                 worldsave_dat_path(m->name, session_path, sizeof(session_path));
+                session_gamemode = m->gamemode;
                 /* Bump recency so it floats to the top next time. */
                 m->last_played += 1;
                 worldsave_write_meta(m);
@@ -600,6 +604,7 @@ int main(int argc, char *argv[])
          * thread will not drive world_update; this (render) thread does. */
         sargs->renderer        = &renderer;
         sargs->render_distance = gfx.render_distance;
+        sargs->gamemode        = session_gamemode;
         pt_thread_create(&server_thread, server_thread_func, sargs);
         /* Give server 200ms to bind before client tries to connect */
         pt_sleep_ms(200);
