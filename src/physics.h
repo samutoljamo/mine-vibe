@@ -46,4 +46,20 @@ PhysicsResult physics_move_q(vec3 pos, vec3 vel, float half_w, float height,
 bool physics_check_water_q(vec3 pos, float half_w, float height,
                            BlockQueryFn query, void* ctx);
 
+/* Column-query callback for spawn-safety: returns the BlockID at integer
+ * world-y in a single (fixed x,z) column. ctx is passed straight through. */
+typedef BlockID (*ColumnQueryFn)(int y, void* ctx);
+
+/* Pure spawn-safety helper. Scans DOWN from top_y to base_y looking for the
+ * first solid surface that has at least two air cells of headroom directly
+ * above it, and returns the feet-Y at which the player stands ON that surface
+ * (i.e. solid_y + 1). This guarantees the player spawns resting on ground with
+ * room for the 1.8-tall hitbox rather than mid-air (where they'd fall) or
+ * embedded in terrain.
+ *
+ * Returns base_y + 1 as a safe fallback if no qualifying surface is found
+ * (caller never gets a Y that drops below the scanned column base). */
+int physics_safe_spawn_y(int top_y, int base_y,
+                         ColumnQueryFn query, void* ctx);
+
 #endif

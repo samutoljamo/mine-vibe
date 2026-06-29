@@ -68,9 +68,22 @@ static void sweep_axis(vec3 pos, vec3 vel, float half_w, float height,
     }
 }
 
-/* Sub-step sweep to prevent tunneling when |delta| > 1 block.
- * At terminal velocity (78.4 m/s) a single tick moves 1.3 blocks,
- * enough to skip through a 1-block-thick floor without sub-stepping. */
+/* Maximum displacement applied in a single collision sub-step. Kept strictly
+ * below the 1-block slab thickness AND below the collision margin (half a
+ * block) so that no sub-step can ever straddle a 1-block-thick obstacle: every
+ * solid slab in the path is intersected by at least one sub-step's resulting
+ * AABB and gets resolved, instead of being skipped between start and end.
+ *
+ * This is the standard voxel anti-tunneling guarantee. Without it, a long fall
+ * (terminal velocity ~78 m/s) or a single big-dt frame hitch can move the
+ * player several blocks at once and pass straight through terrain — the
+ * symptom of bug 01h.1 (player falls through the world and dies). */
+#define PHYSICS_MAX_SUBSTEP 0.45f
+
+/* Sub-step sweep to prevent tunneling when |delta| exceeds the sub-step cap.
+ * Loops, consuming the full per-frame displacement in capped chunks and
+ * resolving collision each chunk, until the displacement is spent or a
+ * collision zeroes the velocity on this axis. */
 static void sweep_axis_substepped(vec3 pos, vec3 vel, float half_w, float height,
                                   int axis, float total_delta,
                                   BlockQueryFn query, void* ctx,
@@ -79,8 +92,8 @@ static void sweep_axis_substepped(vec3 pos, vec3 vel, float half_w, float height
     float remaining = total_delta;
     while (fabsf(remaining) > 0.0001f) {
         float step = remaining;
-        if (fabsf(step) > 0.999f)
-            step = (remaining > 0.0f) ? 0.999f : -0.999f;
+        if (fabsf(step) > PHYSICS_MAX_SUBSTEP)
+            step = (remaining > 0.0f) ? PHYSICS_MAX_SUBSTEP : -PHYSICS_MAX_SUBSTEP;
         sweep_axis(pos, vel, half_w, height, axis, step, query, ctx, on_ground);
         remaining -= step;
         if (vel[axis] == 0.0f) break; /* velocity zeroed by collision */
@@ -169,4 +182,23 @@ bool physics_check_water_q(vec3 pos, float half_w, float height,
             return true;
     }
     return false;
+}
+
+int physics_safe_spawn_y(int top_y, int base_y,
+                         ColumnQueryFn query, void* ctx)
+{
+    /* Scan down for the first solid cell whose two cells above are both air:
+     * the player's 1.8-tall hitbox needs ~2 cells of clearance to stand. The
+     * feet then rest on top of that solid cell (solid_y + 1). */
+    for (int y = top_y; y >= base_y; y--) {
+        if (!block_is_solid(query(y, ctx)))
+            continue;
+        /* Found a solid surface; require air headroom directly above it. */
+        if (!block_is_solid(query(y + 1, ctx)) &&
+            !block_is_solid(query(y + 2, ctx)))
+            return y + 1;
+        /* Headroom blocked (overhang/cave ceiling) — keep falling. */
+    }
+    /* Nothing standable in range: stand on the column base as a safe floor. */
+    return base_y + 1;
 }
