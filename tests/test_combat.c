@@ -155,6 +155,38 @@ static void test_damage_never_negative(void) {
     printf("PASS: damage_never_negative\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  armor_durability_loss — per-hit wear each worn piece takes          */
+/* ------------------------------------------------------------------ */
+
+static void test_durability_loss_min_one(void) {
+    /* Any real blow costs at least one point of durability per worn piece,
+     * even a tiny hit. */
+    assert(armor_durability_loss(1) == 1);
+    assert(armor_durability_loss(2) == 1);
+    assert(armor_durability_loss(3) == 1);
+    assert(armor_durability_loss(4) == 1);
+    printf("PASS: durability_loss_min_one\n");
+}
+
+static void test_durability_loss_scales(void) {
+    /* Vanilla rule: floor(damage/4), with a floor of 1 on a real blow. */
+    assert(armor_durability_loss(8)  == 2);
+    assert(armor_durability_loss(12) == 3);
+    assert(armor_durability_loss(20) == 5);
+    /* Monotonic non-decreasing in damage. */
+    assert(armor_durability_loss(20) >= armor_durability_loss(8));
+    printf("PASS: durability_loss_scales\n");
+}
+
+static void test_durability_loss_zero_damage(void) {
+    /* Zero/negative (non-)damage events cost no durability — armour only
+     * wears when a real blow lands. */
+    assert(armor_durability_loss(0)  == 0);
+    assert(armor_durability_loss(-5) == 0);
+    printf("PASS: durability_loss_zero_damage\n");
+}
+
 int main(void) {
     test_fist_is_baseline();
     test_tools_beat_fist();
@@ -167,6 +199,9 @@ int main(void) {
     test_more_pieces_reduce_more();
     test_full_set_caps_reduction();
     test_damage_never_negative();
+    test_durability_loss_min_one();
+    test_durability_loss_scales();
+    test_durability_loss_zero_damage();
     printf("test_combat: all passed\n");
     return 0;
 }

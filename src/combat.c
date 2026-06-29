@@ -77,3 +77,9 @@ int armor_damage_reduction(const ItemId armor[ARMOR_SLOT_COUNT], int raw_damage)
     int points = armor_points_total(armor);
     return damage_after_armor(raw_damage, points);
 }
+
+int armor_durability_loss(int damage) {
+    if (damage <= 0) return 0;       /* no real blow => no wear */
+    int loss = damage / 4;           /* floor(damage/4), vanilla rule */
+    return loss < 1 ? 1 : loss;      /* a real blow always costs >= 1 */
+}

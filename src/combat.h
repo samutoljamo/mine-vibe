@@ -60,4 +60,14 @@ float attack_cooldown(ItemId weapon);
  * armor_points_total + damage_after_armor. */
 int armor_damage_reduction(const ItemId armor[ARMOR_SLOT_COUNT], int raw_damage);
 
+/* ------------------------------------------------------------------ */
+/*  Armour durability wear                                            */
+/* ------------------------------------------------------------------ */
+
+/* Durability points a single worn armour piece loses when its wearer takes a
+ * blow of `damage` hit-points. Vanilla-style: floor(damage / 4), but at least
+ * 1 on any real blow so even a tiny hit costs something. A zero (or negative)
+ * damage event causes no wear — armour only degrades on a real hit. Pure. */
+int armor_durability_loss(int damage);
+
 #endif /* COMBAT_H */

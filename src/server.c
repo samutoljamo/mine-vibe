@@ -1102,15 +1102,19 @@ static void server_kill_player(Server* s, ServerClient* c) {
     c->needs_health_sync = true;
 }
 
-/* Apply one point of armour wear to every worn piece on a hit; a piece that
- * reaches 0 durability breaks (slot emptied). Flags an armour sync if anything
- * changed so the client HUD updates. Matches the per-hit wear tested for the
- * pure durability math. */
-static void server_wear_armor(Server* s, ServerClient* c) {
+/* Apply per-hit armour wear to every worn piece after a blow of `dmg`
+ * hit-points: each piece loses armor_durability_loss(dmg) durability (vanilla
+ * floor(dmg/4), min 1). A piece that reaches 0 durability breaks (slot emptied
+ * to BLOCK_AIR). Flags an armour sync if anything changed so the client HUD
+ * updates. */
+static void server_wear_armor(Server* s, ServerClient* c, int dmg) {
+    int loss = armor_durability_loss(dmg);
+    if (loss <= 0) return;                      /* no real blow => no wear */
     bool changed = false;
     for (int i = 0; i < ARMOR_SLOT_COUNT; i++) {
         if (c->armor[i] == BLOCK_AIR || !item_is_armor(c->armor[i])) continue;
-        if (c->armor_dur[i] > 0) c->armor_dur[i]--;
+        c->armor_dur[i] = (uint16_t)(c->armor_dur[i] > loss
+                                     ? c->armor_dur[i] - loss : 0);
         if (c->armor_dur[i] == 0) {            /* broke */
             c->armor[i] = (ItemId)BLOCK_AIR;
             changed = true;
@@ -1126,7 +1130,7 @@ void server_damage_player(Server* s, ServerClient* c, int dmg) {
 
     /* Armour reduces incoming damage (4%/point, capped) and takes wear. */
     int reduced = damage_after_armor(dmg, server_armor_points(c));
-    if (server_armor_points(c) > 0) server_wear_armor(s, c);
+    if (server_armor_points(c) > 0) server_wear_armor(s, c, dmg);
 
     c->health = (int16_t)(c->health - reduced);
     if (c->health <= 0) {
