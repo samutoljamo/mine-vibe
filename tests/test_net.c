@@ -241,6 +241,25 @@ static void test_eat_roundtrip(void) {
     printf("PASS: eat_roundtrip\n");
 }
 
+static void test_knockback_roundtrip(void) {
+    uint8_t buf[64];
+    PacketHeader hdr = { .type = PKT_KNOCKBACK, .player_id = 0 };
+    size_t off = net_write_knockback(buf, &hdr, 3.5f, 1.25f, -2.0f);
+    assert(off == HEADER_WIRE_SIZE + 12);
+
+    PacketHeader rh; float dx, dy, dz;
+    assert(net_parse_knockback(buf, off, &rh, &dx, &dy, &dz));
+    assert(rh.type == PKT_KNOCKBACK);
+    assert(dx == 3.5f && dy == 1.25f && dz == -2.0f);
+
+    /* Bounds-checked parse: every truncation rejected, never over-reads. */
+    for (size_t L = 0; L < off; L++) {
+        uint8_t* t = malloc(L ? L : 1); memcpy(t, buf, L);
+        assert(!net_parse_knockback(t, L, &rh, &dx, &dy, &dz)); free(t);
+    }
+    printf("PASS: knockback_roundtrip\n");
+}
+
 static void test_container_open_roundtrip(void) {
     uint8_t buf[64];
     PacketHeader hdr = { .type = PKT_CONTAINER_OPEN, .player_id = 2 };
@@ -1094,6 +1113,7 @@ int main(void)
     test_legacy_connect_request_reads_version_zero();
     test_craft_roundtrip();
     test_eat_roundtrip();
+    test_knockback_roundtrip();
     test_container_open_roundtrip();
     test_container_action_roundtrip();
     test_container_state_roundtrip();

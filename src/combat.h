@@ -20,6 +20,46 @@
 #define COMBAT_FIST_COOLDOWN      0.25f
 
 /* ------------------------------------------------------------------ */
+/*  Knockback                                                          */
+/* ------------------------------------------------------------------ */
+
+/* Horizontal knockback speed (blocks/s) imparted to an entity by a melee hit,
+ * directed away from the attacker. Tuned to shove the target back a readable
+ * amount before it decays — noticeable but not launchy. */
+#define COMBAT_KNOCKBACK_STRENGTH 6.0f
+
+/* Small upward component (blocks/s) added on top of the horizontal shove so a
+ * hit "pops" the target a touch off the ground (vanilla-ish feel). */
+#define COMBAT_KNOCKBACK_LIFT     3.0f
+
+/* Per-second exponential decay applied to the local player's residual knockback
+ * velocity. The client applies player knockback as a short decaying positional
+ * nudge (player_update overwrites the player's own horizontal velocity each
+ * frame), so the nudge has to fade on its own. */
+#define COMBAT_KNOCKBACK_DECAY    9.0f
+
+/* ------------------------------------------------------------------ */
+/*  Eating                                                            */
+/* ------------------------------------------------------------------ */
+
+/* How long (seconds) the eat key must be held before the food is consumed.
+ * Eating is no longer instant: the client gates the PKT_EAT send on this hold,
+ * plays the eat SFX while chewing, and shows a HUD progress nibble. The server
+ * still authoritatively validates + applies the food. */
+#define EAT_DURATION_SEC          1.2f
+
+/* ------------------------------------------------------------------ */
+/*  Knockback impulse (pure)                                          */
+/* ------------------------------------------------------------------ */
+
+/* Horizontal knockback impulse to push a target at (tx,tz) away from an attacker
+ * at (ax,az): the unit vector from attacker -> target scaled by `strength`,
+ * written to (*out_dx,*out_dz). Degenerate case (attacker and target at the same
+ * XZ point) yields a zero impulse rather than a NaN. Pure; no globals/IO. */
+void knockback_impulse(float ax, float az, float tx, float tz,
+                       float strength, float* out_dx, float* out_dz);
+
+/* ------------------------------------------------------------------ */
 /*  Weapon damage                                                      */
 /* ------------------------------------------------------------------ */
 

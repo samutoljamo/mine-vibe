@@ -15,3 +15,9 @@ void hud_set_armor(const uint16_t* worn, int points)
     (void)worn;
     (void)points;
 }
+
+/* Stub for hud_trigger_hurt_flash — client.c references it from its
+ * PKT_PLAYER_HEALTH handler when local health drops. */
+void hud_trigger_hurt_flash(void)
+{
+}

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <math.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
@@ -24,9 +25,11 @@
 #include "mob_render.h"
 #include "platform_thread.h"
 #include "raycast.h"
+#include "physics.h"     /* physics_move — collision-resolve the knockback nudge */
 #include "gameplay.h"
 #include "inventory.h"
 #include "crafting.h"
+#include "combat.h"      /* EAT_DURATION_SEC + COMBAT_KNOCKBACK_DECAY */
 #include "daynight.h"
 #include "worldsave.h"
 #include "audio.h"
@@ -45,6 +48,19 @@ static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
 static RaycastHit g_target;       /* refreshed each frame for outline + click */
 static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none */
 static bool g_show_stats = false; /* perf overlay visibility; toggled with F3 */
+
+/* Hold-to-eat state. Eating is no longer instant: while the eat key (F) is held
+ * over a food item, g_eating accumulates toward EAT_DURATION_SEC. The SFX plays
+ * at the start of the hold; PKT_EAT is sent once the hold completes (the server
+ * still authoritatively validates + applies). g_eat_slot records which hotbar
+ * slot the hold started on so swapping mid-chew restarts the eat. */
+static bool  g_eating       = false;
+static float g_eat_timer    = 0.0f;
+static int   g_eat_slot     = -1;
+/* Local knockback residual velocity (blocks/s), drained from PKT_KNOCKBACK and
+ * applied as a short decaying positional nudge each frame (player_update
+ * overwrites the player's own horizontal velocity, so it can't live there). */
+static float g_kb_vx = 0.0f, g_kb_vy = 0.0f, g_kb_vz = 0.0f;
 
 /* Crafting-panel row -> recipe-index map, rebuilt each frame the inventory
  * screen registers its hit-test rects so a click resolves to the right recipe.
@@ -126,6 +142,11 @@ static void mouse_button_callback(GLFWwindow* w, int button, int action, int mod
          * the PKT_BLOCK_BREAK is sent only when mining completes. */
         if (g_target_mob) {
             client_send_mob_attack(g_client, g_target_mob);
+            /* Immediate attacker-side feedback on a landed melee hit: a sharp
+             * connect "thwack" plus the mob's hurt grunt. The server stays
+             * authoritative over damage/death; this is local feel only. */
+            audio_play(SFX_HIT);
+            audio_play(SFX_MOB_HURT);
         }
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         client_send_place(g_client,
@@ -156,12 +177,21 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
         /* E opens/closes the inventory screen (no-op in menu/pause). */
         ui_set_state(game_ui_toggle_inventory(g_ui_state));
     }
+    /* F is now hold-to-eat: the PRESS arms an eat hold and the main loop drives
+     * the timer (reading the held key) + sends PKT_EAT only once the hold
+     * completes. The press itself just plays the eat SFX and starts the timer so
+     * a quick tap does nothing. Actual consume is server-authoritative. */
     if (key == GLFW_KEY_F && action == GLFW_PRESS) {
-        /* F eats the food item in the selected hotbar slot (server validates it
-         * is food and that hunger isn't full, then restores hunger). In-world
-         * only; never repurposes right-click (which places). */
-        if (g_client && game_ui_world_active(g_ui_state))
-            client_send_eat(g_client, (uint8_t)g_client->inventory.selected);
+        if (g_client && game_ui_world_active(g_ui_state)) {
+            int slot = g_client->inventory.selected;
+            ItemId held = g_client->inventory.slots[slot].item;
+            if (g_client->inventory.slots[slot].count > 0 && item_is_food(held)) {
+                g_eating    = true;
+                g_eat_timer = 0.0f;
+                g_eat_slot  = slot;
+                audio_play(SFX_EAT);   /* chewing cue at the start of the hold */
+            }
+        }
     }
     if (key == GLFW_KEY_U && action == GLFW_PRESS) {
         /* U opens (or, if already open, closes) the container block-entity the
@@ -758,6 +788,7 @@ int main(int argc, char *argv[])
         last_time = now;
 
         perf_stats_push(&perf, dt);   /* feed the rolling FPS/frametime average */
+        hud_tick(dt);                 /* decay the hurt flash + other timed FX */
 
         glfwPollEvents();
 
@@ -987,10 +1018,69 @@ int main(int argc, char *argv[])
             g_target_mob = 0;
             g_mining_progress = 0.0f;
             g_mining_x = g_mining_y = g_mining_z = INT32_MIN;
+            /* Cancel any in-progress eat hold while a menu/overlay is up. */
+            g_eating = false;
+            g_eat_timer = 0.0f;
+            g_eat_slot = -1;
+            hud_set_eat_progress(0.0f);
         }
 
         if (world_active) {
         player_update(&g_player, window, world, dt);
+
+        /* Local-player knockback: drain any server impulse into the residual
+         * velocity, then apply it as a decaying positional nudge ON TOP of
+         * player_update's movement (player_update snaps the player's own
+         * horizontal velocity from input each frame, so the shove can't live in
+         * g_player.velocity). Collision-resolved by physics_move so it can't
+         * push through walls. */
+        if (g_client && g_client->kb_pending) {
+            g_kb_vx += g_client->kb_dx;
+            g_kb_vy += g_client->kb_dy;
+            g_kb_vz += g_client->kb_dz;
+            g_client->kb_pending = false;
+            g_client->kb_dx = g_client->kb_dy = g_client->kb_dz = 0.0f;
+        }
+        if (g_kb_vx != 0.0f || g_kb_vy != 0.0f || g_kb_vz != 0.0f) {
+            vec3 kvel = { g_kb_vx, g_kb_vy, g_kb_vz };
+            physics_move(g_player.position, kvel, PLAYER_HALF_W, PLAYER_HEIGHT,
+                         dt, /*crouch=*/false, world);
+            /* Exponential decay so the shove fades over a few frames. */
+            float k = 1.0f - COMBAT_KNOCKBACK_DECAY * dt;
+            if (k < 0.0f) k = 0.0f;
+            g_kb_vx *= k; g_kb_vy *= k; g_kb_vz *= k;
+            if (fabsf(g_kb_vx) < 0.05f && fabsf(g_kb_vy) < 0.05f &&
+                fabsf(g_kb_vz) < 0.05f)
+                g_kb_vx = g_kb_vy = g_kb_vz = 0.0f;
+        }
+
+        /* Hold-to-eat: while F is held and the eat was armed on a still-valid
+         * food slot, accumulate toward EAT_DURATION_SEC and send PKT_EAT once
+         * complete (server validates + applies). Releasing F, swapping the
+         * selected slot, or running out of that food cancels the hold. */
+        if (g_eating) {
+            bool f_held = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
+            int  sel    = g_client ? g_client->inventory.selected : -1;
+            ItemId held = (g_client && sel >= 0)
+                        ? g_client->inventory.slots[sel].item : (ItemId)BLOCK_AIR;
+            bool still_food = g_client && sel == g_eat_slot
+                           && g_client->inventory.slots[sel].count > 0
+                           && item_is_food(held);
+            if (!f_held || !still_food) {
+                g_eating = false;
+                g_eat_timer = 0.0f;
+                g_eat_slot = -1;
+            } else {
+                g_eat_timer += dt;
+                if (g_eat_timer >= EAT_DURATION_SEC) {
+                    client_send_eat(g_client, (uint8_t)sel);
+                    g_eating = false;
+                    g_eat_timer = 0.0f;
+                    g_eat_slot = -1;
+                }
+            }
+        }
+        hud_set_eat_progress(g_eating ? (g_eat_timer / EAT_DURATION_SEC) : 0.0f);
 
         /* Refresh the look-target for outline rendering and click handling.
          * Must happen after player_update (so eye_pos / yaw / pitch are

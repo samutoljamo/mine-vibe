@@ -159,6 +159,14 @@ static SfxRecipe sfx_recipe(SoundId id)
             .decay = 3.0f, .attack = 0.010f, .release = 0.050f,
             .noise_mix = 0.05f, .peak = 0.28f, .seed = 0x6006u,
             .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.30f, 2.0f}, {0.0f, 0.0f, 0.0f} } };
+        /* Melee connect: a short, bright "thwack" the attacker hears on a landed
+         * hit — punchy attack, fast decay, a noise transient for the slap, sits
+         * above the (lower, growlier) mob-hurt grunt so the two read distinctly. */
+        case SFX_HIT:         return (SfxRecipe){
+            .dur = 0.10f, .freq = 360.0f, .pitch_drop = 0.50f, .pitch_tau = 0.018f,
+            .decay = 7.5f, .attack = 0.002f, .release = 0.030f,
+            .noise_mix = 0.40f, .peak = 0.32f, .seed = 0x8008u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.40f, 0.0f}, {3.0f, 0.18f, 0.0f} } };
         default:              return (SfxRecipe){
             .dur = 0.10f, .freq = 220.0f, .pitch_drop = 0.30f, .pitch_tau = 0.030f,
             .decay = 6.0f, .attack = 0.004f, .release = 0.030f,

@@ -295,4 +295,19 @@ void    hud_draw_stats(const PerfStats* p, float sw, float sh);
  * PKT_PLAYER_HEALTH handler. */
 void    hud_set_survival(int food, int air);
 
+/* Start a brief red screen-edge hurt flash that decays on its own over the next
+ * ~0.35s. Called from the client's PKT_PLAYER_HEALTH handler whenever the local
+ * player's health drops. Idempotent (re-arming just restarts the fade). */
+void    hud_trigger_hurt_flash(void);
+
+/* Advance time-based HUD effects (currently the hurt flash) by dt seconds.
+ * Called once per frame from the main loop. */
+void    hud_tick(float dt);
+
+/* Latch the current eating progress (0 = not eating, (0,1] = fraction of the
+ * eat hold elapsed) so hud_build can draw a progress nibble above the hotbar.
+ * main.c updates this each frame while the eat key is held; set to 0 when not
+ * eating. Clamped to [0,1]. */
+void    hud_set_eat_progress(float p);
+
 #endif

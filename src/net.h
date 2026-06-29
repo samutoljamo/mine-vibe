@@ -50,6 +50,12 @@ typedef enum {
                                * helpers + resyncs viewers/inventory (v11).      */
     PKT_CONTAINER_CLOSE = 24, /* client → server: stop viewing the container at
                                * {x,y,z} (un-marks this client as a viewer) (v11).*/
+    PKT_KNOCKBACK       = 25, /* server → one: a melee/contact hit shoves the
+                               * local player. Carries a velocity impulse
+                               * {dx,dy,dz} (blocks/s) the client applies as a
+                               * short decaying positional nudge — the local
+                               * player owns its position, so server knockback
+                               * has to be sent rather than ride snapshots (v13).*/
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -61,7 +67,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 12   /* 12: crafting table reindexed (placeholder ore->ingot craft removed) — PKT_CRAFT recipe indices shifted */
+#define NET_PROTOCOL_VERSION 13   /* 13: added PKT_KNOCKBACK (server→client melee/contact shove impulse) */
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -1057,6 +1063,39 @@ static inline int net_parse_player_health(const uint8_t* buf, size_t len,
         *air  = NET_MAX_AIR;
     }
     return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  PKT_KNOCKBACK — server → one, 20 wire bytes (8 header + 3×f32).    */
+/*                                                                     */
+/*  A melee/contact hit shoves the local player. dx/dy/dz are a        */
+/*  velocity impulse in blocks/s (world space); the client applies it  */
+/*  as a short, decaying positional nudge on top of its own movement   */
+/*  (the local player owns its position, so the impulse can't ride the */
+/*  position snapshots the way mob knockback does). Sent reliably so a  */
+/*  dropped packet doesn't silently swallow the shove.                  */
+/* ------------------------------------------------------------------ */
+static inline size_t net_write_knockback(uint8_t* buf, const PacketHeader* hdr,
+                                         float dx, float dy, float dz) {
+    size_t off = 0;
+    net_write_header(buf, &off, hdr);
+    net_write_float(buf, &off, dx);
+    net_write_float(buf, &off, dy);
+    net_write_float(buf, &off, dz);
+    return off;
+}
+
+/* Bounds-checked parse (20 wire bytes). Returns 1 only if all three components
+ * were present; on a short buffer returns 0 and never over-reads. */
+static inline int net_parse_knockback(const uint8_t* buf, size_t len,
+                                      PacketHeader* hdr,
+                                      float* dx, float* dy, float* dz) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, hdr);
+    *dx = net_reader_f32(&r);
+    *dy = net_reader_f32(&r);
+    *dz = net_reader_f32(&r);
+    return net_reader_ok(&r);
 }
 
 /* ------------------------------------------------------------------ */

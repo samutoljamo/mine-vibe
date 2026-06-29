@@ -928,7 +928,28 @@ static void handle_mob_attack(Server* s, ServerClient* c,
      * only dies once health hits 0. Per-type max health (mob_max_health) means
      * tanky hostiles take several hits while frail animals drop fast. */
     int dmg = server_player_mob_damage(c);
-    if (mob_combat_apply(&m->health, dmg)) {
+    bool died = mob_combat_apply(&m->health, dmg);
+
+    /* Knockback: shove the mob away from the attacker. The mob simulation
+     * rewrites m->velocity[xz] from its steering each tick, so a horizontal
+     * velocity impulse wouldn't survive; instead nudge the mob's position
+     * directly (a fraction of the impulse, collision-checked by the next sim
+     * move) plus a vertical pop. The displaced position rides the existing
+     * PKT_MOB_STATE snapshots — no new packet needed for mobs. A killed mob
+     * vanishes, so only shove survivors. */
+    if (!died) {
+        float kx, kz;
+        knockback_impulse(c->x, c->z, m->position[0], m->position[2],
+                          COMBAT_KNOCKBACK_STRENGTH, &kx, &kz);
+        /* Apply the blocks/s impulse as a one-shot displacement over a short
+         * window, collision-checked by physics_move so the shove can't punch
+         * through a wall. */
+        const float KB_DT = 0.12f;
+        vec3 vel = { kx, 0.0f, kz };
+        physics_move(m->position, vel, MOB_HALF_W, MOB_HEIGHT, KB_DT,
+                     /*crouch=*/false, s->world);
+        if (m->on_ground) m->velocity[1] += COMBAT_KNOCKBACK_LIFT;
+    } else {
         MobType killed = m->type;           /* m is invalidated by removal below */
         award_mob_loot(s, c, killed);       /* type-appropriate drops to killer */
         mob_set_remove(&s->mobs, mob_id);   /* dead → vanishes next broadcast */
@@ -1061,6 +1082,30 @@ static uint8_t server_air_bubbles(const ServerClient* c) {
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
     return (uint8_t)(frac * NET_MAX_AIR + 0.5f);
+}
+
+/* Send a knockback impulse {dx,dy,dz} (blocks/s, world space) to client c. The
+ * local player owns its position, so a server shove can't ride the position
+ * snapshots; it is delivered as its own reliable PKT_KNOCKBACK and the client
+ * applies it as a short decaying positional nudge. */
+static void server_send_knockback(Server* s, ServerClient* c,
+                                  float dx, float dy, float dz) {
+    uint8_t buf[32];
+    PacketHeader h = { .type = PKT_KNOCKBACK, .player_id = 0 };
+    size_t len = net_write_knockback(buf, &h, dx, dy, dz);
+    send_reliable(s, c, buf, (uint16_t)len);
+}
+
+/* Shove player c away from a horizontal source at (sx,sz) by the standard melee
+ * knockback impulse (plus a vertical pop). Skips the no-op zero impulse when the
+ * source is exactly on the player. */
+static void server_knockback_player(Server* s, ServerClient* c,
+                                    float sx, float sz) {
+    if (c->health <= 0 || c->respawn_grace > 0.0f) return;  /* match damage gate */
+    float kx, kz;
+    knockback_impulse(sx, sz, c->x, c->z, COMBAT_KNOCKBACK_STRENGTH, &kx, &kz);
+    if (kx == 0.0f && kz == 0.0f) return;
+    server_send_knockback(s, c, kx, COMBAT_KNOCKBACK_LIFT, kz);
 }
 
 static void server_send_health(Server* s, ServerClient* c, uint8_t flags) {
@@ -1347,7 +1392,11 @@ static void server_simulate_mobs(Server* s, float dt) {
                     if (tdist > CREEPER_FUSE_RANGE * 1.5f) {
                         m->fuse_lit = false;
                     } else if (creeper_should_detonate(tdist, m->fuse_timer)) {
-                        if (tc) server_damage_player(s, tc, CREEPER_BLAST_DAMAGE);
+                        if (tc) {
+                            server_damage_player(s, tc, CREEPER_BLAST_DAMAGE);
+                            server_knockback_player(s, tc,
+                                                    m->position[0], m->position[2]);
+                        }
                         m->active = false;  /* self-destruct (block damage = follow-up) */
                         continue;
                     }
@@ -1355,12 +1404,20 @@ static void server_simulate_mobs(Server* s, float dt) {
             } else if (m->type == MOB_SKELETON) {
                 /* Ranged hitscan shot on a cooldown. v1: no projectile travel. */
                 if (m->attack_cooldown <= 0.0f && skeleton_in_shoot_range(tdist)) {
-                    if (tc) server_damage_player(s, tc, st.attack_damage);
+                    if (tc) {
+                        server_damage_player(s, tc, st.attack_damage);
+                        server_knockback_player(s, tc,
+                                                m->position[0], m->position[2]);
+                    }
                     m->attack_cooldown = st.attack_interval;
                 }
             } else if (m->attack_cooldown <= 0.0f && tdist <= st.attack_range) {
                 /* Zombie melee contact. */
-                if (tc) server_damage_player(s, tc, st.attack_damage);
+                if (tc) {
+                    server_damage_player(s, tc, st.attack_damage);
+                    server_knockback_player(s, tc,
+                                            m->position[0], m->position[2]);
+                }
                 m->attack_cooldown = st.attack_interval;
             }
         }

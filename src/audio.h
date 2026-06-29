@@ -33,6 +33,7 @@ typedef enum {
     SFX_HURT,
     SFX_MOB_HURT,
     SFX_EAT,
+    SFX_HIT,        /* attacker-side cue: the local player landed a melee blow */
     SFX_COUNT
 } SoundId;
 

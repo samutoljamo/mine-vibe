@@ -1,4 +1,19 @@
 #include "combat.h"
+#include <math.h>
+
+void knockback_impulse(float ax, float az, float tx, float tz,
+                       float strength, float* out_dx, float* out_dz) {
+    float dx = tx - ax;
+    float dz = tz - az;
+    float len = sqrtf(dx * dx + dz * dz);
+    if (len < 1e-5f) {           /* same XZ point: no well-defined direction */
+        *out_dx = 0.0f;
+        *out_dz = 0.0f;
+        return;
+    }
+    *out_dx = (dx / len) * strength;
+    *out_dz = (dz / len) * strength;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Combat math (pure).                                                 */

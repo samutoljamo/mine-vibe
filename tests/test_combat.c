@@ -187,6 +187,46 @@ static void test_durability_loss_zero_damage(void) {
     printf("PASS: durability_loss_zero_damage\n");
 }
 
+/* ------------------------------------------------------------------ */
+/*  knockback_impulse — direction away from attacker, magnitude         */
+/* ------------------------------------------------------------------ */
+
+static void test_knockback_direction(void) {
+    /* Attacker at origin, target to the +X: shove points +X, no Z. */
+    float dx, dz;
+    knockback_impulse(0.0f, 0.0f, 5.0f, 0.0f, COMBAT_KNOCKBACK_STRENGTH, &dx, &dz);
+    assert(dx > 0.0f);
+    assert(fabsf(dz) < 1e-4f);
+
+    /* Target to the -Z: shove points -Z, no X. */
+    knockback_impulse(0.0f, 0.0f, 0.0f, -3.0f, COMBAT_KNOCKBACK_STRENGTH, &dx, &dz);
+    assert(dz < 0.0f);
+    assert(fabsf(dx) < 1e-4f);
+    printf("PASS: knockback_direction\n");
+}
+
+static void test_knockback_magnitude(void) {
+    /* Magnitude equals `strength` regardless of attacker/target distance. */
+    float dx, dz;
+    knockback_impulse(2.0f, 2.0f, 12.0f, 2.0f, COMBAT_KNOCKBACK_STRENGTH, &dx, &dz);
+    float mag = sqrtf(dx * dx + dz * dz);
+    assert(fabsf(mag - COMBAT_KNOCKBACK_STRENGTH) < 1e-3f);
+
+    /* A different (diagonal, close) separation still normalises to strength. */
+    knockback_impulse(0.0f, 0.0f, 0.3f, 0.4f, 10.0f, &dx, &dz);
+    mag = sqrtf(dx * dx + dz * dz);
+    assert(fabsf(mag - 10.0f) < 1e-3f);
+    printf("PASS: knockback_magnitude\n");
+}
+
+static void test_knockback_degenerate(void) {
+    /* Attacker and target at the same XZ point: zero impulse, no NaN. */
+    float dx = 99.0f, dz = 99.0f;
+    knockback_impulse(4.0f, 4.0f, 4.0f, 4.0f, COMBAT_KNOCKBACK_STRENGTH, &dx, &dz);
+    assert(dx == 0.0f && dz == 0.0f);
+    printf("PASS: knockback_degenerate\n");
+}
+
 int main(void) {
     test_fist_is_baseline();
     test_tools_beat_fist();
@@ -202,6 +242,9 @@ int main(void) {
     test_durability_loss_min_one();
     test_durability_loss_scales();
     test_durability_loss_zero_damage();
+    test_knockback_direction();
+    test_knockback_magnitude();
+    test_knockback_degenerate();
     printf("test_combat: all passed\n");
     return 0;
 }

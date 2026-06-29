@@ -504,10 +504,13 @@ int client_poll(Client* c)
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
             if (is_new) {
                 /* SFX hook: a drop in health means the local player took
-                 * damage. (Death is handled below, which also plays nothing
-                 * extra — the hurt cue already fired here.) */
-                if ((int16_t)hp < c->health)
+                 * damage — play the hurt grunt and flash the screen edges red.
+                 * (Death is handled below, which plays nothing extra — the hurt
+                 * cue already fired here.) */
+                if ((int16_t)hp < c->health) {
                     audio_play(SFX_HURT);
+                    hud_trigger_hurt_flash();
+                }
                 c->health = (int16_t)hp;
                 c->food   = food;
                 c->air    = air;
@@ -519,6 +522,22 @@ int client_poll(Client* c)
                     hud_set_survival(NET_MAX_FOOD, NET_MAX_AIR);
                     g_death_cb(g_death_user);
                 }
+            }
+
+        } else if (type == PKT_KNOCKBACK && c->state == CLIENT_CONNECTED) {
+            PacketHeader h; float dx, dy, dz;
+            if (!net_parse_knockback(msg->data, (size_t)msg->len,
+                                     &h, &dx, &dy, &dz)) {
+                client_drop_malformed("knockback"); free(msg); continue;
+            }
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new) {
+                /* Accumulate the shove; main.c drains it into a decaying nudge on
+                 * the local player position next frame. */
+                c->kb_dx += dx;
+                c->kb_dy += dy;
+                c->kb_dz += dz;
+                c->kb_pending = true;
             }
 
         } else if (type == PKT_ARMOR && c->state == CLIENT_CONNECTED) {

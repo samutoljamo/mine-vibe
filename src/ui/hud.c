@@ -41,6 +41,38 @@ void hud_set_survival(int food, int air)
     g_hud_air  = air;
 }
 
+/* Hurt flash: a brief red vignette at the screen edges when the local player
+ * takes damage. hud_trigger_hurt_flash arms it to full; hud_tick(dt) decays it
+ * toward 0 each frame (driven from main.c's loop) so it fades over
+ * ~HUD_HURT_FLASH_SEC. g_hurt_flash is the remaining 0..1 intensity. */
+#define HUD_HURT_FLASH_SEC 0.35f
+static float g_hurt_flash = 0.0f;
+
+void hud_trigger_hurt_flash(void)
+{
+    g_hurt_flash = 1.0f;
+}
+
+void hud_tick(float dt)
+{
+    if (g_hurt_flash > 0.0f) {
+        g_hurt_flash -= dt / HUD_HURT_FLASH_SEC;
+        if (g_hurt_flash < 0.0f) g_hurt_flash = 0.0f;
+    }
+}
+
+/* Eat progress: 0 = not eating, (0,1] = fraction of the eat hold elapsed. The
+ * client latches it each frame while the eat key is held; hud_build draws a
+ * small progress nibble above the hotbar. */
+static float g_eat_progress = 0.0f;
+
+void hud_set_eat_progress(float p)
+{
+    if (p < 0.0f) p = 0.0f;
+    if (p > 1.0f) p = 1.0f;
+    g_eat_progress = p;
+}
+
 /* Latest server-reported armour total (points). Drawn as a 10-icon bar above
  * the hearts; each icon represents 2 points (matching the heart granularity). */
 static int g_hud_armor_points = 0;
@@ -683,6 +715,39 @@ static void hud_draw_crosshair(float sw, float sh)
         ui_rect(arms[i].x, arms[i].y, arms[i].w, arms[i].h, fg);
 }
 
+/* Red screen-edge vignette while a hurt flash is active. Four soft border bands
+ * (top/bottom/left/right) whose alpha decays linearly from the latched start
+ * over HUD_HURT_FLASH_SEC; once elapsed it draws nothing. Center stays clear so
+ * play isn't obscured. */
+static void hud_draw_hurt_flash(float sw, float sh)
+{
+    if (g_hurt_flash <= 0.0f) return;
+    float a = g_hurt_flash * 0.45f;   /* peak alpha ~0.45 */
+    vec4 red = { 0.75f, 0.05f, 0.05f, a };
+    float band = sh * 0.18f;          /* edge band thickness */
+    float bandx = sw * 0.13f;
+    ui_rect(0,            0,            sw,    band, red);   /* top    */
+    ui_rect(0,            sh - band,    sw,    band, red);   /* bottom */
+    ui_rect(0,            0,            bandx, sh,   red);   /* left   */
+    ui_rect(sw - bandx,   0,            bandx, sh,   red);   /* right  */
+}
+
+/* Small eating-progress nibble: a thin bar centred just above the hotbar that
+ * fills as the eat hold completes. Drawn only while actively eating (progress in
+ * (0,1)); the full bar disappears the moment the eat fires. */
+static void hud_draw_eat_progress(float sw, float sh)
+{
+    if (g_eat_progress <= 0.0f) return;
+    float w = 120.0f, h = 6.0f;
+    float x = (sw - w) * 0.5f;
+    HudRect h0 = hud_hotbar_slot_rect(0, sw, sh);
+    float y = h0.y - 18.0f;
+    vec4 bg   = { 0.05f, 0.05f, 0.05f, 0.7f };
+    vec4 fill = { 0.55f, 0.85f, 0.35f, 0.95f };   /* food green */
+    ui_rect(x - 1, y - 1, w + 2, h + 2, bg);
+    ui_rect(x, y, w * g_eat_progress, h, fill);
+}
+
 void hud_build(const Inventory* inv, int player_health, float sw, float sh)
 {
     /* Screen dispatch: menus/overlays are driven by the latched game-UI state
@@ -699,8 +764,11 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
     /* In-world HUD (crosshair + hotbar + bars) for PLAYING / PAUSED /
      * INVENTORY. The crosshair is hidden when a modal overlay is up so it
      * doesn't sit under the dim. */
-    if (screen == GAME_PLAYING)
+    if (screen == GAME_PLAYING) {
         hud_draw_crosshair(sw, sh);
+        hud_draw_hurt_flash(sw, sh);
+        hud_draw_eat_progress(sw, sh);
+    }
 
     if (inv) {
 

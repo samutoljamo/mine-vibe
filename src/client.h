@@ -119,6 +119,14 @@ typedef struct {
      * once the local player has opened a container and not yet closed it. */
     bool                 container_open;
     ContainerStatePacket container;   /* valid when container_open */
+
+    /* Pending knockback impulse from the server (PKT_KNOCKBACK), in blocks/s,
+     * world space. The local player owns its position, so a server shove arrives
+     * as its own packet and is accumulated here; main.c drains it each frame
+     * (kb_pending -> false) into a short decaying positional nudge on the player.
+     * Accumulated so several hits in one frame stack instead of clobbering. */
+    bool  kb_pending;
+    float kb_dx, kb_dy, kb_dz;
 } Client;
 
 void client_init(Client* c, NetThread* net,
