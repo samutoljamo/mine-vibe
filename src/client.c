@@ -83,6 +83,65 @@ static void client_drop_malformed(const char* what)
     }
 }
 
+/* Face -> neighbour-cell offset, matching the BlockFace enum order used on the
+ * wire (FACE_NX,PX,NY,PY,NZ,PZ) and applied identically by the server when it
+ * places. Inlined here (rather than #include "raycast.h", which pulls in cglm +
+ * world.h) so the predicted-place SFX can target the cell that actually changes
+ * without adding heavy build/test deps to client.c. */
+static void client_face_offset(uint8_t face, int* dx, int* dy, int* dz)
+{
+    *dx = 0; *dy = 0; *dz = 0;
+    switch (face) {
+        case 0: *dx = -1; break;  /* FACE_NX */
+        case 1: *dx =  1; break;  /* FACE_PX */
+        case 2: *dy = -1; break;  /* FACE_NY */
+        case 3: *dy =  1; break;  /* FACE_PY */
+        case 4: *dz = -1; break;  /* FACE_NZ */
+        case 5: *dz =  1; break;  /* FACE_PZ */
+        default: break;           /* unknown face: predict at the hit cell */
+    }
+}
+
+/* ---- Predicted block-SFX dedup (mine-vibe-5kz) --------------------------- *
+ *
+ * Record a predicted edit so the server's echoing PKT_BLOCK_CHANGE for our own
+ * action doesn't re-play the sound we already played locally at send time. */
+static void client_predict_sfx(Client* c, int x, int y, int z, uint8_t is_air)
+{
+    int n = c->predicted_sfx_count;
+    int slots = (int)(sizeof c->predicted_sfx / sizeof c->predicted_sfx[0]);
+    int i;
+    if (n < slots) {
+        i = n;
+        c->predicted_sfx_count = n + 1;
+    } else {
+        /* Ring full: drop the oldest by shifting down (tiny array, cheap). */
+        for (int k = 1; k < slots; k++) c->predicted_sfx[k - 1] = c->predicted_sfx[k];
+        i = slots - 1;
+    }
+    c->predicted_sfx[i].x = x;
+    c->predicted_sfx[i].y = y;
+    c->predicted_sfx[i].z = z;
+    c->predicted_sfx[i].is_air = is_air ? 1u : 0u;
+}
+
+/* If (x,y,z)/is_air matches a recorded prediction, consume it and return true
+ * (the caller should then SKIP the SFX — we already played it locally). */
+static bool client_consume_predicted_sfx(Client* c, int x, int y, int z, uint8_t is_air)
+{
+    for (int i = 0; i < c->predicted_sfx_count; i++) {
+        if (c->predicted_sfx[i].x == x && c->predicted_sfx[i].y == y &&
+            c->predicted_sfx[i].z == z &&
+            c->predicted_sfx[i].is_air == (is_air ? 1u : 0u)) {
+            /* Remove entry i by swapping the last one into its place. */
+            c->predicted_sfx[i] = c->predicted_sfx[c->predicted_sfx_count - 1];
+            c->predicted_sfx_count--;
+            return true;
+        }
+    }
+    return false;
+}
+
 void client_set_shared_world(Client* c, bool shared) { c->shared_world = shared; }
 
 void client_set_render_distance(Client* c, int rd) {
@@ -197,6 +256,13 @@ void client_send_break(Client* c, int x, int y, int z, uint8_t block,
     size_t  len = net_write_block_break(buf, &p);
     reliable_send(&c->reliable, c->net->fd, &c->server_addr,
                    buf, (uint16_t)len);
+
+    /* Predicted local SFX (mine-vibe-5kz): play the break sound immediately at
+     * the edit position instead of waiting for the server's PKT_BLOCK_CHANGE
+     * round-trip. Record the prediction so that confirming broadcast doesn't
+     * double-play for our own action. 2D play here (listener is at the player). */
+    client_predict_sfx(c, x, y, z, /*is_air=*/1);
+    audio_play(SFX_BLOCK_BREAK);
 }
 
 void client_send_place(Client* c, int x, int y, int z,
@@ -216,6 +282,17 @@ void client_send_place(Client* c, int x, int y, int z,
     size_t  len = net_write_block_place(buf, &p);
     reliable_send(&c->reliable, c->net->fd, &c->server_addr,
                    buf, (uint16_t)len);
+
+    /* Predicted local SFX (mine-vibe-5kz): play the place sound immediately
+     * rather than waiting for the server round-trip. The cell that actually
+     * changes is the neighbour of (x,y,z) across `face` (same offset the server
+     * applies), so predict at THAT cell to match the confirming broadcast. */
+    {
+        int dx = 0, dy = 0, dz = 0;
+        client_face_offset(face, &dx, &dy, &dz);
+        client_predict_sfx(c, x + dx, y + dy, z + dz, /*is_air=*/0);
+    }
+    audio_play(SFX_BLOCK_PLACE);
 }
 
 void client_send_mob_attack(Client* c, uint16_t mob_id) {
@@ -451,8 +528,13 @@ int client_poll(Client* c)
             bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
             if (is_new) {
                 /* SFX hook: a change to AIR is a break, anything else a place.
-                 * Positional so distant edits by other players are quieter. */
-                {
+                 * Positional so distant edits by other players are quieter.
+                 * For our OWN action we already played the sound locally at send
+                 * time (predicted, mine-vibe-5kz); consume the prediction and
+                 * skip here so we don't double-play. Other players' edits never
+                 * match the ring, so they still sound. */
+                if (!client_consume_predicted_sfx(c, bp.x, bp.y, bp.z,
+                                                  bp.block == BLOCK_AIR)) {
                     float pos[3]      = { (float)bp.x, (float)bp.y, (float)bp.z };
                     float listener[3] = { 0.0f, 0.0f, 0.0f }; /* updated via audio_update */
                     audio_play_at(bp.block == BLOCK_AIR ? SFX_BLOCK_BREAK

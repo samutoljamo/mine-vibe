@@ -51,9 +51,13 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Up to this many simultaneous one-shot SFX. Beyond this, the oldest-free
- * policy simply drops the new request (audibly harmless). */
-#define MA_BACKEND_MAX_VOICES 32
+/* Up to this many simultaneous one-shot SFX. Raised from 32 to 64: under load
+ * (mining + mobs + footsteps at once) 32 voices starved and new SFX were
+ * silently dropped. When the pool IS full we no longer drop — submit_pcm steals
+ * the OLDEST voice (see audio_pick_voice) so the freshest feedback always
+ * plays. The mixer sums every active voice in float and clamps ONCE per frame,
+ * so a higher voice count cannot clip harder than before — it just mixes more. */
+#define MA_BACKEND_MAX_VOICES 64
 
 typedef struct {
     int16_t* pcm;       /* owned copy of the PCM, NULL when slot is free */
@@ -61,6 +65,7 @@ typedef struct {
     size_t   cursor;    /* next sample to play */
     float    gain;      /* linear 0..1 */
     bool     active;
+    uint64_t age;       /* monotonic start stamp; larger = more recent */
 } Voice;
 
 static struct {
@@ -78,6 +83,7 @@ static struct {
     ma_uint32 dev_channels;  /* device.playback.channels (app-facing) */
 
     Voice     voices[MA_BACKEND_MAX_VOICES];
+    uint64_t  voice_clock;   /* increments per submitted one-shot -> voice age */
 
     /* Dedicated looping voice (used only if submit_pcm is called with loop). */
     int16_t*  loop_pcm;
@@ -239,21 +245,30 @@ static void ma_backend_submit_pcm(const int16_t* pcm, size_t samples,
         return;
     }
 
-    /* One-shot: find a free voice slot. */
+    /* One-shot: pick a slot — a free one if any, else steal the OLDEST active
+     * voice (graceful: the new sound always plays instead of being dropped). */
+    uint8_t  active[MA_BACKEND_MAX_VOICES];
+    uint64_t age[MA_BACKEND_MAX_VOICES];
     for (int v = 0; v < MA_BACKEND_MAX_VOICES; v++) {
-        if (!g_ma.voices[v].active) {
-            g_ma.voices[v].pcm     = copy;
-            g_ma.voices[v].samples = samples;
-            g_ma.voices[v].cursor  = 0;
-            g_ma.voices[v].gain    = gain;
-            g_ma.voices[v].active  = true;
-            ma_mutex_unlock(&g_ma.lock);
-            return;
-        }
+        active[v] = g_ma.voices[v].active ? 1u : 0u;
+        age[v]    = g_ma.voices[v].age;
     }
-    /* No free slot — drop this one-shot. */
+    int v = audio_pick_voice(active, age, MA_BACKEND_MAX_VOICES);
+    if (v < 0) {                 /* should not happen (count > 0) */
+        ma_mutex_unlock(&g_ma.lock);
+        free(copy);
+        return;
+    }
+    /* If we are reusing/stealing an active slot, free its old PCM first. */
+    if (g_ma.voices[v].active && g_ma.voices[v].pcm)
+        free(g_ma.voices[v].pcm);
+    g_ma.voices[v].pcm     = copy;
+    g_ma.voices[v].samples = samples;
+    g_ma.voices[v].cursor  = 0;
+    g_ma.voices[v].gain    = gain;
+    g_ma.voices[v].active  = true;
+    g_ma.voices[v].age     = ++g_ma.voice_clock;
     ma_mutex_unlock(&g_ma.lock);
-    free(copy);
 }
 
 static void ma_backend_update(void)

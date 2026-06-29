@@ -77,6 +77,29 @@ static int16_t to_pcm(float s)
     return (int16_t)v;
 }
 
+/* ---- Voice allocation policy -------------------------------------------- *
+ *
+ * Pure oldest-voice-stealing selection shared by playback backends. Prefer a
+ * free slot; when the whole pool is busy, steal the oldest (smallest age) so a
+ * new sound replaces the most-stale one rather than being dropped. See audio.h.
+ */
+int audio_pick_voice(const uint8_t* active, const uint64_t* age, int count)
+{
+    if (count <= 0 || !active) return -1;
+
+    /* First pass: any free slot wins (no stealing while one is idle). */
+    for (int i = 0; i < count; i++)
+        if (!active[i]) return i;
+
+    /* All busy: steal the oldest active voice (smallest age stamp). With no
+     * age array fall back to slot 0 (still graceful — never drops the new one). */
+    if (!age) return 0;
+    int oldest = 0;
+    for (int i = 1; i < count; i++)
+        if (age[i] < age[oldest]) oldest = i;
+    return oldest;
+}
+
 /* ---- SFX synthesis ------------------------------------------------------ *
  *
  * The redesign drops the "single osc + exp decay" buzzer in favour of small

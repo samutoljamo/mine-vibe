@@ -120,6 +120,20 @@ typedef struct {
     bool                 container_open;
     ContainerStatePacket container;   /* valid when container_open */
 
+    /* Predicted-SFX dedup ring (mine-vibe-5kz). For block break/place the client
+     * plays the SFX LOCALLY at send time (instant feedback, no server round-trip
+     * lag). The server still broadcasts a PKT_BLOCK_CHANGE for the same edit; to
+     * avoid double-playing for our OWN action we record each predicted edit here
+     * and, when the matching broadcast returns, consume the entry and skip its
+     * SFX. Other players' edits aren't in the ring, so they still sound normally.
+     * Small fixed ring (overwrites oldest); a missed match just costs at most one
+     * faint extra play, never a crash. */
+    struct {
+        int     x, y, z;
+        uint8_t is_air;   /* 1 = predicted a break (-> AIR), 0 = place */
+    } predicted_sfx[16];
+    int predicted_sfx_count;   /* number of valid entries (<= 16) */
+
     /* Pending knockback impulse from the server (PKT_KNOCKBACK), in blocks/s,
      * world space. The local player owns its position, so a server shove arrives
      * as its own packet and is accumulated here; main.c drains it each frame

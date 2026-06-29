@@ -150,4 +150,20 @@ size_t audio_gen_music(int16_t* out, size_t cap, uint64_t start);
 /* Length of the music loop in samples (the generator is periodic over this). */
 size_t audio_music_loop_samples(void);
 
+/* ---- Voice allocation policy (pure, unit-tested) ------------------------- *
+ *
+ * Backends keep a fixed pool of one-shot voice slots. When a new SFX is
+ * submitted this picks which slot to use:
+ *
+ *   - Prefer ANY free (inactive) slot — never steal while one is idle.
+ *   - When all slots are busy, STEAL the OLDEST voice (smallest `age`) instead
+ *     of dropping the new sound, so under load (mining + mobs + steps at once)
+ *     the freshest feedback always plays rather than starving.
+ *
+ * `active[i]` is non-zero if slot i currently plays a voice; `age[i]` is a
+ * monotonic submission stamp (larger = more recently started) for active slots
+ * (ignored for free slots). Returns the chosen slot index in [0,count), or -1
+ * if count <= 0. Pure: depends only on its arguments. */
+int audio_pick_voice(const uint8_t* active, const uint64_t* age, int count);
+
 #endif /* AUDIO_H */

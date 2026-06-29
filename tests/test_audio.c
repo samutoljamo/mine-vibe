@@ -646,6 +646,46 @@ static void test_lifecycle_null_backend(void) {
     printf("PASS: lifecycle_null_backend\n");
 }
 
+/* Voice-allocation / oldest-voice-stealing policy (mine-vibe-5kz). Pure: no
+ * device required. Reuses a free slot when available; steals the oldest active
+ * voice (smallest age) when the pool is full instead of dropping the new one. */
+static void test_pick_voice(void) {
+    /* Free slot is preferred even when others are busy (no stealing while idle). */
+    {
+        uint8_t  active[4] = { 1, 1, 0, 1 };
+        uint64_t age[4]    = { 5, 1, 0, 9 };   /* slot 1 is oldest, but slot 2 is free */
+        assert(audio_pick_voice(active, age, 4) == 2);
+    }
+    /* First free slot wins when several are free. */
+    {
+        uint8_t  active[4] = { 1, 0, 0, 1 };
+        uint64_t age[4]    = { 5, 0, 0, 9 };
+        assert(audio_pick_voice(active, age, 4) == 1);
+    }
+    /* All busy -> steal the OLDEST (smallest age stamp). */
+    {
+        uint8_t  active[4] = { 1, 1, 1, 1 };
+        uint64_t age[4]    = { 7, 3, 9, 4 };   /* slot 1 (age 3) is oldest */
+        assert(audio_pick_voice(active, age, 4) == 1);
+    }
+    /* All busy, oldest is the last slot. */
+    {
+        uint8_t  active[3] = { 1, 1, 1 };
+        uint64_t age[3]    = { 100, 50, 10 };
+        assert(audio_pick_voice(active, age, 3) == 2);
+    }
+    /* Degenerate inputs are graceful, never -1 except for empty pools. */
+    {
+        uint8_t  active[1] = { 1 };
+        uint64_t age[1]    = { 42 };
+        assert(audio_pick_voice(active, age, 1) == 0);   /* steal the only slot */
+        assert(audio_pick_voice(active, NULL, 1) == 0);  /* no age array: still graceful */
+        assert(audio_pick_voice(NULL, age, 1) == -1);    /* no active array */
+        assert(audio_pick_voice(active, age, 0) == -1);  /* empty pool */
+    }
+    printf("PASS: pick_voice\n");
+}
+
 int main(void) {
     test_env_decay();
     test_oscillators();
@@ -667,6 +707,7 @@ int main(void) {
     test_mix_clamp_and_wav_dump();
     test_sound_id_table();
     test_lifecycle_null_backend();
+    test_pick_voice();
     printf("ALL AUDIO TESTS PASSED\n");
     return 0;
 }
