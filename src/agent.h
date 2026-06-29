@@ -20,6 +20,22 @@ typedef enum AgentCommandType {
     CMD_DUMP_FRAME,
     CMD_SELECT_SLOT,
     CMD_QUIT,
+    /* --- Deterministic harness driver (zqj) --- */
+    CMD_STEP,         /* advance the sim a fixed number of ticks, no real sleep */
+    /* --- Gameplay verbs routed through the authoritative server (qne) --- */
+    CMD_PLACE,
+    CMD_BREAK,
+    CMD_ATTACK,
+    CMD_CRAFT,
+    CMD_OPEN,
+    CMD_MOVE_ITEM,
+    CMD_EAT,
+    /* --- Test-only helpers (in-process server backdoor) (qne) --- */
+    CMD_GIVE,
+    CMD_TP,
+    CMD_SPAWN_MOB,
+    CMD_SET_TIME,
+    CMD_SET_WEATHER,
 } AgentCommandType;
 
 typedef struct AgentCommand {
@@ -31,12 +47,48 @@ typedef struct AgentCommand {
         struct { int   mode;                  } mode;   /* 0=free, 1=walk */
         struct { char  path[256];             } dump_frame;
         struct { int   slot;                  } select_slot;
+        struct { int   ticks;                 } step;
+        struct { int   x, y, z, block;        } place;     /* place `block` into cell (x,y,z) */
+        struct { int   x, y, z;               } brk;       /* break cell (x,y,z) */
+        struct { int   mob_id;                } attack;
+        struct { int   recipe;                } craft;     /* shapeless recipe index */
+        struct { int   x, y, z;               } open;      /* open container at cell */
+        struct { int   slot; int dir; int count; int x, y, z; } move_item;
+        struct { int   item; int count;       } give;
+        struct { float x, y, z;               } tp;
+        struct { int   type; float x, y, z;   } spawn_mob;
+        struct { int   ticks;                 } set_time;  /* world_ticks of day */
+        struct { int   kind;                  } set_weather;
     };
 } AgentCommand;
 
 /* ------------------------------------------------------------------ */
 /*  Snapshot (main thread -> stdout)                                  */
 /* ------------------------------------------------------------------ */
+
+/* Rich per-slot inventory entry for the snapshot (c0j). */
+typedef struct AgentInvSlot {
+    int item;        /* ItemId (block id in the low range); 0 = empty/air */
+    int count;
+    int durability;  /* remaining uses for tools; 0 for blocks */
+} AgentInvSlot;
+
+/* Nearby-mob entry for the snapshot (c0j). */
+typedef struct AgentMobInfo {
+    int   id;
+    int   type;      /* MobType */
+    int   health;
+    float pos[3];
+} AgentMobInfo;
+
+/* One container slot for the open-container view in the snapshot (c0j). */
+typedef struct AgentContainerSlot {
+    int item;
+    int count;
+} AgentContainerSlot;
+
+#define AGENT_MAX_MOBS       16
+#define AGENT_MAX_CONTAINER  27   /* chest holds 27; furnace uses first 3 */
 
 typedef struct AgentSnapshot {
     float    pos[3];
@@ -47,7 +99,30 @@ typedef struct AgentSnapshot {
     int      mode;       /* 0=free, 1=walk */
     uint64_t tick;
     int      selected_slot;
-    int      hotbar[HUD_SLOT_COUNT];
+    int      hotbar[HUD_SLOT_COUNT];   /* legacy: per-slot counts */
+
+    /* --- Rich state (c0j) --- */
+    int      health;     /* 0..20, -1 if unknown (no networking) */
+    int      food;       /* 0..20 hunger */
+    int      air;        /* 0..20 oxygen bubbles */
+    int      gamemode;   /* GameMode: 0=survival, 1=creative */
+    int      weather;    /* WeatherKind: 0=clear,1=rain,2=storm */
+    uint32_t time_of_day;/* server world_ticks (estimated) */
+
+    AgentInvSlot inventory[HUD_SLOT_COUNT];
+    int          inventory_count;       /* == INVENTORY_SLOTS */
+
+    int      target_hit;                /* 1 if a block is targeted */
+    int      target_x, target_y, target_z;
+    int      target_block;              /* BlockID at the targeted cell */
+
+    AgentMobInfo mobs[AGENT_MAX_MOBS];
+    int          mob_count;
+
+    int                 container_open; /* 1 if a container is open */
+    int                 container_type; /* 0=chest, 1=furnace */
+    AgentContainerSlot  container[AGENT_MAX_CONTAINER];
+    int                 container_slots;
 } AgentSnapshot;
 
 /* ------------------------------------------------------------------ */

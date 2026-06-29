@@ -112,7 +112,7 @@ bool agent_pop_command(AgentCommand *out)
 
 void agent_emit_snapshot(const AgentSnapshot *snap)
 {
-    char buf[512];
+    char buf[4096];
     agent_format_snapshot(snap, buf, sizeof(buf));
     emit_raw(buf);
 }
@@ -147,6 +147,31 @@ void agent_emit_error(const char *msg)
 }
 
 /* ---- Pure functions from Task 2 — kept exactly as implemented ---- */
+
+/* Extract an integer field "name":<int> from a JSON line. Returns true and
+ * writes *out when present (default left untouched when absent). */
+static bool json_int(const char *line, const char *name, int *out)
+{
+    char key[40];
+    snprintf(key, sizeof(key), "\"%s\"", name);
+    const char *p = strstr(line, key);
+    if (!p) return false;
+    p = strchr(p + strlen(key), ':');
+    if (!p) return false;
+    return sscanf(p + 1, "%d", out) == 1;
+}
+
+/* Extract a float field "name":<float> from a JSON line. */
+static bool json_float(const char *line, const char *name, float *out)
+{
+    char key[40];
+    snprintf(key, sizeof(key), "\"%s\"", name);
+    const char *p = strstr(line, key);
+    if (!p) return false;
+    p = strchr(p + strlen(key), ':');
+    if (!p) return false;
+    return sscanf(p + 1, "%f", out) == 1;
+}
 
 bool agent_parse_command(const char *line, AgentCommand *out)
 {
@@ -243,13 +268,129 @@ bool agent_parse_command(const char *line, AgentCommand *out)
             out->select_slot.slot = HUD_SLOT_COUNT - 1;
         return true;
     }
+    /* ---- Deterministic harness driver (zqj) ---- */
+    if (strcmp(cmd_str, "step") == 0) {
+        out->type = CMD_STEP;
+        out->step.ticks = 1;
+        json_int(line, "ticks", &out->step.ticks);
+        if (out->step.ticks < 0)    out->step.ticks = 0;
+        if (out->step.ticks > 100000) out->step.ticks = 100000;
+        return true;
+    }
+    /* ---- Gameplay verbs (qne) ---- */
+    if (strcmp(cmd_str, "place") == 0) {
+        out->type = CMD_PLACE;
+        out->place.x = out->place.y = out->place.z = 0;
+        out->place.block = 0;
+        json_int(line, "x", &out->place.x);
+        json_int(line, "y", &out->place.y);
+        json_int(line, "z", &out->place.z);
+        json_int(line, "block", &out->place.block);
+        return true;
+    }
+    if (strcmp(cmd_str, "break") == 0) {
+        out->type = CMD_BREAK;
+        out->brk.x = out->brk.y = out->brk.z = 0;
+        out->brk.x = out->brk.y = out->brk.z = INT32_MIN; /* sentinel: use target */
+        json_int(line, "x", &out->brk.x);
+        json_int(line, "y", &out->brk.y);
+        json_int(line, "z", &out->brk.z);
+        return true;
+    }
+    if (strcmp(cmd_str, "attack") == 0) {
+        out->type = CMD_ATTACK;
+        out->attack.mob_id = 0;
+        json_int(line, "mob_id", &out->attack.mob_id);
+        return true;
+    }
+    if (strcmp(cmd_str, "craft") == 0) {
+        out->type = CMD_CRAFT;
+        out->craft.recipe = 0;
+        json_int(line, "recipe", &out->craft.recipe);
+        return true;
+    }
+    if (strcmp(cmd_str, "open") == 0) {
+        out->type = CMD_OPEN;
+        out->open.x = out->open.y = out->open.z = 0;
+        json_int(line, "x", &out->open.x);
+        json_int(line, "y", &out->open.y);
+        json_int(line, "z", &out->open.z);
+        return true;
+    }
+    if (strcmp(cmd_str, "move_item") == 0) {
+        out->type = CMD_MOVE_ITEM;
+        out->move_item.slot = 0;
+        out->move_item.dir = 0;     /* 0 = container->inv, 1 = inv->container */
+        out->move_item.count = 1;
+        out->move_item.x = out->move_item.y = out->move_item.z = INT32_MIN;
+        json_int(line, "slot",  &out->move_item.slot);
+        json_int(line, "dir",   &out->move_item.dir);
+        json_int(line, "count", &out->move_item.count);
+        json_int(line, "x", &out->move_item.x);
+        json_int(line, "y", &out->move_item.y);
+        json_int(line, "z", &out->move_item.z);
+        return true;
+    }
+    if (strcmp(cmd_str, "eat") == 0) {
+        out->type = CMD_EAT;
+        return true;
+    }
+    /* ---- Test-only helpers (server backdoor) (qne) ---- */
+    if (strcmp(cmd_str, "give") == 0) {
+        out->type = CMD_GIVE;
+        out->give.item = 0;
+        out->give.count = 1;
+        json_int(line, "item",  &out->give.item);
+        json_int(line, "count", &out->give.count);
+        if (out->give.count < 1) out->give.count = 1;
+        return true;
+    }
+    if (strcmp(cmd_str, "tp") == 0) {
+        out->type = CMD_TP;
+        out->tp.x = out->tp.y = out->tp.z = 0.0f;
+        json_float(line, "x", &out->tp.x);
+        json_float(line, "y", &out->tp.y);
+        json_float(line, "z", &out->tp.z);
+        return true;
+    }
+    if (strcmp(cmd_str, "spawn_mob") == 0) {
+        out->type = CMD_SPAWN_MOB;
+        out->spawn_mob.type = 0;
+        out->spawn_mob.x = out->spawn_mob.y = out->spawn_mob.z = 0.0f;
+        json_int(line, "type", &out->spawn_mob.type);
+        json_float(line, "x", &out->spawn_mob.x);
+        json_float(line, "y", &out->spawn_mob.y);
+        json_float(line, "z", &out->spawn_mob.z);
+        return true;
+    }
+    if (strcmp(cmd_str, "set_time") == 0) {
+        out->type = CMD_SET_TIME;
+        out->set_time.ticks = 0;
+        json_int(line, "ticks", &out->set_time.ticks);
+        if (out->set_time.ticks < 0) out->set_time.ticks = 0;
+        return true;
+    }
+    if (strcmp(cmd_str, "set_weather") == 0) {
+        out->type = CMD_SET_WEATHER;
+        out->set_weather.kind = 0;
+        json_int(line, "kind", &out->set_weather.kind);
+        if (out->set_weather.kind < 0 || out->set_weather.kind > 2)
+            out->set_weather.kind = 0;
+        return true;
+    }
     return false;
 }
 
 void agent_format_snapshot(const AgentSnapshot *snap, char *buf, size_t buf_size)
 {
-    snprintf(buf, buf_size,
-        "{\"event\":\"state\","
+    /* Append helper: write into buf at *off, never overrunning buf_size. */
+    size_t off = 0;
+    #define APP(...) do { \
+        int _n = snprintf(buf + off, (off < buf_size) ? buf_size - off : 0, __VA_ARGS__); \
+        if (_n > 0) off += (size_t)_n; \
+    } while (0)
+
+    APP("{\"event\":\"state\","
         "\"pos\":[%.3f,%.3f,%.3f],"
         "\"vel\":[%.3f,%.3f,%.3f],"
         "\"yaw\":%.3f,\"pitch\":%.3f,"
@@ -257,7 +398,7 @@ void agent_format_snapshot(const AgentSnapshot *snap, char *buf, size_t buf_size
         "\"on_ground\":%d,"
         "\"tick\":%" PRIu64 ","
         "\"selected_slot\":%d,"
-        "\"hotbar\":[%d,%d,%d,%d,%d,%d]}\n",
+        "\"hotbar\":[%d,%d,%d,%d,%d,%d],",
         snap->pos[0], snap->pos[1], snap->pos[2],
         snap->vel[0], snap->vel[1], snap->vel[2],
         snap->yaw, snap->pitch,
@@ -267,4 +408,55 @@ void agent_format_snapshot(const AgentSnapshot *snap, char *buf, size_t buf_size
         snap->selected_slot,
         snap->hotbar[0], snap->hotbar[1], snap->hotbar[2],
         snap->hotbar[3], snap->hotbar[4], snap->hotbar[5]);
+
+    const char *gm  = (snap->gamemode == 1) ? "creative" : "survival";
+    const char *wx  = (snap->weather == 2) ? "storm"
+                    : (snap->weather == 1) ? "rain" : "clear";
+    APP("\"health\":%d,\"food\":%d,\"air\":%d,"
+        "\"gamemode\":\"%s\",\"weather\":\"%s\",\"time_of_day\":%u,",
+        snap->health, snap->food, snap->air, gm, wx, snap->time_of_day);
+
+    /* Full inventory: [{item,count,durability}, ...] */
+    APP("\"inventory\":[");
+    for (int i = 0; i < snap->inventory_count; i++) {
+        APP("%s{\"item\":%d,\"count\":%d,\"durability\":%d}",
+            i ? "," : "",
+            snap->inventory[i].item, snap->inventory[i].count,
+            snap->inventory[i].durability);
+    }
+    APP("],");
+
+    /* Targeted block. */
+    if (snap->target_hit)
+        APP("\"target\":{\"x\":%d,\"y\":%d,\"z\":%d,\"block\":%d},",
+            snap->target_x, snap->target_y, snap->target_z, snap->target_block);
+    else
+        APP("\"target\":null,");
+
+    /* Nearby mobs. */
+    APP("\"mobs\":[");
+    for (int i = 0; i < snap->mob_count; i++) {
+        APP("%s{\"id\":%d,\"type\":%d,\"health\":%d,\"pos\":[%.3f,%.3f,%.3f]}",
+            i ? "," : "",
+            snap->mobs[i].id, snap->mobs[i].type, snap->mobs[i].health,
+            snap->mobs[i].pos[0], snap->mobs[i].pos[1], snap->mobs[i].pos[2]);
+    }
+    APP("],");
+
+    /* Open container contents, if any. */
+    if (snap->container_open) {
+        APP("\"container\":{\"type\":\"%s\",\"slots\":[",
+            snap->container_type == 1 ? "furnace" : "chest");
+        for (int i = 0; i < snap->container_slots; i++) {
+            APP("%s{\"item\":%d,\"count\":%d}",
+                i ? "," : "",
+                snap->container[i].item, snap->container[i].count);
+        }
+        APP("]}");
+    } else {
+        APP("\"container\":null");
+    }
+
+    APP("}\n");
+    #undef APP
 }
