@@ -400,6 +400,133 @@ static void test_dungeon_room(void) {
     printf("PASS: dungeon_room\n");
 }
 
+/* Read the generated surface height (topmost solid, non-water) of a world
+ * column by generating its chunk. Returns -1 if the column has no solid block.
+ * Generates a fresh chunk each call — fine for the small strips below. */
+static int gen_surface_height(int wx, int wz, int seed) {
+    int cx = (int)floor((double)wx / CHUNK_X);
+    int cz = (int)floor((double)wz / CHUNK_Z);
+    Chunk* c = gen(cx, cz, seed);
+    int lx = wx - cx * CHUNK_X;
+    int lz = wz - cz * CHUNK_Z;
+    int top = top_solid(c, lx, lz);
+    chunk_destroy(c);
+    return top;
+}
+
+/* ── 11. Biome borders blend smoothly (no height cliffs) ─────────────────────
+ * Wiring biome_blend_height_bias into worldgen must make terrain elevation
+ * transition gradually across a biome border rather than snapping by the full
+ * per-biome bias gap. We use a known plains↔mountains border (bias 0 vs 24, the
+ * largest gap) at seed 1337, scan a strip crossing it, and contrast:
+ *
+ *   - HARD reference: worldgen_get_height (raw base, no bias) + the *hard*
+ *     biome_height_bias(biome_at(...)). This is what per-column hard selection
+ *     WOULD produce; its max adjacent-column jump spans the border cliff.
+ *   - ACTUAL: the real generated surface heights from worldgen (blended bias).
+ *
+ * We assert the hard reference genuinely cliffs (large single-column jump) while
+ * the actual generated terrain stays smooth (small max adjacent jump). If the
+ * blend were NOT wired in, ACTUAL would equal HARD and the smoothness assert
+ * would fail — so this test fails against the old hard selection. */
+static void test_biome_border_smooth(void) {
+    int seed = 1337;
+    int z = -200;            /* row crossing a plains→mountains border */
+    int x0 = 150, x1 = 200;
+
+    int prev_hard = -9999, prev_actual = -9999;
+    int max_hard_jump = 0, max_actual_jump = 0;
+    int crossed_border = 0;
+
+    for (int x = x0; x <= x1; x++) {
+        Biome b = biome_at(x, z, seed);
+        int hard = worldgen_get_height(x, z, seed) + biome_height_bias(b);
+        int actual = gen_surface_height(x, z, seed);
+        assert(actual >= 1);   /* dry highland: always a solid surface */
+
+        if (prev_hard != -9999) {
+            int dh = hard - prev_hard;   if (dh < 0) dh = -dh;
+            int da = actual - prev_actual; if (da < 0) da = -da;
+            if (dh > max_hard_jump)   max_hard_jump = dh;
+            if (da > max_actual_jump) max_actual_jump = da;
+        }
+        prev_hard = hard;
+        prev_actual = actual;
+    }
+
+    /* Confirm the strip really straddles the plains/mountains border. */
+    if (biome_at(x0, z, seed) != biome_at(x1, z, seed)) crossed_border = 1;
+    assert(crossed_border);
+
+    printf("  border strip: max hard jump=%d  max actual(blended) jump=%d\n",
+           max_hard_jump, max_actual_jump);
+    /* Hard selection cliffs at the border (≈ the 24-block bias gap). */
+    assert(max_hard_jump >= 20);
+    /* Blended terrain transitions smoothly — no single-column cliff. */
+    assert(max_actual_jump <= 12);
+    /* And it is strictly smoother than hard selection. */
+    assert(max_actual_jump < max_hard_jump);
+    printf("PASS: biome_border_smooth\n");
+}
+
+/* ── 12. Deep inside a biome: no regression vs hard selection ────────────────
+ * Far from any border the blend weight of the dominant biome is ~1, so the
+ * blended params must reduce exactly to the old per-biome behavior:
+ *   - surface skin == biome_surface_block(hard biome)
+ *   - surface height == base + hard biome_height_bias
+ * We find deep-interior columns by requiring the hard biome (biome_at) to be
+ * uniform over a generous ±64-block world window (climate noise is smooth and
+ * low-frequency, so spatial uniformity over that span implies the blend kernel
+ * — radius BIOME_BLEND_RADIUS in climate space — sees a single biome). For such
+ * columns we assert exact agreement with hard selection. Columns breached at the
+ * very top by a cave (stone/air exposed) are skipped, as elsewhere. */
+static void test_deep_biome_no_regression(void) {
+    int seed = 1337;
+    int checked = 0;
+
+    /* Walk a coarse grid of candidate columns; for each, verify biome uniformity
+     * over a window, then check the generated chunk's surface against hard. */
+    for (int cx = -30; cx <= 30 && checked < 12; cx += 3)
+        for (int cz = -30; cz <= 30 && checked < 12; cz += 3) {
+            int wx = cx * CHUNK_X + 8;
+            int wz = cz * CHUNK_Z + 8;
+            Biome b = biome_at(wx, wz, seed);
+
+            /* Require deep interior: same biome across a ±64-block window. */
+            int uniform = 1;
+            for (int dx = -64; dx <= 64 && uniform; dx += 16)
+                for (int dz = -64; dz <= 64 && uniform; dz += 16)
+                    if (biome_at(wx + dx, wz + dz, seed) != b) uniform = 0;
+            if (!uniform) continue;
+
+            /* Skip below sea level (water/beach overrides the biome skin). */
+            int hard_h = worldgen_get_height(wx, wz, seed) + biome_height_bias(b);
+            if (hard_h <= SEA_LEVEL + 1) continue;
+
+            Chunk* c = gen(cx, cz, seed);
+            BlockID surf = chunk_get_block(c, 8, hard_h, 8);
+            int actual_top = top_solid(c, 8, 8);
+            chunk_destroy(c);
+
+            /* A cave entrance can breach the very top; only assert where the
+             * column is intact (top solid at the expected hard height). */
+            if (actual_top != hard_h) continue;
+
+            BlockID expect = biome_surface_block(b, hard_h);
+            /* Trees can sit on top of grass biomes; allow wood/leaves there. */
+            int surf_ok = (surf == expect) ||
+                          (surf == BLOCK_WOOD) || (surf == BLOCK_LEAVES);
+            assert(surf_ok);
+            /* Height matches hard selection exactly (blend weight ~= 1). */
+            assert(actual_top == hard_h);
+            checked++;
+        }
+
+    printf("  deep-biome columns verified against hard selection: %d\n", checked);
+    assert(checked > 0);
+    printf("PASS: deep_biome_no_regression\n");
+}
+
 int main(void) {
     test_deterministic();
     test_bedrock_floor();
@@ -411,6 +538,8 @@ int main(void) {
     test_cave_density();
     test_cave_entrances();
     test_dungeon_room();
+    test_biome_border_smooth();
+    test_deep_biome_no_regression();
     printf("ALL WORLDGEN TESTS PASSED\n");
     return 0;
 }

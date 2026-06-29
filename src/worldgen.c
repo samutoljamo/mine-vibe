@@ -34,6 +34,64 @@ typedef struct {
     fnl_state mask;
 } TerrainNoise;
 
+/* Biome climate sampling (for border blending).
+ *
+ * biome.c exposes the pure blend helpers (biome_blend_*), but they take the
+ * *normalized* climate triple (temp, humidity, elevation) — the same values the
+ * hard classifier samples internally inside biome_at. biome.h does not expose a
+ * climate sampler, so to feed the blend helpers we reproduce biome.c's three
+ * climate noise fields here EXACTLY (identical seed offsets, frequencies,
+ * octaves and fractal type). Because the noise is a pure function of
+ * (wx, wz, seed) with those parameters, the triple computed here is bit-for-bit
+ * the same one biome_at/biome_classify see — so deep inside a biome the blended
+ * params equal the old per-biome values and only borders change.
+ *
+ * These constants MUST stay in sync with biome.c (BIOME_SEED_* and the field
+ * setups in biome_noise_init). They are duplicated rather than shared because
+ * this ticket is scoped to worldgen.c only and biome.h's signatures are final. */
+#define BIOME_SEED_ELEVATION   4001
+#define BIOME_SEED_TEMPERATURE 4002
+#define BIOME_SEED_HUMIDITY    4003
+
+typedef struct {
+    fnl_state elevation;
+    fnl_state temperature;
+    fnl_state humidity;
+} ClimateNoise;
+
+static void climate_noise_init(ClimateNoise* cn, int seed)
+{
+    cn->elevation = fnlCreateState();
+    cn->elevation.noise_type = FNL_NOISE_PERLIN;
+    cn->elevation.fractal_type = FNL_FRACTAL_FBM;
+    cn->elevation.octaves = 2;
+    cn->elevation.frequency = 0.0012f;
+    cn->elevation.seed = seed + BIOME_SEED_ELEVATION;
+
+    cn->temperature = fnlCreateState();
+    cn->temperature.noise_type = FNL_NOISE_PERLIN;
+    cn->temperature.fractal_type = FNL_FRACTAL_FBM;
+    cn->temperature.octaves = 2;
+    cn->temperature.frequency = 0.0010f;
+    cn->temperature.seed = seed + BIOME_SEED_TEMPERATURE;
+
+    cn->humidity = fnlCreateState();
+    cn->humidity.noise_type = FNL_NOISE_PERLIN;
+    cn->humidity.fractal_type = FNL_FRACTAL_FBM;
+    cn->humidity.octaves = 2;
+    cn->humidity.frequency = 0.0009f;
+    cn->humidity.seed = seed + BIOME_SEED_HUMIDITY;
+}
+
+/* Sample the normalized climate triple at a world column (matches biome.c). */
+static void climate_sample(const ClimateNoise* cn, float wx, float wz,
+                           float* temp, float* humidity, float* elevation)
+{
+    *elevation = fnlGetNoise2D((fnl_state*)&cn->elevation,   wx, wz);
+    *temp      = fnlGetNoise2D((fnl_state*)&cn->temperature, wx, wz);
+    *humidity  = fnlGetNoise2D((fnl_state*)&cn->humidity,    wx, wz);
+}
+
 static void terrain_noise_init(TerrainNoise* tn, int seed)
 {
     /* Layer 1: Base continentalness — smooth, large-scale height variation */
@@ -223,10 +281,12 @@ void worldgen_generate(Chunk* chunk, int seed)
      * Cave noise is owned by cave.c (cached internally), so we only cache the
      * terrain noise here. */
     static _Thread_local TerrainNoise terrain;
+    static _Thread_local ClimateNoise climate;
     static _Thread_local int cached_seed = -1;
 
     if (cached_seed != seed) {
         terrain_noise_init(&terrain, seed);
+        climate_noise_init(&climate, seed);
         cached_seed = seed;
     }
 
@@ -234,17 +294,29 @@ void worldgen_generate(Chunk* chunk, int seed)
     int base_z = chunk->cz * CHUNK_Z;
 
     /* Compute height map using 3-layer noise, then nudge each column by its
-     * biome's height bias (mountains rise, deserts dip). Biome is a pure
-     * function of (wx, wz, seed) so the result is stable across chunk seams. */
+     * biome height bias. The bias is the *border-blended* weighted average
+     * (biome_blend_height_bias) of the climate triple at this column rather than
+     * the single hard biome's bias, so terrain elevation transitions smoothly
+     * across biome borders (no cliffs) while remaining the exact per-biome value
+     * deep inside a biome (blend weight ~= 1 there). The discrete surface biome
+     * (for the surface/sub-surface skin) is the *dominant* blended biome, which
+     * also equals the hard classification deep inside a biome. Everything is a
+     * pure function of (wx, wz, seed) so it stays stable across chunk seams. */
     int height_map[CHUNK_X][CHUNK_Z];
     Biome biome_map[CHUNK_X][CHUNK_Z];
     for (int x = 0; x < CHUNK_X; x++) {
         for (int z = 0; z < CHUNK_Z; z++) {
             float wx = (float)(base_x + x);
             float wz = (float)(base_z + z);
-            Biome b = biome_at(base_x + x, base_z + z, seed);
-            biome_map[x][z] = b;
-            int h = compute_height(&terrain, wx, wz) + biome_height_bias(b);
+            float temp, humid, elev;
+            climate_sample(&climate, wx, wz, &temp, &humid, &elev);
+
+            /* Discrete surface choice: dominant blended biome. */
+            biome_map[x][z] = biome_blend_dominant(temp, humid, elev);
+
+            /* Continuous height bias: weight-blended across biomes. */
+            float bias = biome_blend_height_bias(temp, humid, elev);
+            int h = compute_height(&terrain, wx, wz) + (int)lroundf(bias);
             if (h < 1) h = 1;
             if (h >= CHUNK_Y) h = CHUNK_Y - 1;
             height_map[x][z] = h;
@@ -323,7 +395,15 @@ void worldgen_generate(Chunk* chunk, int seed)
             if (h < SEA_LEVEL) continue;
             if (chunk_get_block(chunk, x, h, z) != BLOCK_GRASS) continue;
 
-            int tree_chance = (int)(biome_tree_density(biome_map[x][z]) * 100.0f);
+            /* Decoration density is the border-blended tree density (weighted
+             * average across biomes), so tree cover fades smoothly across biome
+             * borders instead of snapping. Deep inside a biome the blend weight
+             * is ~1, so this equals the old per-biome density (no regression). */
+            float temp, humid, elev;
+            climate_sample(&climate, (float)(base_x + x), (float)(base_z + z),
+                           &temp, &humid, &elev);
+            int tree_chance = (int)(biome_blend_tree_density(temp, humid, elev)
+                                    * 100.0f);
             if (tree_chance <= 0) continue;
             int r = hash_pos(base_x + x, base_z + z, seed + 9999);
             if ((r % 100) >= tree_chance) continue;
