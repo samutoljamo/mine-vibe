@@ -106,17 +106,35 @@ BlockID biome_surface_block(Biome b, int surface_h)
         case BIOME_DESERT:
             return BLOCK_SAND;
         case BIOME_MOUNTAINS:
-            /* Bare rock; snowy stand-in (SAND, the lightest existing block)
-             * caps high peaks since no dedicated snow block exists. */
-            return (surface_h >= BIOME_SNOW_LINE) ? BLOCK_SAND : BLOCK_STONE;
+            /* Bare rock below the snow line; snow caps high peaks. */
+            return (surface_h >= BIOME_SNOW_LINE) ? BLOCK_SNOW : BLOCK_STONE;
         case BIOME_SNOW:
-            /* Tundra snowfield: reuse the light SAND stand-in (no dedicated
-             * snow block exists) so the surface reads as pale snow cover. */
-            return BLOCK_SAND;
+            /* Tundra snowfield: snow blanket over the ground. */
+            return BLOCK_SNOW;
         case BIOME_PLAINS:
         case BIOME_FOREST:
         default:
             return BLOCK_GRASS;
+    }
+}
+
+BlockID biome_subsurface_block(Biome b, int surface_h)
+{
+    switch (b) {
+        case BIOME_DESERT:
+            /* Sandstone under the sand skin instead of dirt/stone. */
+            return BLOCK_SANDSTONE;
+        case BIOME_SNOW:
+            /* Snow blanket sits on ordinary dirt. */
+            return BLOCK_DIRT;
+        case BIOME_MOUNTAINS:
+            /* Stone immediately under the snow cap or bare rock. */
+            (void)surface_h;
+            return BLOCK_STONE;
+        case BIOME_PLAINS:
+        case BIOME_FOREST:
+        default:
+            return BLOCK_DIRT;
     }
 }
 

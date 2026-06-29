@@ -15,9 +15,9 @@
  *   - tree density (chance in [0,1] that a column grows a tree),
  *   - a height bias added to the base terrain height.
  *
- * No new block types are introduced: deserts use SAND, mountains expose STONE,
- * snowy peaks reuse the lightest surface available (SAND stand-in handled by
- * caller height/tree logic). Plains and forest keep GRASS.
+ * Deserts use SAND over SANDSTONE, mountains expose STONE (snow-capped above
+ * the snow line), snowfields and high peaks use SNOW. Plains and forest keep
+ * GRASS over DIRT.
  */
 
 typedef enum {
@@ -49,8 +49,13 @@ Biome biome_at(int wx, int wz, int seed);
 Biome biome_classify(float temp, float humidity, float elevation);
 
 /* Surface skin block for a biome, given the column's surface height so high
- * mountain peaks can switch to a snow stand-in. Returns GRASS / SAND / STONE. */
+ * mountain peaks can switch to snow. Returns GRASS / SAND / STONE / SNOW. */
 BlockID biome_surface_block(Biome b, int surface_h);
+
+/* Sub-surface block (the few layers directly under the surface skin) for a
+ * biome: dirt under grass/snow, sandstone under desert sand, stone under
+ * mountains. Returns DIRT / SANDSTONE / STONE. */
+BlockID biome_subsurface_block(Biome b, int surface_h);
 
 /* Tree-spawn probability for a biome, in [0, 1]. Deserts/mountains are bare;
  * forest is dense; plains is sparse. */
@@ -59,8 +64,8 @@ float biome_tree_density(Biome b);
 /* Per-biome additive height bias (blocks) layered onto the base terrain. */
 int biome_height_bias(Biome b);
 
-/* Snow line: at or above this surface height, mountain skin becomes the snow
- * stand-in. Exposed for tests. */
+/* Snow line: at or above this surface height, mountain skin becomes snow.
+ * Exposed for tests. */
 #define BIOME_SNOW_LINE 120
 
 #endif

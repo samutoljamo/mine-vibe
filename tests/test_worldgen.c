@@ -6,6 +6,8 @@
 #include "../src/chunk.h"
 #include "../src/ore.h"
 #include "../src/block.h"
+#include "../src/biome.h"
+#include "../src/cave.h"
 
 /* SEA_LEVEL is private to worldgen.c; mirror its value here. */
 #define SEA_LEVEL 62
@@ -67,6 +69,7 @@ static void test_bedrock_floor(void) {
 static int valid_surface_block(BlockID b) {
     switch (b) {
         case BLOCK_GRASS: case BLOCK_SAND: case BLOCK_DIRT:
+        case BLOCK_SNOW:  case BLOCK_SANDSTONE: /* per-biome surface skins */
         case BLOCK_WOOD:  case BLOCK_LEAVES:
         case BLOCK_PLANKS: case BLOCK_COBBLE: case BLOCK_GLASS: case BLOCK_PATH:
         case BLOCK_STONE: /* possible when a cave exposes stone at the very top */
@@ -192,6 +195,138 @@ static void test_spread_no_oob(void) {
     printf("PASS: spread_no_oob\n");
 }
 
+/* Find the topmost non-air, non-water block in a column. -1 if none. */
+static int top_solid(Chunk* c, int x, int z) {
+    for (int y = CHUNK_Y - 1; y >= 1; y--) {
+        BlockID b = chunk_get_block(c, x, y, z);
+        if (b != BLOCK_AIR && b != BLOCK_WATER) return y;
+    }
+    return -1;
+}
+
+/* ── 7. Per-biome surface composition ───────────────────────────────────── */
+/* Desert columns get a SAND surface skin over SANDSTONE (not dirt/stone), and
+ * SNOW-biome columns get BLOCK_SNOW on top. We scan a wide chunk spread, locate
+ * columns whose biome is desert/snow via the pure biome classifier, and assert
+ * their surface composition wherever a cave hasn't breached the very top. */
+static void test_biome_surface_blocks(void) {
+    int seed = 1337;
+    int desert_checked = 0, snow_checked = 0;
+
+    /* Deserts/snowfields are sparse and can be thousands of blocks away. Scan a
+     * wide coarse grid of chunk coords, but only pay to generate a chunk whose
+     * centre column is the biome we still need samples of. */
+    for (int cx = -210; cx <= 210 && (desert_checked < 20 || snow_checked < 20); cx += 2)
+        for (int cz = -210; cz <= 210 && (desert_checked < 20 || snow_checked < 20); cz += 2) {
+            int cbx = cx * CHUNK_X + 8, cbz = cz * CHUNK_Z + 8;
+            Biome cb = biome_at(cbx, cbz, seed);
+            int want_desert = (cb == BIOME_DESERT && desert_checked < 20);
+            int want_snow   = (cb == BIOME_SNOW   && snow_checked   < 20);
+            if (!want_desert && !want_snow) continue;
+            Chunk* c = gen(cx, cz, seed);
+            int base_x = cx * CHUNK_X, base_z = cz * CHUNK_Z;
+            for (int x = 0; x < CHUNK_X; x++)
+                for (int z = 0; z < CHUNK_Z; z++) {
+                    Biome b = biome_at(base_x + x, base_z + z, seed);
+                    int top = top_solid(c, x, z);
+                    if (top < 0) continue;
+                    BlockID tb = chunk_get_block(c, x, top, z);
+
+                    if (b == BIOME_DESERT && desert_checked < 20) {
+                        /* Desert surface, where not a beach (beaches force sand
+                         * anyway) and not breached by a cave (stone exposed). */
+                        if (tb == BLOCK_SAND) {
+                            BlockID under = chunk_get_block(c, x, top - 1, z);
+                            /* Directly under the sand skin: sandstone, more sand,
+                             * or (beach) more sand. Never dirt/grass. */
+                            assert(under == BLOCK_SANDSTONE || under == BLOCK_SAND);
+                            assert(under != BLOCK_DIRT && under != BLOCK_GRASS);
+                            desert_checked++;
+                        }
+                    } else if (b == BIOME_SNOW && snow_checked < 20) {
+                        /* Snow surface column tops out in snow (unless a cave
+                         * breached it, exposing stone/dirt). */
+                        if (tb == BLOCK_SNOW) snow_checked++;
+                    }
+                }
+            chunk_destroy(c);
+        }
+
+    printf("  desert columns checked=%d snow columns checked=%d\n",
+           desert_checked, snow_checked);
+    assert(desert_checked > 0);  /* deserts exist and carry sand/sandstone */
+    assert(snow_checked > 0);    /* snowfields exist and carry snow on top  */
+    printf("PASS: biome_surface_blocks\n");
+}
+
+/* ── 8. Cave carved density is sane ──────────────────────────────────────── */
+/* The pure cave model should carve a modest fraction of the underground band:
+ * enough to be real caves, far from honeycombing the world solid. We measure
+ * the fraction of carvable (originally stone/dirt) deep voxels turned to air. */
+static void test_cave_density(void) {
+    int seed = 1337;
+    long carved = 0, sampled = 0;
+    for (int cx = -2; cx <= 2; cx++)
+        for (int cz = -2; cz <= 2; cz++) {
+            Chunk* c = gen(cx, cz, seed);
+            int base_x = cx * CHUNK_X, base_z = cz * CHUNK_Z;
+            for (int x = 0; x < CHUNK_X; x++)
+                for (int z = 0; z < CHUNK_Z; z++)
+                    /* Deep band, comfortably below any surface/soil. */
+                    for (int y = 20; y <= 60; y++) {
+                        /* Count voxels the cave model could touch (stone-ish) plus
+                         * the air it already produced there. */
+                        BlockID b = chunk_get_block(c, x, y, z);
+                        int is_ore_b = is_ore(b);
+                        if (b == BLOCK_STONE || is_ore_b || b == BLOCK_AIR) {
+                            sampled++;
+                            if (b == BLOCK_AIR &&
+                                cave_is_carved(base_x + x, y, base_z + z, (uint32_t)seed))
+                                carved++;
+                        }
+                    }
+            chunk_destroy(c);
+        }
+    double frac = (double)carved / (double)sampled;
+    printf("  cave carved fraction (deep band) = %.4f (%ld/%ld)\n",
+           frac, carved, sampled);
+    assert(carved > 0);          /* caves actually exist */
+    assert(frac < 0.25);         /* world is not swiss cheese */
+    printf("PASS: cave_density\n");
+}
+
+/* ── 9. Surface cave entrances exist ─────────────────────────────────────── */
+/* Over a sampled region, at least some columns under open sky have a cave
+ * opening reaching the surface: a surface skin air-block sitting directly above
+ * a cave-carved void, i.e. you can fall in from the top. */
+static void test_cave_entrances(void) {
+    int seed = 1337;
+    int entrances = 0;
+    for (int cx = -4; cx <= 4 && entrances == 0; cx++)
+        for (int cz = -4; cz <= 4 && entrances == 0; cz++) {
+            Chunk* c = gen(cx, cz, seed);
+            for (int x = 0; x < CHUNK_X; x++)
+                for (int z = 0; z < CHUNK_Z; z++) {
+                    int top = top_solid(c, x, z);
+                    if (top < 0 || top + 1 >= CHUNK_Y) continue;
+                    /* Open sky directly above the top solid block. */
+                    if (chunk_get_block(c, x, top + 1, z) != BLOCK_AIR) continue;
+                    /* An air void within a few blocks under the surface: a cave
+                     * that has opened toward / through the surface. */
+                    for (int dy = 1; dy <= 4 && top - dy >= 1; dy++) {
+                        if (chunk_get_block(c, x, top - dy, z) == BLOCK_AIR) {
+                            entrances++;
+                            break;
+                        }
+                    }
+                }
+            chunk_destroy(c);
+        }
+    printf("  surface cave entrances found (first hit) = %d\n", entrances);
+    assert(entrances > 0); /* caves are discoverable from the surface */
+    printf("PASS: cave_entrances\n");
+}
+
 int main(void) {
     test_deterministic();
     test_bedrock_floor();
@@ -199,6 +334,9 @@ int main(void) {
     test_stone_body();
     test_ores();
     test_spread_no_oob();
+    test_biome_surface_blocks();
+    test_cave_density();
+    test_cave_entrances();
     printf("ALL WORLDGEN TESTS PASSED\n");
     return 0;
 }

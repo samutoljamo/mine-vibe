@@ -114,19 +114,34 @@ static void test_surface_block_mapping(void) {
     /* Desert is sand at any height. */
     assert(biome_surface_block(BIOME_DESERT, 64) == BLOCK_SAND);
     assert(biome_surface_block(BIOME_DESERT, 200) == BLOCK_SAND);
-    /* Mountains: bare stone below the snow line, snow stand-in at/above it. */
+    /* Mountains: bare stone below the snow line, snow at/above it. */
     assert(biome_surface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE - 1) == BLOCK_STONE);
-    assert(biome_surface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE) != BLOCK_STONE);
-    assert(biome_surface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE + 50) != BLOCK_STONE);
-    /* Snow biome surface is a light, non-stone, non-grass skin. */
-    assert(biome_surface_block(BIOME_SNOW, 70) != BLOCK_GRASS);
-    assert(biome_surface_block(BIOME_SNOW, 70) != BLOCK_AIR);
+    assert(biome_surface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE) == BLOCK_SNOW);
+    assert(biome_surface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE + 50) == BLOCK_SNOW);
+    /* Snow biome surface is the snow block. */
+    assert(biome_surface_block(BIOME_SNOW, 70) == BLOCK_SNOW);
     /* Surface block is always a real, non-air block. */
     for (int b = 0; b < BIOME_COUNT; b++) {
         BlockID s = biome_surface_block((Biome)b, 70);
         assert(s != BLOCK_AIR && s < BLOCK_COUNT);
     }
     printf("PASS: surface_block_mapping\n");
+}
+
+/* Sub-surface mapping: dirt under grass/snow, sandstone under desert sand,
+ * stone under mountains. */
+static void test_subsurface_block_mapping(void) {
+    assert(biome_subsurface_block(BIOME_PLAINS, 70) == BLOCK_DIRT);
+    assert(biome_subsurface_block(BIOME_FOREST, 70) == BLOCK_DIRT);
+    assert(biome_subsurface_block(BIOME_DESERT, 70) == BLOCK_SANDSTONE);
+    assert(biome_subsurface_block(BIOME_SNOW, 70) == BLOCK_DIRT);
+    assert(biome_subsurface_block(BIOME_MOUNTAINS, 70) == BLOCK_STONE);
+    assert(biome_subsurface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE + 10) == BLOCK_STONE);
+    for (int b = 0; b < BIOME_COUNT; b++) {
+        BlockID s = biome_subsurface_block((Biome)b, 70);
+        assert(s != BLOCK_AIR && s < BLOCK_COUNT);
+    }
+    printf("PASS: subsurface_block_mapping\n");
 }
 
 /* Tree density: bounded [0,1], forest densest, desert/mountains bare. */
@@ -158,6 +173,7 @@ int main(void) {
     test_seed_varies_field();
     test_all_biomes_appear();
     test_surface_block_mapping();
+    test_subsurface_block_mapping();
     test_tree_density();
     test_height_bias();
     test_classify_regions();

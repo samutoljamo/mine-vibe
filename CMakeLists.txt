@@ -579,6 +579,7 @@ add_executable(test_village
     src/worldgen.c
     src/ore.c
     src/biome.c
+    src/cave.c
     src/chunk.c
     src/block.c
 )
@@ -606,6 +607,7 @@ add_executable(test_worldgen
     src/ore.c
     src/village.c
     src/biome.c
+    src/cave.c
     src/chunk.c
     src/block.c
 )

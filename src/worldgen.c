@@ -6,6 +6,7 @@
 #include "ore.h"
 #include "village.h"
 #include "biome.h"
+#include "cave.h"
 #include <stdlib.h>
 #include <math.h>
 
@@ -74,41 +75,31 @@ static int compute_height(TerrainNoise* tn, float wx, float wz)
     return h;
 }
 
-/* Noise state bundle for cave generation */
-typedef struct {
-    fnl_state spaghetti_a;
-    fnl_state spaghetti_b;
-    fnl_state cheese;
-} CaveNoise;
+/* Cave carving is delegated to the pure, world-coordinate cave model in
+ * src/cave.c (cave_is_carved). Because that predicate depends only on absolute
+ * world (x,y,z) + seed, carving is automatically continuous across chunk seams
+ * and deterministic regardless of generation order.
+ *
+ * Two things layer on top of the raw predicate here:
+ *   - Bedrock protection: never carve bedrock (cave.c already refuses y at/below
+ *     CAVE_MIN_Y, but we also guard against the bedrock/stone mix band).
+ *   - Surface entrances: a cave column that reaches up near the surface is
+ *     allowed to break through the soil/surface skin so the cavern opens to the
+ *     sky and is discoverable. Without this, caves stop a few blocks under the
+ *     surface and stay sealed. To keep the world from turning into swiss cheese
+ *     up top, we only punch through when the block immediately below is itself
+ *     carved cave air (i.e. an actual cave is pushing up to meet the surface). */
 
-static void cave_noise_init(CaveNoise* cn, int seed)
+/* True if the cave model would carve this voxel AND it is a carvable material
+ * (never bedrock). Surface-proximity tapering is handled by the caller. */
+static bool cave_carves_solid(BlockID block, int wx, int y, int wz, int seed)
 {
-    /* Spaghetti cave A */
-    cn->spaghetti_a = fnlCreateState();
-    cn->spaghetti_a.noise_type = FNL_NOISE_PERLIN;
-    cn->spaghetti_a.fractal_type = FNL_FRACTAL_FBM;
-    cn->spaghetti_a.octaves = 3;
-    cn->spaghetti_a.frequency = 0.03f;
-    cn->spaghetti_a.seed = seed + 100;
-
-    /* Spaghetti cave B */
-    cn->spaghetti_b = fnlCreateState();
-    cn->spaghetti_b.noise_type = FNL_NOISE_PERLIN;
-    cn->spaghetti_b.fractal_type = FNL_FRACTAL_FBM;
-    cn->spaghetti_b.octaves = 3;
-    cn->spaghetti_b.frequency = 0.03f;
-    cn->spaghetti_b.seed = seed + 200;
-
-    /* Cheese caves */
-    cn->cheese = fnlCreateState();
-    cn->cheese.noise_type = FNL_NOISE_PERLIN;
-    cn->cheese.fractal_type = FNL_FRACTAL_FBM;
-    cn->cheese.octaves = 2;
-    cn->cheese.frequency = 0.015f;
-    cn->cheese.seed = seed + 300;
+    if (block == BLOCK_BEDROCK) return false;
+    if (block != BLOCK_STONE && block != BLOCK_DIRT) return false;
+    return cave_is_carved(wx, y, wz, (uint32_t)seed);
 }
 
-static void carve_caves(Chunk* chunk, CaveNoise* cn,
+static void carve_caves(Chunk* chunk, int seed,
                         int height_map[CHUNK_X][CHUNK_Z])
 {
     int base_x = chunk->cx * CHUNK_X;
@@ -117,58 +108,36 @@ static void carve_caves(Chunk* chunk, CaveNoise* cn,
     for (int x = 0; x < CHUNK_X; x++) {
         for (int z = 0; z < CHUNK_Z; z++) {
             int surface_h = height_map[x][z];
-            float wx = (float)(base_x + x);
-            float wz = (float)(base_z + z);
+            int wx = base_x + x;
+            int wz = base_z + z;
 
-            for (int y = 0; y < surface_h; y++) {
+            /* Carve the body of the column with the pure cave model. We stop one
+             * block below the surface skin here; the surface skin / soil is
+             * handled by the entrance pass below so we control how holey the top
+             * becomes. */
+            for (int y = 1; y < surface_h - 1; y++) {
                 BlockID block = chunk_get_block(chunk, x, y, z);
-
-                /* Never carve bedrock */
-                if (block == BLOCK_BEDROCK) continue;
-                /* Only carve stone and dirt */
-                if (block != BLOCK_STONE && block != BLOCK_DIRT) continue;
-
-                int depth = surface_h - y;
-
-                /* Hard-skip surface and 1 below */
-                if (depth <= 1) continue;
-
-                float wy = (float)y;
-                bool carve = false;
-
-                if (depth < 8) {
-                    /* Surface proximity — reduced carving */
-                    float scale = (float)depth / 8.0f;
-
-                    float sa = fnlGetNoise3D(&cn->spaghetti_a, wx, wy, wz);
-                    float sb = fnlGetNoise3D(&cn->spaghetti_b, wx, wy, wz);
-                    float spaghetti_thresh = 0.04f * scale;
-                    if (fabsf(sa) < spaghetti_thresh && fabsf(sb) < spaghetti_thresh)
-                        carve = true;
-
-                    if (!carve) {
-                        float ch = fnlGetNoise3D(&cn->cheese, wx, wy, wz);
-                        float cheese_thresh = 0.6f + (1.0f - scale) * 0.4f;
-                        if (ch > cheese_thresh)
-                            carve = true;
-                    }
-                } else {
-                    /* Deep underground — full carving */
-                    float sa = fnlGetNoise3D(&cn->spaghetti_a, wx, wy, wz);
-                    float sb = fnlGetNoise3D(&cn->spaghetti_b, wx, wy, wz);
-                    if (fabsf(sa) < 0.04f && fabsf(sb) < 0.04f)
-                        carve = true;
-
-                    if (!carve) {
-                        float ch = fnlGetNoise3D(&cn->cheese, wx, wy, wz);
-                        if (ch > 0.6f)
-                            carve = true;
-                    }
-                }
-
-                if (carve) {
+                if (cave_carves_solid(block, wx, y, wz, seed))
                     chunk_set_block(chunk, x, y, z, BLOCK_AIR);
-                }
+            }
+
+            /* Surface entrances: if the topmost soil layer (surface skin and the
+             * block just beneath it) sits directly on cave air, open it to the
+             * sky so the cave is reachable. Only punch through when a real cave
+             * has risen to meet the surface — we never carve into a column that
+             * is solid all the way down, so the surface stays mostly intact. */
+            for (int y = surface_h; y >= surface_h - 1 && y >= 1; y--) {
+                BlockID block = chunk_get_block(chunk, x, y, z);
+                /* Only open soil/sand/grass/snow/sandstone surface skins — leave
+                 * stone peaks and water alone. */
+                if (block != BLOCK_GRASS && block != BLOCK_DIRT &&
+                    block != BLOCK_SAND && block != BLOCK_SNOW &&
+                    block != BLOCK_SANDSTONE)
+                    continue;
+                BlockID below = (y >= 1) ? chunk_get_block(chunk, x, y - 1, z)
+                                         : BLOCK_BEDROCK;
+                if (below == BLOCK_AIR)
+                    chunk_set_block(chunk, x, y, z, BLOCK_AIR);
             }
         }
     }
@@ -176,14 +145,14 @@ static void carve_caves(Chunk* chunk, CaveNoise* cn,
 
 void worldgen_generate(Chunk* chunk, int seed)
 {
-    /* Cache noise states per worker thread — seed is constant after startup */
+    /* Cache noise states per worker thread — seed is constant after startup.
+     * Cave noise is owned by cave.c (cached internally), so we only cache the
+     * terrain noise here. */
     static _Thread_local TerrainNoise terrain;
-    static _Thread_local CaveNoise cn;
     static _Thread_local int cached_seed = -1;
 
     if (cached_seed != seed) {
         terrain_noise_init(&terrain, seed);
-        cave_noise_init(&cn, seed);
         cached_seed = seed;
     }
 
@@ -213,10 +182,11 @@ void worldgen_generate(Chunk* chunk, int seed)
         for (int z = 0; z < CHUNK_Z; z++) {
             int h = height_map[x][z];
             bool is_beach = (h <= SEA_LEVEL + 1 && h >= SEA_LEVEL - 2);
-            /* Biome surface skin (grass / sand / stone-or-snow). Beaches keep
-             * their sand shoreline regardless of biome. */
+            /* Biome surface skin (grass / sand / stone / snow) and the matching
+             * sub-surface band (dirt / sandstone / stone). Beaches keep their
+             * sand shoreline regardless of biome. */
             BlockID surf = biome_surface_block(biome_map[x][z], h);
-            BlockID subsurf = (surf == BLOCK_GRASS) ? BLOCK_DIRT : surf;
+            BlockID subsurf = biome_subsurface_block(biome_map[x][z], h);
 
             for (int y = 0; y < CHUNK_Y; y++) {
                 BlockID block = BLOCK_AIR;
@@ -247,8 +217,8 @@ void worldgen_generate(Chunk* chunk, int seed)
         }
     }
 
-    /* Carve caves */
-    carve_caves(chunk, &cn, height_map);
+    /* Carve caves (pure world-coord model + surface entrances) */
+    carve_caves(chunk, seed, height_map);
 
     /* Sprinkle ores into the remaining (uncarved) stone. Done after carving so
      * ores only replace solid stone — never left floating in cave air. Ores
@@ -304,6 +274,43 @@ void worldgen_generate(Chunk* chunk, int seed)
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /* Per-biome surface decoration. Pure of (world coord, seed) so it lines up
+     * across chunk seams; constrained to [2..13] local X/Z so a single feature
+     * never needs neighbouring-chunk writes.
+     *
+     *   - DESERT: sparse cactus. No cactus block exists, so a cactus is a short
+     *     1x1 column of LEAVES (a green stand-in) on the sand surface. Skipped
+     *     as a true cactus until a dedicated block is added.
+     *   - SNOW:   the snow blanket is already the surface skin (see fill loop);
+     *     additionally drop the odd snow "drift" one block higher for relief. */
+    for (int x = 2; x <= 13; x++) {
+        for (int z = 2; z <= 13; z++) {
+            int h = height_map[x][z];
+            if (h < SEA_LEVEL) continue;
+            if (h + 4 >= CHUNK_Y) continue;
+            Biome b = biome_map[x][z];
+
+            if (b == BIOME_DESERT) {
+                /* Only on undisturbed sand surface (not carved by a cave). */
+                if (chunk_get_block(chunk, x, h, z) != BLOCK_SAND) continue;
+                int r = hash_pos(base_x + x, base_z + z, seed + 5151);
+                if ((r % 100) >= 3) continue; /* ~3% of desert columns */
+                int cactus_h = 2 + (hash_pos(base_x + x, base_z + z, seed + 88) % 2);
+                for (int cy = 1; cy <= cactus_h; cy++) {
+                    if (chunk_get_block(chunk, x, h + cy, z) != BLOCK_AIR) break;
+                    chunk_set_block(chunk, x, h + cy, z, BLOCK_LEAVES);
+                }
+            } else if (b == BIOME_SNOW) {
+                /* Occasional raised snow drift on the snowfield surface. */
+                if (chunk_get_block(chunk, x, h, z) != BLOCK_SNOW) continue;
+                int r = hash_pos(base_x + x, base_z + z, seed + 6262);
+                if ((r % 100) >= 8) continue; /* ~8% of snow columns */
+                if (chunk_get_block(chunk, x, h + 1, z) == BLOCK_AIR)
+                    chunk_set_block(chunk, x, h + 1, z, BLOCK_SNOW);
             }
         }
     }
