@@ -87,6 +87,7 @@ typedef enum {
     GAME_PAUSED,
     GAME_INVENTORY,
     GAME_OPTIONS,
+    GAME_CONTAINER,   /* an open furnace/chest screen (driven by container_open) */
 } GameUiState;
 
 /* Stable element ids for the data-driven hit-test API. Menu buttons and
@@ -109,6 +110,10 @@ enum {
     HUD_ID_SLOT0 = 2000,  /* inventory/hotbar slots: HUD_ID_SLOT0 + i */
     HUD_ID_CRAFT0 = 3000, /* inventory crafting-panel rows: HUD_ID_CRAFT0 + i */
     HUD_ID_WORLD0 = 4000, /* load-world list rows: HUD_ID_WORLD0 + i */
+    HUD_ID_CON0  = 5000,  /* container screen: container slots, HUD_ID_CON0 + i
+                           * (chest 0..26 / furnace 0=input 1=fuel 2=output) */
+    HUD_ID_CONINV0 = 6000,/* container screen: player-inventory slots,
+                           * HUD_ID_CONINV0 + i */
 };
 
 /* The main menu has an extra "Load World" sub-screen. It isn't a GameUiState
@@ -181,6 +186,56 @@ HudRect hud_craft_row_rect(int i, float sw, float sh);
 
 /* Point-in-rect test (inclusive top-left, exclusive bottom-right). Pure. */
 bool hud_rect_contains(HudRect r, float px, float py);
+
+/* ------------------------------------------------------------------ */
+/*  Container screen (furnace / chest) layout + drawing                 */
+/* ------------------------------------------------------------------ */
+
+/* Forward declaration so the container drawer can take a (const Inventory*)
+ * without hud.h depending on inventory.h (mirrors hud_build below). */
+struct Inventory;
+
+/* Furnace slot index ordering on the wire (matches the server's
+ * sbe_transfer / CONTAINER_STATE field order). */
+enum {
+    HUD_FURNACE_SLOT_INPUT  = 0,
+    HUD_FURNACE_SLOT_FUEL   = 1,
+    HUD_FURNACE_SLOT_OUTPUT = 2,
+    HUD_FURNACE_SLOT_COUNT  = 3,
+};
+
+/* Number of chest slots laid out (3 rows of 9). Must match
+ * CONTAINER_NET_CHEST_SLOTS / CHEST_SLOTS. */
+#define HUD_CHEST_SLOTS 27
+#define HUD_CHEST_COLS   9
+
+/* Chest slot `i` (0..HUD_CHEST_SLOTS-1) rect in the container screen's 3x9
+ * grid (drawn above the player inventory). Pure. */
+HudRect hud_chest_slot_rect(int i, float sw, float sh);
+
+/* Furnace slot `i` (HUD_FURNACE_SLOT_*) rect: input (top) + fuel (below) on the
+ * left, output on the right. Pure. */
+HudRect hud_furnace_slot_rect(int i, float sw, float sh);
+
+/* Player-inventory slot `i` (0..INVENTORY_SLOTS-1) rect as drawn at the bottom
+ * of the container screen (one centred row). Pure. */
+HudRect hud_container_inv_slot_rect(int i, float sw, float sh);
+
+/* Clamped fraction [0,1] of the furnace cook arrow given the current
+ * cook_progress in ticks and the per-item tick budget. Negative/zero budget or
+ * progress yields 0; progress past the budget clamps to 1. Pure. */
+float hud_furnace_progress_fill(int cook_progress, int ticks_per_item);
+
+/* Draw the open container screen (furnace or chest) over the player inventory.
+ * `con` is a const ContainerStatePacket* (net.h); typed as void* here so hud.h
+ * doesn't pull in net.h. Must be non-NULL. Pure UI emission. */
+void hud_draw_container(const void* con,
+                        const struct Inventory* inv, float sw, float sh);
+
+/* Latch the latest container snapshot (const ContainerStatePacket*, or NULL to
+ * clear) so hud_build can draw the GAME_CONTAINER screen without a new
+ * parameter. main.c calls this each frame from c->container. */
+void hud_set_container(const void* con);
 
 /* ------------------------------------------------------------------ */
 /*  Options / settings screen (pure helpers + latched audio state)     */

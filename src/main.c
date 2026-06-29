@@ -52,6 +52,12 @@ static bool g_show_stats = false; /* perf overlay visibility; toggled with F3 */
 static int g_craft_idx[HUD_CRAFT_ROWS];
 static int g_craft_count = 0;
 
+/* Block coordinates of the container the player is currently viewing. Latched
+ * when a PKT_CONTAINER_OPEN is sent so subsequent slot-click actions + the
+ * close packet target the same block even if the look-target moves. Valid only
+ * while g_client->container_open. */
+static int g_container_x, g_container_y, g_container_z;
+
 /* Game-UI state machine. Starts at the main menu; Play enters PLAYING, Esc
  * toggles the pause overlay, E toggles the inventory screen. The cursor is
  * captured only in PLAYING (mouselook); freed in every menu/overlay. */
@@ -135,9 +141,16 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
     (void)scancode;
     (void)mods;
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-        /* Esc toggles pause from in-world and closes the inventory; in the main
-         * menu it does nothing (use the Quit button to leave). */
-        ui_set_state(game_ui_toggle_pause(g_ui_state));
+        /* Esc closes an open container first (sending the close packet); the
+         * main-loop reconcile then drops the GAME_CONTAINER screen. Otherwise it
+         * toggles pause from in-world and closes the inventory; in the main menu
+         * it does nothing (use the Quit button to leave). */
+        if (g_client && g_client->container_open) {
+            client_send_container_close(g_client, g_container_x,
+                                        g_container_y, g_container_z);
+        } else {
+            ui_set_state(game_ui_toggle_pause(g_ui_state));
+        }
     }
     if (key == GLFW_KEY_E && action == GLFW_PRESS) {
         /* E opens/closes the inventory screen (no-op in menu/pause). */
@@ -152,19 +165,21 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
     }
     if (key == GLFW_KEY_U && action == GLFW_PRESS) {
         /* U opens (or, if already open, closes) the container block-entity the
-         * player is looking at — furnace/chest. The rich interactive container
-         * UI is a separate ticket (a4s.6.4); for now this just sends the open
-         * request so the server marks us a viewer and streams CONTAINER_STATE
-         * (stored in g_client->container). The server no-ops the open if the
-         * targeted cell isn't a tracked container, so it is safe to send for any
-         * aimed block. In-world only. */
-        if (g_client && game_ui_world_active(g_ui_state) && g_target.hit) {
-            if (g_client->container_open)
-                client_send_container_close(g_client, g_target.x,
-                                            g_target.y, g_target.z);
-            else
-                client_send_container_open(g_client, g_target.x,
-                                           g_target.y, g_target.z);
+         * player is looking at — furnace/chest. Opening sends PKT_CONTAINER_OPEN
+         * (the server marks us a viewer + streams CONTAINER_STATE into
+         * g_client->container); the main-loop reconcile then raises the
+         * GAME_CONTAINER screen. The server no-ops the open if the aimed cell
+         * isn't a tracked container, so it is safe to send for any block. */
+        if (g_client && g_client->container_open) {
+            /* Close the container we have open (coords latched at open time). */
+            client_send_container_close(g_client, g_container_x,
+                                        g_container_y, g_container_z);
+        } else if (g_client && game_ui_world_active(g_ui_state) && g_target.hit) {
+            g_container_x = g_target.x;
+            g_container_y = g_target.y;
+            g_container_z = g_target.z;
+            client_send_container_open(g_client, g_target.x,
+                                       g_target.y, g_target.z);
         }
     }
     if (key == GLFW_KEY_F3 && action == GLFW_PRESS)
@@ -746,6 +761,24 @@ int main(int argc, char *argv[])
 
         glfwPollEvents();
 
+        /* Reconcile the container screen with the server-authoritative open flag.
+         * client_poll (run later in the frame) flips g_client->container_open and
+         * refreshes g_client->container; raise the GAME_CONTAINER overlay while a
+         * container is open and drop back to PLAYING once it closes. The screen
+         * renders from the latched snapshot, so the furnace cook/burn bars
+         * animate as fresh PKT_CONTAINER_STATE packets arrive. */
+        if (g_client) {
+            if (g_client->container_open) {
+                hud_set_container(&g_client->container);
+                if (g_ui_state == GAME_PLAYING)
+                    ui_set_state(GAME_CONTAINER);
+            } else {
+                hud_set_container(NULL);
+                if (g_ui_state == GAME_CONTAINER)
+                    ui_set_state(GAME_PLAYING);
+            }
+        }
+
         bool dump_frame = false;
         char dump_path[256] = {0};
         /* Headless screenshot: once enough frames have rendered for nearby
@@ -830,6 +863,23 @@ int main(int argc, char *argv[])
                 } else {
                     g_craft_count = 0;
                 }
+            } else if (g_ui_state == GAME_CONTAINER && g_client
+                       && g_client->container_open) {
+                /* Register the open container's slots + the player-inventory row.
+                 * Container slots: chest 0..26 (3x9) or furnace 0..2; mirrored by
+                 * hud_draw_container so clicks line up with the drawn icons. */
+                int cslots = (g_client->container.type == CONTAINER_NET_CHEST)
+                             ? HUD_CHEST_SLOTS : HUD_FURNACE_SLOT_COUNT;
+                for (int i = 0; i < cslots; i++) {
+                    HudRect r = (g_client->container.type == CONTAINER_NET_CHEST)
+                              ? hud_chest_slot_rect(i, sw, sh)
+                              : hud_furnace_slot_rect(i, sw, sh);
+                    ui_add_element(HUD_ID_CON0 + i, r.x, r.y, r.w, r.h);
+                }
+                for (int i = 0; i < HUD_SLOT_COUNT; i++) {
+                    HudRect r = hud_container_inv_slot_rect(i, sw, sh);
+                    ui_add_element(HUD_ID_CONINV0 + i, r.x, r.y, r.w, r.h);
+                }
             }
             ui_handle_mouse((float)mx, (float)my, clicked);
 
@@ -890,6 +940,38 @@ int main(int argc, char *argv[])
                     int row = hit - HUD_ID_CRAFT0;
                     client_send_craft(g_client, (uint16_t)g_craft_idx[row]);
                 }
+            } else if (g_client && g_client->container_open
+                       && hit >= HUD_ID_CON0
+                       && hit < HUD_ID_CON0 + HUD_CHEST_SLOTS) {
+                /* Whole-stack move of a container slot into the inventory. The
+                 * count is clamped at the slot's contents (server re-validates).
+                 * v1: left-click moves the entire stack; no shift/half split. */
+                int slot = hit - HUD_ID_CON0;
+                int avail;
+                if (g_client->container.type == CONTAINER_NET_CHEST)
+                    avail = g_client->container.slots[slot].count;
+                else
+                    avail = (slot == HUD_FURNACE_SLOT_INPUT)  ? g_client->container.f_input_count
+                          : (slot == HUD_FURNACE_SLOT_FUEL)   ? g_client->container.f_fuel_count
+                          : g_client->container.f_output_count;
+                if (avail > 0)
+                    client_send_container_action(g_client,
+                        g_container_x, g_container_y, g_container_z,
+                        (uint8_t)slot, CONTAINER_DIR_TO_INV,
+                        (uint8_t)(avail > 255 ? 255 : avail));
+            } else if (g_client && g_client->container_open
+                       && hit >= HUD_ID_CONINV0
+                       && hit < HUD_ID_CONINV0 + HUD_SLOT_COUNT) {
+                /* Whole-stack move of an inventory slot into the container. The
+                 * server routes a smeltable/fuel to the right furnace slot and
+                 * rejects anything that doesn't fit. */
+                int slot = hit - HUD_ID_CONINV0;
+                int avail = g_client->inventory.slots[slot].count;
+                if (avail > 0)
+                    client_send_container_action(g_client,
+                        g_container_x, g_container_y, g_container_z,
+                        (uint8_t)slot, CONTAINER_DIR_FROM_INV,
+                        (uint8_t)(avail > 255 ? 255 : avail));
             }
         }
 

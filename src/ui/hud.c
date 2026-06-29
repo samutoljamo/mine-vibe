@@ -3,6 +3,8 @@
 #include "../inventory.h"
 #include "../crafting.h"
 #include "../item.h"
+#include "../net.h"        /* ContainerStatePacket + CONTAINER_NET_* tags */
+#include "../smelting.h"   /* SMELT_TICKS_PER_ITEM for the cook arrow */
 #include <stdio.h>
 
 #define SLOT_SIZE   40
@@ -47,6 +49,20 @@ void hud_set_armor(const ItemId* worn, int points)
 {
     (void)worn;   /* the bar is driven by the points total */
     g_hud_armor_points = points < 0 ? 0 : points;
+}
+
+/* Latched container snapshot for the GAME_CONTAINER screen. hud_build's
+ * signature is owned by the renderer caller and can't grow a parameter, so
+ * main.c latches the latest c->container here each frame (same pattern as the
+ * survival/armour latches). NULL = no container to draw. */
+static ContainerStatePacket g_hud_container;
+static bool                 g_hud_container_valid = false;
+
+void hud_set_container(const void* con_v)
+{
+    const ContainerStatePacket* con = (const ContainerStatePacket*)con_v;
+    if (con) { g_hud_container = *con; g_hud_container_valid = true; }
+    else     { g_hud_container_valid = false; }
 }
 
 /* ------------------------------------------------------------------ */
@@ -213,6 +229,74 @@ bool hud_rect_contains(HudRect r, float px, float py)
 {
     return px >= r.x && px < r.x + r.w &&
            py >= r.y && py < r.y + r.h;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Container screen layout (pure)                                      */
+/* ------------------------------------------------------------------ */
+
+/* Slot size for the container grids; reuse the inventory-screen slot metrics so
+ * the icons/counts draw identically. */
+#define CON_SLOT      INV_SLOT
+#define CON_SLOT_GAP  INV_SLOT_GAP
+
+/* The container's own slots (chest grid / furnace cluster) occupy the upper
+ * region; the player inventory row is drawn this far below the screen centre. */
+#define CON_INV_ROW_OFF  90.0f
+
+HudRect hud_container_inv_slot_rect(int i, float sw, float sh)
+{
+    int n = HUD_SLOT_COUNT;
+    float total_w = n * CON_SLOT + (n - 1) * CON_SLOT_GAP;
+    float x0 = (sw - total_w) * 0.5f;
+    float y0 = sh * 0.5f + CON_INV_ROW_OFF;
+    float x  = x0 + (float)i * (CON_SLOT + CON_SLOT_GAP);
+    return (HudRect){ x, y0, CON_SLOT, CON_SLOT };
+}
+
+HudRect hud_chest_slot_rect(int i, float sw, float sh)
+{
+    if (i < 0) i = 0;
+    int col = i % HUD_CHEST_COLS;
+    int row = i / HUD_CHEST_COLS;
+    int cols = HUD_CHEST_COLS;
+    float total_w = cols * CON_SLOT + (cols - 1) * CON_SLOT_GAP;
+    float x0 = (sw - total_w) * 0.5f;
+    /* Three rows centred a little above the player inventory row. */
+    float grid_h = 3 * CON_SLOT + 2 * CON_SLOT_GAP;
+    float y0 = sh * 0.5f + CON_INV_ROW_OFF - 24.0f - grid_h;
+    float x = x0 + (float)col * (CON_SLOT + CON_SLOT_GAP);
+    float y = y0 + (float)row * (CON_SLOT + CON_SLOT_GAP);
+    return (HudRect){ x, y, CON_SLOT, CON_SLOT };
+}
+
+HudRect hud_furnace_slot_rect(int i, float sw, float sh)
+{
+    /* Input over fuel on the left; output to the right, vertically between them.
+     * The whole cluster is centred horizontally and sits above the player
+     * inventory row. */
+    float gap_v = 28.0f;          /* vertical gap input->fuel (room for arrow) */
+    float gap_h = 120.0f;         /* horizontal gap input column -> output */
+    float cluster_w = CON_SLOT + gap_h + CON_SLOT;
+    float left_x = (sw - cluster_w) * 0.5f;
+    float right_x = left_x + CON_SLOT + gap_h;
+    float top_y = sh * 0.5f + CON_INV_ROW_OFF - 24.0f
+                  - (2 * CON_SLOT + gap_v);
+    switch (i) {
+        case HUD_FURNACE_SLOT_INPUT:
+            return (HudRect){ left_x, top_y, CON_SLOT, CON_SLOT };
+        case HUD_FURNACE_SLOT_FUEL:
+            return (HudRect){ left_x, top_y + CON_SLOT + gap_v, CON_SLOT, CON_SLOT };
+        case HUD_FURNACE_SLOT_OUTPUT:
+        default:
+            return (HudRect){ right_x, top_y + (CON_SLOT + gap_v) * 0.5f,
+                              CON_SLOT, CON_SLOT };
+    }
+}
+
+float hud_furnace_progress_fill(int cook_progress, int ticks_per_item)
+{
+    return hud_bar_fill(cook_progress, ticks_per_item);
 }
 
 /* ------------------------------------------------------------------ */
@@ -466,6 +550,114 @@ static void hud_draw_inventory(const Inventory* inv, float sw, float sh)
     draw_centered_label("E or Esc to close", 16.0f, sw, sh - 36.0f, hint);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Container screen drawing (furnace / chest)                          */
+/* ------------------------------------------------------------------ */
+
+/* Draw one item slot: border (hot when hovered), dark fill, and — if non-empty
+ * — the item icon + count. Mirrors the inventory-screen slot visuals so the
+ * container reuses the exact same icon/count path. */
+static void hud_draw_slot(HudRect r, int id, ItemId item, int count)
+{
+    vec4 slot_fill  = {0.20f, 0.20f, 0.22f, 1.0f};
+    vec4 slot_unsel = {0.40f, 0.40f, 0.42f, 1.0f};
+    vec4 slot_hot   = {1.0f,  0.95f, 0.55f, 1.0f};
+    vec4 text_white = {1.0f,  1.0f,  1.0f,  1.0f};
+
+    bool hot = (ui_hovered_element() == id);
+    vec4* border = hot ? &slot_hot : &slot_unsel;
+    ui_rect(r.x, r.y, r.w, r.h, *border);
+    ui_rect(r.x + SLOT_BORDER, r.y + SLOT_BORDER,
+            r.w - 2 * SLOT_BORDER, r.h - 2 * SLOT_BORDER, slot_fill);
+
+    if (count <= 0) return;
+    ui_block_icon(item, r.x + 8, r.y + 8, r.w - 16);
+    if (count > 1) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d", count);
+        float tw = ui_text_width(buf, 14.0f);
+        ui_text(r.x + r.w - tw - 4, r.y + r.h - 6, 14.0f, buf, text_white);
+    }
+}
+
+/* The player-inventory row shown at the bottom of the container screen. */
+static void hud_draw_container_inventory(const Inventory* inv, float sw, float sh)
+{
+    for (int i = 0; i < HUD_SLOT_COUNT; i++) {
+        HudRect r = hud_container_inv_slot_rect(i, sw, sh);
+        const InventorySlot* s = inv ? &inv->slots[i] : NULL;
+        hud_draw_slot(r, HUD_ID_CONINV0 + i,
+                      s ? s->item : BLOCK_AIR, s ? (int)s->count : 0);
+    }
+}
+
+void hud_draw_container(const void* con_v, const Inventory* inv,
+                        float sw, float sh)
+{
+    const ContainerStatePacket* con = (const ContainerStatePacket*)con_v;
+    if (!con) return;
+
+    draw_dim(sw, sh, 0.45f);
+
+    vec4 title       = {0.95f, 0.95f, 0.95f, 1.0f};
+    vec4 label_dim   = {0.70f, 0.70f, 0.74f, 0.95f};
+
+    if (con->type == CONTAINER_NET_CHEST) {
+        HudRect g0 = hud_chest_slot_rect(0, sw, sh);
+        ui_text(g0.x, g0.y - 12.0f, 24.0f, "Chest", title);
+        for (int i = 0; i < HUD_CHEST_SLOTS; i++) {
+            HudRect r = hud_chest_slot_rect(i, sw, sh);
+            hud_draw_slot(r, HUD_ID_CON0 + i,
+                          (ItemId)con->slots[i].item, (int)con->slots[i].count);
+        }
+    } else { /* furnace */
+        HudRect in  = hud_furnace_slot_rect(HUD_FURNACE_SLOT_INPUT,  sw, sh);
+        HudRect fu  = hud_furnace_slot_rect(HUD_FURNACE_SLOT_FUEL,   sw, sh);
+        HudRect out = hud_furnace_slot_rect(HUD_FURNACE_SLOT_OUTPUT, sw, sh);
+
+        ui_text(in.x, in.y - 16.0f, 24.0f, "Furnace", title);
+
+        hud_draw_slot(in,  HUD_ID_CON0 + HUD_FURNACE_SLOT_INPUT,
+                      (ItemId)con->f_input,  (int)con->f_input_count);
+        hud_draw_slot(fu,  HUD_ID_CON0 + HUD_FURNACE_SLOT_FUEL,
+                      (ItemId)con->f_fuel,   (int)con->f_fuel_count);
+        hud_draw_slot(out, HUD_ID_CON0 + HUD_FURNACE_SLOT_OUTPUT,
+                      (ItemId)con->f_output, (int)con->f_output_count);
+
+        /* Cook-progress arrow between the input column and the output slot. */
+        float arrow_x = in.x + in.w + 12.0f;
+        float arrow_w = (out.x - 12.0f) - arrow_x;
+        if (arrow_w < 8.0f) arrow_w = 8.0f;
+        float arrow_y = out.y + out.h * 0.5f - 4.0f;
+        vec4 track = {0.12f, 0.12f, 0.14f, 0.95f};
+        vec4 fillc = {0.95f, 0.70f, 0.25f, 1.0f};
+        ui_rect(arrow_x, arrow_y, arrow_w, 8.0f, track);
+        float frac = hud_furnace_progress_fill((int)con->f_cook_progress,
+                                               SMELT_TICKS_PER_ITEM);
+        ui_rect(arrow_x, arrow_y, arrow_w * frac, 8.0f, fillc);
+
+        /* Burn (fuel) indicator: a small flame bar under the fuel slot, lit
+         * while the furnace is actively burning. */
+        {
+            float bx = fu.x, by = fu.y + fu.h + 4.0f;
+            vec4 btrack = {0.12f, 0.12f, 0.14f, 0.95f};
+            vec4 bfill  = {0.95f, 0.40f, 0.10f, 1.0f};
+            ui_rect(bx, by, fu.w, 6.0f, btrack);
+            if (con->f_burn_ticks_left > 0)
+                ui_rect(bx, by, fu.w, 6.0f, bfill);
+        }
+    }
+
+    /* Player inventory + a heading + hint, shared between both container types. */
+    HudRect inv0 = hud_container_inv_slot_rect(0, sw, sh);
+    ui_text(inv0.x, inv0.y - 10.0f, 18.0f, "Inventory", label_dim);
+    hud_draw_container_inventory(inv, sw, sh);
+
+    vec4 hint = {0.7f, 0.7f, 0.7f, 0.85f};
+    draw_centered_label("Click a slot to move the stack  -  U or Esc to close",
+                        16.0f, sw, sh - 36.0f, hint);
+}
+
 /* hud_build — accepts a NULL `inv`. The crosshair is always drawn (e.g., in
  * single-player / pre-connect runs before the first PKT_INVENTORY arrives);
  * the hotbar slots are only drawn when `inv` is non-NULL. */
@@ -675,6 +867,8 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
         hud_draw_options(sw, sh);
     else if (screen == GAME_INVENTORY)
         hud_draw_inventory(inv, sw, sh);
+    else if (screen == GAME_CONTAINER && g_hud_container_valid)
+        hud_draw_container(&g_hud_container, inv, sw, sh);
 }
 
 BlockID hud_selected_block(const Inventory* inv)

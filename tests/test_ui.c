@@ -276,6 +276,9 @@ static void test_cursor_and_world_active(void)
     assert(game_ui_world_active(GAME_PAUSED)    == false);
     assert(game_ui_world_active(GAME_INVENTORY) == false);
     assert(game_ui_world_active(GAME_MAIN_MENU) == false);
+    /* An open container is a free-cursor overlay that freezes the world. */
+    assert(game_ui_cursor_free(GAME_CONTAINER)  == true);
+    assert(game_ui_world_active(GAME_CONTAINER) == false);
     printf("PASS: test_cursor_and_world_active\n");
 }
 
@@ -363,6 +366,90 @@ static void test_bar_fill_fraction(void)
         prev = f;
     }
     printf("PASS: test_bar_fill_fraction\n");
+}
+
+static void test_chest_slot_layout(void)
+{
+    float sw = 1280.0f, sh = 720.0f;
+    /* 27 slots in a 3x9 grid: left-to-right within a row, rows stacked down. */
+    for (int row = 0; row < 3; row++) {
+        HudRect prev = hud_chest_slot_rect(row * HUD_CHEST_COLS, sw, sh);
+        assert(prev.w > 0.0f && prev.h > 0.0f);
+        for (int col = 1; col < HUD_CHEST_COLS; col++) {
+            HudRect r = hud_chest_slot_rect(row * HUD_CHEST_COLS + col, sw, sh);
+            assert(r.x > prev.x && "chest slots run left to right");
+            assert(r.x >= prev.x + prev.w && "chest slots do not overlap");
+            assert(fabsf(r.y - prev.y) < 0.001f && "chest row shares a y");
+            prev = r;
+        }
+    }
+    /* Row 1 sits below row 0. */
+    HudRect r0 = hud_chest_slot_rect(0, sw, sh);
+    HudRect r1 = hud_chest_slot_rect(HUD_CHEST_COLS, sw, sh);
+    assert(r1.y >= r0.y + r0.h && "chest rows stack downward");
+    /* The grid is horizontally centred. */
+    HudRect first = hud_chest_slot_rect(0, sw, sh);
+    HudRect last  = hud_chest_slot_rect(HUD_CHEST_COLS - 1, sw, sh);
+    float mid = (first.x + (last.x + last.w)) * 0.5f;
+    assert(fabsf(mid - sw * 0.5f) < 0.5f);
+    /* Hit-test: centre of slot 0 is inside slot 0, not slot 1. */
+    HudRect s1 = hud_chest_slot_rect(1, sw, sh);
+    assert(hud_rect_contains(first, first.x + first.w * 0.5f, first.y + first.h * 0.5f));
+    assert(!hud_rect_contains(s1, first.x + first.w * 0.5f, first.y + first.h * 0.5f));
+    printf("PASS: test_chest_slot_layout\n");
+}
+
+static void test_furnace_slot_layout(void)
+{
+    float sw = 1280.0f, sh = 720.0f;
+    HudRect in  = hud_furnace_slot_rect(HUD_FURNACE_SLOT_INPUT,  sw, sh);
+    HudRect fu  = hud_furnace_slot_rect(HUD_FURNACE_SLOT_FUEL,   sw, sh);
+    HudRect out = hud_furnace_slot_rect(HUD_FURNACE_SLOT_OUTPUT, sw, sh);
+    assert(in.w > 0.0f && fu.w > 0.0f && out.w > 0.0f);
+    /* Fuel sits below input (same column). */
+    assert(fu.y > in.y + in.h * 0.5f && "fuel is below input");
+    assert(fabsf(fu.x - in.x) < 0.001f && "input + fuel share a column");
+    /* Output is to the right of the input/fuel column. */
+    assert(out.x > in.x + in.w && "output is right of the input column");
+    /* The three slots are distinct, non-overlapping hit targets. */
+    assert(!hud_rect_contains(fu,  in.x + in.w * 0.5f, in.y + in.h * 0.5f));
+    assert(!hud_rect_contains(out, in.x + in.w * 0.5f, in.y + in.h * 0.5f));
+    printf("PASS: test_furnace_slot_layout\n");
+}
+
+static void test_furnace_progress_fill(void)
+{
+    /* Endpoints + midpoint of the cook arrow. */
+    assert(hud_furnace_progress_fill(0, 200)   == 0.0f);
+    assert(hud_furnace_progress_fill(200, 200) == 1.0f);
+    assert(fabsf(hud_furnace_progress_fill(100, 200) - 0.5f) < 0.001f);
+    /* Clamps. */
+    assert(hud_furnace_progress_fill(-10, 200) == 0.0f);
+    assert(hud_furnace_progress_fill(400, 200) == 1.0f);
+    /* Degenerate budget never yields NaN/negative. */
+    assert(hud_furnace_progress_fill(50, 0)  == 0.0f);
+    assert(hud_furnace_progress_fill(50, -7) == 0.0f);
+    printf("PASS: test_furnace_progress_fill\n");
+}
+
+static void test_container_inv_slot_layout(void)
+{
+    float sw = 1280.0f, sh = 720.0f;
+    HudRect prev = hud_container_inv_slot_rect(0, sw, sh);
+    assert(prev.w > 0.0f && prev.h > 0.0f);
+    for (int i = 1; i < HUD_SLOT_COUNT; i++) {
+        HudRect r = hud_container_inv_slot_rect(i, sw, sh);
+        assert(r.x > prev.x && "player-inv slots run left to right");
+        assert(r.x >= prev.x + prev.w && "player-inv slots do not overlap");
+        assert(fabsf(r.y - prev.y) < 0.001f && "player-inv slots share a row");
+        prev = r;
+    }
+    /* The player inventory row sits below the chest grid. */
+    HudRect chest_last = hud_chest_slot_rect(HUD_CHEST_SLOTS - 1, sw, sh);
+    HudRect inv0 = hud_container_inv_slot_rect(0, sw, sh);
+    assert(inv0.y >= chest_last.y + chest_last.h
+           && "player inventory is below the chest grid");
+    printf("PASS: test_container_inv_slot_layout\n");
 }
 
 static void test_rect_contains_edges(void)
@@ -509,6 +596,10 @@ int main(void)
     test_inventory_slot_layout();
     test_hotbar_slot_layout();
     test_bar_fill_fraction();
+    test_chest_slot_layout();
+    test_furnace_slot_layout();
+    test_furnace_progress_fill();
+    test_container_inv_slot_layout();
     test_rect_contains_edges();
     test_options_state_is_a_menu();
     test_volume_slider_value_mapping();
