@@ -23,19 +23,45 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "block.h"   /* BlockID, for the pure block -> footstep mapping below */
+
 #define AUDIO_SAMPLE_RATE 22050
 
 /* Logical sound effects the engine can request. Keep SFX_COUNT last. */
 typedef enum {
     SFX_BLOCK_BREAK = 0,
     SFX_BLOCK_PLACE,
-    SFX_STEP,
+    SFX_STEP,           /* generic/legacy footstep (kept for back-compat) */
     SFX_HURT,
     SFX_MOB_HURT,
     SFX_EAT,
-    SFX_HIT,        /* attacker-side cue: the local player landed a melee blow */
+    SFX_HIT,            /* attacker-side cue: the local player landed a melee blow */
+    /* Surface-aware footsteps (dyb.4.2). Short, quiet noise bursts shaped per
+     * material so grass/dirt read soft and earthy, stone hard and bright, sand
+     * the softest hiss, wood a hollow knock. Picked via audio_footstep_for_block. */
+    SFX_STEP_GRASS,
+    SFX_STEP_DIRT,
+    SFX_STEP_STONE,
+    SFX_STEP_SAND,
+    SFX_STEP_WOOD,
+    /* Ambient atmosphere (dyb.4.2). Low, sparse, quiet beds the future trigger
+     * layer can sprinkle on a timer / in caves. */
+    SFX_AMBIENT_CAVE,   /* a single soft cave water drip with a short reverb tail */
+    SFX_AMBIENT_WIND,   /* a low, breathy filtered-noise wind gust */
     SFX_COUNT
 } SoundId;
+
+/* Surface materials a footstep can land on. A small, block.h-independent enum so
+ * the per-surface footstep mapping is pure and the audio engine never has to
+ * reason about world blocks directly. */
+typedef enum {
+    STEP_MAT_SOFT = 0,  /* grass / leaves / snow — muffled, earthy */
+    STEP_MAT_DIRT,      /* dirt / path / gravel — duller thud */
+    STEP_MAT_STONE,     /* stone / cobble / ore — hard, bright tap */
+    STEP_MAT_SAND,      /* sand / sandstone — soft high hiss */
+    STEP_MAT_WOOD,      /* wood / planks / chest — hollow knock */
+    STEP_MAT_COUNT
+} FootstepMaterial;
 
 /* ---- Lifecycle ---------------------------------------------------------- */
 
@@ -60,6 +86,27 @@ void audio_play_at(SoundId id, const float pos[3], const float listener[3]);
 /* Enable/disable the procedural background music loop. Music defaults to ON
  * (it is real, quiet music now). */
 void audio_set_music(bool on);
+
+/* ---- Footsteps & ambient (dyb.4.2) -------------------------------------- *
+ *
+ * Convenience play helpers so the future trigger wiring in main.c/player.c is
+ * trivial. These are thin wrappers over audio_play/audio_play_at — they map a
+ * surface material to the right SFX_STEP_* buffer and add a small, deterministic
+ * gain jitter per step so repeated footsteps don't sound mechanically identical.
+ *
+ * TRIGGERING IS DEFERRED: nothing here decides WHEN to play. The player/main
+ * loop owns that (footstep on ground-contact while moving, ambient on a timer /
+ * when underground). This module only provides the sounds and the play API. */
+
+/* Play a footstep for the given surface material as a 2D one-shot. `step_seq` is
+ * a caller-supplied, monotonically-increasing step counter used only to vary the
+ * gain a touch between consecutive steps (pass 0 if you don't care). */
+void audio_play_footstep(FootstepMaterial mat, uint64_t step_seq);
+
+/* Positional variant: same material -> SFX mapping, attenuated by distance.
+ * Either pointer may be NULL (falls back to 2D). */
+void audio_play_footstep_at(FootstepMaterial mat, uint64_t step_seq,
+                            const float pos[3], const float listener[3]);
 
 /* ---- Master volume / mute ------------------------------------------------ */
 
@@ -165,5 +212,22 @@ size_t audio_music_loop_samples(void);
  * (ignored for free slots). Returns the chosen slot index in [0,count), or -1
  * if count <= 0. Pure: depends only on its arguments. */
 int audio_pick_voice(const uint8_t* active, const uint64_t* age, int count);
+
+/* ---- Footstep surface mapping (pure, unit-tested) ------------------------ *
+ *
+ * Map the block a player is standing on to a footstep material, then to the
+ * concrete SFX_STEP_* sound. Both are pure (no engine/global state): given the
+ * same block they always return the same value. Unknown/edge blocks (air, water)
+ * fall back to the soft default rather than going silent. */
+
+/* The footstep material for the surface block under the player. Pure. */
+FootstepMaterial audio_footstep_material_for_block(BlockID block);
+
+/* The footstep SFX for a surface material. Pure; total over STEP_MAT_*. */
+SoundId audio_footstep_sfx_for_material(FootstepMaterial mat);
+
+/* Convenience: block -> footstep SFX in one call (composition of the two
+ * above). The future player/main trigger calls this. Pure. */
+SoundId audio_footstep_for_block(BlockID block);
 
 #endif /* AUDIO_H */

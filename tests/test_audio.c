@@ -47,6 +47,13 @@ static size_t write_wav_mono_s16(const char* path, const int16_t* pcm,
     return total > 0 ? (size_t)total : 0;
 }
 
+/* Ambient beds (cave drip, wind) are intentionally LONGER and slower than the
+ * punchy gameplay SFX, so the "short footstep/feedback" duration bounds don't
+ * apply to them. They still must be bounded, in-range, soft and click-free. */
+static int is_ambient_sfx(int id) {
+    return id == SFX_AMBIENT_CAVE || id == SFX_AMBIENT_WIND;
+}
+
 /* ---- Pure DSP helper invariants ---------------------------------------- */
 
 static void test_env_decay(void) {
@@ -367,8 +374,11 @@ static void test_sfx_soft_and_short(void) {
         int16_t buf[AUDIO_SAMPLE_RATE];
         size_t n = audio_gen_sfx((SoundId)id, buf, sizeof buf / sizeof buf[0]);
         assert(n > 4);
-        /* Short. */
-        assert((float)n / (float)AUDIO_SAMPLE_RATE <= MAX_DUR);
+        /* Short — gameplay feedback only. Ambient beds are deliberately longer
+         * (still bounded under the 1s buffer), so exempt them from this bound. */
+        if (!is_ambient_sfx(id))
+            assert((float)n / (float)AUDIO_SAMPLE_RATE <= MAX_DUR);
+        assert((float)n / (float)AUDIO_SAMPLE_RATE <= 1.0f);   /* bounded for all */
         /* Soft peak. */
         int peak = 0;
         for (size_t i = 0; i < n; i++)
@@ -401,42 +411,48 @@ static void test_sfx_smooth_envelope_and_no_clicks(void) {
         /* Tail lands on (near) zero. */
         assert(abs(buf[n - 1]) < 400);
 
-        /* Soft attack: the envelope eases IN, so the immediate onset (first
-         * ~0.5 ms) is clearly quieter than once the attack has opened up
-         * (~3-4 ms in). A hard onset (old buzzer) would be full-level already
-         * at sample ~1 and fail this. We compare windowed RMS-ish averages so a
-         * single zero-crossing doesn't fool it. */
-        size_t onset = (size_t)(AUDIO_SAMPLE_RATE * 0.0005f);  /* ~0.5 ms */
-        size_t open  = (size_t)(AUDIO_SAMPLE_RATE * 0.004f);   /* ~4 ms */
-        if (onset < 4) onset = 4;
-        if (open <= onset) open = onset + 4;
-        if (open + onset > n) { open = n / 2; onset = open / 4; if (onset < 1) onset = 1; }
-        long onset_sum = 0, open_sum = 0;
-        for (size_t i = 0; i < onset; i++) onset_sum += abs(buf[i]);
-        for (size_t i = open; i < open + onset; i++) open_sum += abs(buf[i]);
-        double onset_avg = (double)onset_sum / (double)onset;
-        double open_avg  = (double)open_sum  / (double)onset;
-        assert(open_avg > 100.0);              /* sound has opened to real level */
-        assert(onset_avg < open_avg);          /* attack ramps up, no hard onset */
+        /* The fine-grained attack/body/release ramp-timing checks below assume a
+         * fast (few-ms) gameplay envelope. Ambient beds use a slow, multi-100ms
+         * swell, so the 4ms windows don't apply; they are still proven near-zero
+         * at the ends, click-free, in-range and soft by the universal checks. */
+        if (!is_ambient_sfx(id)) {
+            /* Soft attack: the envelope eases IN, so the immediate onset (first
+             * ~0.5 ms) is clearly quieter than once the attack has opened up
+             * (~3-4 ms in). A hard onset (old buzzer) would be full-level already
+             * at sample ~1 and fail this. We compare windowed RMS-ish averages so a
+             * single zero-crossing doesn't fool it. */
+            size_t onset = (size_t)(AUDIO_SAMPLE_RATE * 0.0005f);  /* ~0.5 ms */
+            size_t open  = (size_t)(AUDIO_SAMPLE_RATE * 0.004f);   /* ~4 ms */
+            if (onset < 4) onset = 4;
+            if (open <= onset) open = onset + 4;
+            if (open + onset > n) { open = n / 2; onset = open / 4; if (onset < 1) onset = 1; }
+            long onset_sum = 0, open_sum = 0;
+            for (size_t i = 0; i < onset; i++) onset_sum += abs(buf[i]);
+            for (size_t i = open; i < open + onset; i++) open_sum += abs(buf[i]);
+            double onset_avg = (double)onset_sum / (double)onset;
+            double open_avg  = (double)open_sum  / (double)onset;
+            assert(open_avg > 100.0);              /* sound has opened to real level */
+            assert(onset_avg < open_avg);          /* attack ramps up, no hard onset */
 
-        /* Body carries real signal in the middle. */
-        long body_sum = 0;
-        size_t bw = open;   /* reuse a ~few-ms window */
-        if (n / 3 + bw > n) bw = n - n / 3;
-        for (size_t i = n / 3; i < n / 3 + bw; i++) body_sum += abs(buf[i]);
-        double body_avg = (double)body_sum / (double)bw;
-        assert(body_avg > 80.0);               /* middle is non-silent */
+            /* Body carries real signal in the middle. */
+            long body_sum = 0;
+            size_t bw = open;   /* reuse a ~few-ms window */
+            if (n / 3 + bw > n) bw = n - n / 3;
+            for (size_t i = n / 3; i < n / 3 + bw; i++) body_sum += abs(buf[i]);
+            double body_avg = (double)body_sum / (double)bw;
+            assert(body_avg > 80.0);               /* middle is non-silent */
 
-        /* Soft release: the very tail (~0.5 ms) is clearly quieter than a few ms
-         * earlier — the release ramp decays the sound out to zero. */
-        long tailend_sum = 0, prerel_sum = 0;
-        for (size_t i = n - onset; i < n; i++) tailend_sum += abs(buf[i]);
-        size_t pr = n > open + onset ? n - open - onset : 0;
-        for (size_t i = pr; i < pr + onset; i++) prerel_sum += abs(buf[i]);
-        double tailend_avg = (double)tailend_sum / (double)onset;
-        double prerel_avg  = (double)prerel_sum  / (double)onset;
-        assert(tailend_avg < prerel_avg + 1.0);  /* release decays out (<=, slack) */
-        assert(abs(buf[n - 1]) < abs(buf[pr]) + 200 || abs(buf[n-1]) < 400);
+            /* Soft release: the very tail (~0.5 ms) is clearly quieter than a few ms
+             * earlier — the release ramp decays the sound out to zero. */
+            long tailend_sum = 0, prerel_sum = 0;
+            for (size_t i = n - onset; i < n; i++) tailend_sum += abs(buf[i]);
+            size_t pr = n > open + onset ? n - open - onset : 0;
+            for (size_t i = pr; i < pr + onset; i++) prerel_sum += abs(buf[i]);
+            double tailend_avg = (double)tailend_sum / (double)onset;
+            double prerel_avg  = (double)prerel_sum  / (double)onset;
+            assert(tailend_avg < prerel_avg + 1.0);  /* release decays out (<=, slack) */
+            assert(abs(buf[n - 1]) < abs(buf[pr]) + 200 || abs(buf[n-1]) < 400);
+        }
 
         /* No inter-sample click ANYWHERE: the largest single-sample step stays
          * well under full scale. A bare square wave at high amplitude (the old
@@ -686,6 +702,86 @@ static void test_pick_voice(void) {
     printf("PASS: pick_voice\n");
 }
 
+/* ---- Footstep surface mapping (pure, dyb.4.2) --------------------------- *
+ *
+ * The block -> material -> SFX_STEP_* mapping is pure: deterministic, total over
+ * all blocks (unknowns fall back to a soft step, never silent / never an
+ * out-of-range id), and composes as block == material(block) -> sfx. */
+static void test_footstep_mapping(void) {
+    /* Representative blocks land on the expected material. */
+    assert(audio_footstep_material_for_block(BLOCK_GRASS) == STEP_MAT_SOFT);
+    assert(audio_footstep_material_for_block(BLOCK_LEAVES) == STEP_MAT_SOFT);
+    assert(audio_footstep_material_for_block(BLOCK_SNOW)  == STEP_MAT_SOFT);
+    assert(audio_footstep_material_for_block(BLOCK_DIRT)  == STEP_MAT_DIRT);
+    assert(audio_footstep_material_for_block(BLOCK_PATH)  == STEP_MAT_DIRT);
+    assert(audio_footstep_material_for_block(BLOCK_STONE) == STEP_MAT_STONE);
+    assert(audio_footstep_material_for_block(BLOCK_COBBLE) == STEP_MAT_STONE);
+    assert(audio_footstep_material_for_block(BLOCK_IRON_ORE) == STEP_MAT_STONE);
+    assert(audio_footstep_material_for_block(BLOCK_SAND) == STEP_MAT_SAND);
+    assert(audio_footstep_material_for_block(BLOCK_SANDSTONE) == STEP_MAT_SAND);
+    assert(audio_footstep_material_for_block(BLOCK_WOOD) == STEP_MAT_WOOD);
+    assert(audio_footstep_material_for_block(BLOCK_PLANKS) == STEP_MAT_WOOD);
+
+    /* Material -> SFX is total and in range; each maps to a STEP buffer. */
+    for (int m = 0; m < STEP_MAT_COUNT; m++) {
+        SoundId s = audio_footstep_sfx_for_material((FootstepMaterial)m);
+        assert(s >= SFX_STEP_GRASS && s <= SFX_STEP_WOOD);
+    }
+
+    /* Total over EVERY block id: never silent, never out of range; and the
+     * convenience composition agrees with the two-step path. */
+    for (int b = 0; b < BLOCK_COUNT; b++) {
+        FootstepMaterial m = audio_footstep_material_for_block((BlockID)b);
+        assert(m >= 0 && m < STEP_MAT_COUNT);
+        SoundId s = audio_footstep_for_block((BlockID)b);
+        assert(s >= SFX_STEP_GRASS && s <= SFX_STEP_WOOD);
+        assert(s == audio_footstep_sfx_for_material(m));   /* composition holds */
+    }
+
+    /* Air/water fall back to the soft default (a footstep is never silent). */
+    assert(audio_footstep_for_block(BLOCK_AIR)   == SFX_STEP_GRASS);
+    assert(audio_footstep_for_block(BLOCK_WATER) == SFX_STEP_GRASS);
+
+    /* Distinct materials map to distinct sounds (stone != sand != wood). */
+    assert(audio_footstep_sfx_for_material(STEP_MAT_STONE) !=
+           audio_footstep_sfx_for_material(STEP_MAT_SAND));
+    assert(audio_footstep_sfx_for_material(STEP_MAT_WOOD) !=
+           audio_footstep_sfx_for_material(STEP_MAT_STONE));
+
+    printf("PASS: footstep_mapping\n");
+}
+
+/* The footstep / ambient play helpers route to the right buffer and count, and
+ * are safe before init / with out-of-range materials (null-backend). */
+static void test_footstep_and_ambient_playback(void) {
+    audio_init();
+
+    /* Each material's play helper increments the count for its mapped SFX. */
+    for (int m = 0; m < STEP_MAT_COUNT; m++) {
+        SoundId expect = audio_footstep_sfx_for_material((FootstepMaterial)m);
+        uint64_t before = audio_play_count(expect);
+        audio_play_footstep((FootstepMaterial)m, (uint64_t)m);
+        assert(audio_play_count(expect) == before + 1);
+    }
+
+    /* Positional variant: NULL positions fall back to 2D, still counts. */
+    float pos[3] = {3, 0, 4}, listener[3] = {0, 0, 0};
+    uint64_t before = audio_play_count(SFX_STEP_STONE);
+    audio_play_footstep_at(STEP_MAT_STONE, 1, pos, listener);
+    audio_play_footstep_at(STEP_MAT_STONE, 2, NULL, NULL);
+    assert(audio_play_count(SFX_STEP_STONE) == before + 2);
+
+    /* Ambient one-shots are ordinary SFX and play via the normal API. */
+    uint64_t cave = audio_play_count(SFX_AMBIENT_CAVE);
+    audio_play(SFX_AMBIENT_CAVE);
+    assert(audio_play_count(SFX_AMBIENT_CAVE) == cave + 1);
+    audio_play_at(SFX_AMBIENT_WIND, pos, listener);
+    assert(audio_play_count(SFX_AMBIENT_WIND) == 1);
+
+    audio_shutdown();
+    printf("PASS: footstep_and_ambient_playback\n");
+}
+
 int main(void) {
     test_env_decay();
     test_oscillators();
@@ -708,6 +804,8 @@ int main(void) {
     test_sound_id_table();
     test_lifecycle_null_backend();
     test_pick_voice();
+    test_footstep_mapping();
+    test_footstep_and_ambient_playback();
     printf("ALL AUDIO TESTS PASSED\n");
     return 0;
 }

@@ -100,6 +100,63 @@ int audio_pick_voice(const uint8_t* active, const uint64_t* age, int count)
     return oldest;
 }
 
+/* ---- Footstep surface mapping (pure) ------------------------------------ *
+ *
+ * Block -> material -> SFX. All compile-time/constant: only the BLOCK_* enum
+ * values are read, so this needs no link to block.c. Anything unmapped (air,
+ * water, glass, …) falls back to the soft default so a footstep is never silent.
+ */
+FootstepMaterial audio_footstep_material_for_block(BlockID block)
+{
+    switch (block) {
+        case BLOCK_GRASS:
+        case BLOCK_LEAVES:
+        case BLOCK_SNOW:
+            return STEP_MAT_SOFT;
+        case BLOCK_DIRT:
+        case BLOCK_PATH:
+            return STEP_MAT_DIRT;
+        case BLOCK_STONE:
+        case BLOCK_COBBLE:
+        case BLOCK_MOSSY_COBBLESTONE:
+        case BLOCK_BEDROCK:
+        case BLOCK_COAL_ORE:
+        case BLOCK_IRON_ORE:
+        case BLOCK_GOLD_ORE:
+        case BLOCK_DIAMOND_ORE:
+        case BLOCK_FURNACE:
+        case BLOCK_ICE:
+            return STEP_MAT_STONE;
+        case BLOCK_SAND:
+        case BLOCK_SANDSTONE:
+            return STEP_MAT_SAND;
+        case BLOCK_WOOD:
+        case BLOCK_PLANKS:
+        case BLOCK_CHEST:
+            return STEP_MAT_WOOD;
+        default:
+            return STEP_MAT_SOFT;   /* air/water/glass/torch/unknown -> soft */
+    }
+}
+
+SoundId audio_footstep_sfx_for_material(FootstepMaterial mat)
+{
+    switch (mat) {
+        case STEP_MAT_SOFT:  return SFX_STEP_GRASS;
+        case STEP_MAT_DIRT:  return SFX_STEP_DIRT;
+        case STEP_MAT_STONE: return SFX_STEP_STONE;
+        case STEP_MAT_SAND:  return SFX_STEP_SAND;
+        case STEP_MAT_WOOD:  return SFX_STEP_WOOD;
+        default:             return SFX_STEP_GRASS;
+    }
+}
+
+SoundId audio_footstep_for_block(BlockID block)
+{
+    return audio_footstep_sfx_for_material(
+        audio_footstep_material_for_block(block));
+}
+
 /* ---- SFX synthesis ------------------------------------------------------ *
  *
  * The redesign drops the "single osc + exp decay" buzzer in favour of small
@@ -190,6 +247,67 @@ static SfxRecipe sfx_recipe(SoundId id)
             .decay = 7.5f, .attack = 0.002f, .release = 0.030f,
             .noise_mix = 0.40f, .peak = 0.32f, .seed = 0x8008u,
             .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.40f, 0.0f}, {3.0f, 0.18f, 0.0f} } };
+
+        /* ---- Surface footsteps (dyb.4.2) -------------------------------- *
+         * All quiet (peak ~0.18-0.24) and short (~70-100ms). Each is a quick
+         * filtered-noise burst over a low body; the per-sound seed gives each
+         * material a distinct grain so they don't sound like one another. */
+
+        /* Grass/leaves/snow: very soft, mostly noise over a dull low body. */
+        case SFX_STEP_GRASS:  return (SfxRecipe){
+            .dur = 0.085f, .freq = 110.0f, .pitch_drop = 0.40f, .pitch_tau = 0.016f,
+            .decay = 8.0f, .attack = 0.004f, .release = 0.030f,
+            .noise_mix = 0.78f, .peak = 0.20f, .seed = 0xA101u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.15f, 0.0f}, {0.0f, 0.0f, 0.0f} } };
+        /* Dirt/path/gravel: a touch lower and tonal — a duller, heavier thud. */
+        case SFX_STEP_DIRT:   return (SfxRecipe){
+            .dur = 0.090f, .freq = 95.0f, .pitch_drop = 0.48f, .pitch_tau = 0.018f,
+            .decay = 7.5f, .attack = 0.004f, .release = 0.030f,
+            .noise_mix = 0.62f, .peak = 0.22f, .seed = 0xA202u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.22f, 0.0f}, {0.0f, 0.0f, 0.0f} } };
+        /* Stone/cobble/ore: harder and brighter — higher body, snappy tap, more
+         * tonal content so it "clicks" against rock rather than thudding. */
+        case SFX_STEP_STONE:  return (SfxRecipe){
+            .dur = 0.075f, .freq = 200.0f, .pitch_drop = 0.55f, .pitch_tau = 0.012f,
+            .decay = 7.5f, .attack = 0.003f, .release = 0.026f,
+            .noise_mix = 0.45f, .peak = 0.23f, .seed = 0xA303u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.35f, 0.0f}, {3.0f, 0.15f, 0.0f} } };
+        /* Sand/sandstone: the softest — a brief high, airy hiss, almost no body.
+         * A gentler body decay keeps the hiss audible through the middle (so it
+         * reads as a sustained "shhf" rather than a single click) while staying
+         * the quietest of the footsteps. */
+        case SFX_STEP_SAND:   return (SfxRecipe){
+            .dur = 0.080f, .freq = 140.0f, .pitch_drop = 0.30f, .pitch_tau = 0.014f,
+            .decay = 5.5f, .attack = 0.005f, .release = 0.032f,
+            .noise_mix = 0.88f, .peak = 0.20f, .seed = 0xA404u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} } };
+        /* Wood/planks/chest: a hollow knock — clear low partial + octave, modest
+         * noise, slightly longer ring than the others. */
+        case SFX_STEP_WOOD:   return (SfxRecipe){
+            .dur = 0.095f, .freq = 165.0f, .pitch_drop = 0.42f, .pitch_tau = 0.016f,
+            .decay = 6.5f, .attack = 0.003f, .release = 0.034f,
+            .noise_mix = 0.40f, .peak = 0.22f, .seed = 0xA505u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.40f, 0.0f}, {3.01f, 0.12f, 0.0f} } };
+
+        /* ---- Ambient atmosphere (dyb.4.2) ------------------------------- *
+         * Low, sparse and quiet — meant to sit far under everything else. */
+
+        /* Cave water drip: a clean pitched "plip" — a sine that chirps DOWN fast
+         * with a longer exponential tail so it reads as a drop into still water,
+         * almost no noise. Quiet. */
+        case SFX_AMBIENT_CAVE: return (SfxRecipe){
+            .dur = 0.34f, .freq = 720.0f, .pitch_drop = 0.62f, .pitch_tau = 0.030f,
+            .decay = 4.5f, .attack = 0.003f, .release = 0.120f,
+            .noise_mix = 0.04f, .peak = 0.16f, .seed = 0xB606u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.18f, 0.0f}, {0.0f, 0.0f, 0.0f} } };
+        /* Wind gust: a long, breathy bed of (filtered) noise over a very low hum,
+         * slow attack/release so it swells in and fades out — no transient. */
+        case SFX_AMBIENT_WIND: return (SfxRecipe){
+            .dur = 0.90f, .freq = 70.0f, .pitch_drop = 0.10f, .pitch_tau = 0.300f,
+            .decay = 1.4f, .attack = 0.180f, .release = 0.260f,
+            .noise_mix = 0.82f, .peak = 0.14f, .seed = 0xB707u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.20f, 1.0f}, {0.0f, 0.0f, 0.0f} } };
+
         default:              return (SfxRecipe){
             .dur = 0.10f, .freq = 220.0f, .pitch_drop = 0.30f, .pitch_tau = 0.030f,
             .decay = 6.0f, .attack = 0.004f, .release = 0.030f,
@@ -641,6 +759,49 @@ void audio_play_at(SoundId id, const float pos[3], const float listener[3])
         gain = 1.0f - dist / AUDIO_MAX_DIST;
         if (gain < 0.0f) gain = 0.0f;
         if (gain > 1.0f) gain = 1.0f;
+    }
+    submit_sound(id, gain);
+}
+
+/* A small deterministic per-step gain wobble in [STEP_GAIN_MIN, 1.0] so back-to
+ * -back footsteps aren't bit-identical (the buffer is fixed; only the level
+ * varies). Derived purely from the material + step counter — no rand(). */
+#define STEP_GAIN_MIN 0.80f
+static float footstep_gain(FootstepMaterial mat, uint64_t step_seq)
+{
+    /* audio_noise() is our deterministic hash; fold the step index + material
+     * into [0,1] and map onto the small gain band. */
+    float n = audio_noise((uint32_t)step_seq, 0xF007u + (uint32_t)mat);
+    float u = 0.5f * (n + 1.0f);                 /* [-1,1] -> [0,1] */
+    return STEP_GAIN_MIN + (1.0f - STEP_GAIN_MIN) * u;
+}
+
+void audio_play_footstep(FootstepMaterial mat, uint64_t step_seq)
+{
+    SoundId id = audio_footstep_sfx_for_material(mat);
+    if ((unsigned)id >= SFX_COUNT) return;
+    g_audio.play_counts[id]++;
+    submit_sound(id, footstep_gain(mat, step_seq));
+}
+
+void audio_play_footstep_at(FootstepMaterial mat, uint64_t step_seq,
+                            const float pos[3], const float listener[3])
+{
+    SoundId id = audio_footstep_sfx_for_material(mat);
+    if ((unsigned)id >= SFX_COUNT) return;
+    g_audio.play_counts[id]++;
+
+    float gain = footstep_gain(mat, step_seq);
+    if (pos && listener) {
+        float dx = pos[0] - listener[0];
+        float dy = pos[1] - listener[1];
+        float dz = pos[2] - listener[2];
+        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+        const float AUDIO_MAX_DIST = 32.0f;
+        float roll = 1.0f - dist / AUDIO_MAX_DIST;
+        if (roll < 0.0f) roll = 0.0f;
+        if (roll > 1.0f) roll = 1.0f;
+        gain *= roll;
     }
     submit_sound(id, gain);
 }
