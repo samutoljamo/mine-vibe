@@ -145,6 +145,24 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
  * by the server — the caller must NOT destroy it. */
 World* server_get_world(void);
 
+/* TEST-ONLY BACKDOOR. Returns the live in-process Server* once server_run_ex has
+ * created it (NULL before/after). The integrated headless harness uses this to
+ * apply test helpers (give/tp/spawn_mob/set_time/set_weather) directly to the
+ * authoritative state — there is no wire packet for these, and the server thread
+ * is in the same process. NOT for gameplay; production code must go through the
+ * client->server packet path. Thread-safe publish; the harness owns the timing. */
+Server* server_get_instance(void);
+
+/* TEST-ONLY backdoor mutators. Apply directly to the authoritative state of the
+ * (single) integrated client / world and request the same client snapshots a
+ * real action would. Used only by the headless harness; there is no wire packet
+ * for these. All return false (or 0) if no server/client is present. */
+bool server_test_give(Server* s, int item, int count);
+bool server_test_tp(Server* s, float x, float y, float z);
+int  server_test_spawn_mob(Server* s, int type, float x, float y, float z);
+bool server_test_set_time(Server* s, uint32_t ticks);
+bool server_test_set_weather(Server* s, int kind);
+
 /* Set the world's game mode. In GAMEMODE_CREATIVE the server applies zero
  * player damage from every source (mob/fall/drown/lava/starve). main.c should
  * call this after loading WorldMeta, before/while the server loop runs. */

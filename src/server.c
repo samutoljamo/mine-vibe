@@ -53,6 +53,74 @@ World* server_get_world(void) {
     return atomic_load_explicit(&g_server_world, memory_order_acquire);
 }
 
+/* TEST-ONLY: live Server* (see server.h). Published alongside g_server_world. */
+static _Atomic(Server*) g_server_instance = NULL;
+
+Server* server_get_instance(void) {
+    return atomic_load_explicit(&g_server_instance, memory_order_acquire);
+}
+
+/* ---- TEST-ONLY backdoor helpers (see server.h declarations below) ---------
+ * These mutate authoritative state in-process and request the same client
+ * snapshots a real action would. Forward-declared statics are defined further
+ * down; the public wrappers live here next to the instance getter. */
+static void server_send_inventory(Server* s, ServerClient* c);
+
+/* Find the first active client (the integrated harness has exactly one). */
+static ServerClient* server_first_active_client(Server* s) {
+    if (!s) return NULL;
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++)
+        if (s->clients[i].active) return &s->clients[i];
+    return NULL;
+}
+
+bool server_test_give(Server* s, int item, int count) {
+    ServerClient* c = server_first_active_client(s);
+    if (!c) return false;
+    int remaining = count;
+    while (remaining > 0) {
+        uint8_t chunk = (uint8_t)(remaining > 255 ? 255 : remaining);
+        uint8_t leftover = inventory_add_item(&c->inventory, (ItemId)item, chunk);
+        if (leftover == chunk) break;          /* inventory full, no progress */
+        remaining -= (chunk - leftover);
+        if (leftover) break;
+    }
+    server_send_inventory(s, c);
+    return true;
+}
+
+bool server_test_tp(Server* s, float x, float y, float z) {
+    ServerClient* c = server_first_active_client(s);
+    if (!c) return false;
+    c->x = x; c->y = y; c->z = z;
+    c->prev_pos_valid = false;   /* don't bill the jump as a fall */
+    c->falling = false;
+    c->position_received = true; /* allow break/place even before first PKT */
+    return true;
+}
+
+int server_test_spawn_mob(Server* s, int type, float x, float y, float z) {
+    if (!s) return 0;
+    vec3 pos = { x, y, z };
+    Mob* m = mob_set_spawn(&s->mobs, (MobType)type, pos);
+    return m ? (int)m->id : 0;
+}
+
+bool server_test_set_time(Server* s, uint32_t ticks) {
+    if (!s) return false;
+    s->world_ticks = ticks;
+    return true;
+}
+
+bool server_test_set_weather(Server* s, int kind) {
+    if (!s) return false;
+    s->weather.kind = (WeatherKind)kind;
+    s->weather.time_left = 60.0f;            /* hold the forced phase a while */
+    /* Force a broadcast next tick by faking a transition from a different kind. */
+    s->weather_last_kind = (kind == WEATHER_CLEAR) ? WEATHER_RAIN : WEATHER_CLEAR;
+    return true;
+}
+
 void server_set_gamemode(Server* s, GameMode gm) {
     if (s) s->gamemode = gm;
 }
@@ -1951,6 +2019,7 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
     world_set_overlay(w, &s.overlay);
     s.world = w;
     atomic_store_explicit(&g_server_world, w, memory_order_release);
+    atomic_store_explicit(&g_server_instance, &s, memory_order_release);
     mob_set_init(&s.mobs);
 
     printf("[server] listening on port %d (max %d clients)\n", port, s.max_clients);
@@ -1989,6 +2058,7 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
      * host a dangling pointer. In host mode the main thread has already stopped
      * touching the world by the time it joins this thread (see main.c
      * shutdown order). */
+    atomic_store_explicit(&g_server_instance, NULL, memory_order_release);
     atomic_store_explicit(&g_server_world, NULL, memory_order_release);
     if (s.world) {
         world_set_overlay(s.world, NULL);

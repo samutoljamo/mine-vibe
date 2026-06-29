@@ -378,9 +378,15 @@ static void* server_thread_func(void* arg)
     return NULL;
 }
 
+/* Forward decl: headless test harness (no glfw/renderer/window). Defined below
+ * main(); runs the integrated server + a client SIMULATION driven by agent JSON
+ * commands with a deterministic fixed-dt `step`. */
+static int run_headless_harness(uint16_t port);
+
 int main(int argc, char *argv[])
 {
     bool agent_mode   = false;
+    bool headless_mode = false;
     bool server_mode  = false;
     bool host_mode    = false;
     bool client_mode  = false;
@@ -398,6 +404,8 @@ int main(int argc, char *argv[])
 
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--agent")  == 0) agent_mode  = true;
+        else if (strcmp(argv[i], "--headless") == 0) headless_mode = true;
+        else if (strcmp(argv[i], "--harness")  == 0) { agent_mode = true; headless_mode = true; }
         else if (strcmp(argv[i], "--server") == 0) server_mode = true;
         else if (strcmp(argv[i], "--host")   == 0) host_mode   = true;
         else if (strcmp(argv[i], "--client") == 0) {
@@ -456,6 +464,13 @@ int main(int argc, char *argv[])
         /* Dedicated server: legacy single hardcoded world (NULL -> world.dat). */
         server_run(port, SERVER_MAX_CLIENTS, WORLD_SEED, NULL);
         return 0;
+    }
+
+    /* Headless test harness (--agent --headless, or --harness): run the
+     * integrated server + a client SIMULATION with NO glfwInit / renderer /
+     * window. Returns BEFORE any GPU/display init below. */
+    if (agent_mode && headless_mode) {
+        return run_headless_harness(port);
     }
 
     if (!glfwInit()) return 1;
@@ -1525,5 +1540,380 @@ int main(int argc, char *argv[])
     renderer_cleanup(&renderer);
     glfwDestroyWindow(window);
     glfwTerminate();
+    return 0;
+}
+
+/* ====================================================================== */
+/*  Headless test harness (zqj / qne / c0j)                               */
+/* ====================================================================== */
+/*
+ * Runs the REAL integrated authoritative server (on its own thread, headless:
+ * renderer == NULL so it drives its own chunk pipeline) plus a client
+ * SIMULATION on this thread — connecting to localhost over the same UDP/net
+ * stack the game uses. There is NO glfwInit, NO renderer, and NO window: the
+ * loop drains agent JSON commands, applies them (routing gameplay verbs through
+ * the client->server packets so the server stays authoritative), pumps the
+ * network, advances the player physics, and emits a rich JSON state line.
+ *
+ * Determinism: there is no real renderer to pace frames, so the harness uses a
+ * FIXED dt (1/SERVER_TICK_RATE) per simulation tick. The `step {ticks}` command
+ * advances exactly `ticks` such ticks, sleeping ~1 server-tick of real time per
+ * iteration so the (wall-clock 20 Hz) server thread processes the packets we
+ * send — then returns. Tests issue a `step` after each action and assert on the
+ * resulting `get_state`, so they are reproducible and fast (no frame budget).
+ */
+
+/* Fill an AgentSnapshot from the live client/world/mob state — the same data
+ * the renderer would read — plus a couple of test-only reads of the server. */
+static void harness_fill_snapshot(AgentSnapshot* snap, Player* pl, Client* cl,
+                                  ClientMobSet* mobs, World* world,
+                                  RaycastHit* target, uint64_t tick)
+{
+    memset(snap, 0, sizeof(*snap));
+    glm_vec3_copy(pl->position, snap->pos);
+    glm_vec3_copy(pl->velocity, snap->vel);
+    snap->yaw       = pl->camera.yaw   * (180.0f / 3.14159265f);
+    snap->pitch     = pl->camera.pitch * (180.0f / 3.14159265f);
+    snap->on_ground = pl->on_ground ? 1 : 0;
+    snap->mode      = (pl->mode == MODE_FREE) ? 0 : 1;
+    snap->tick      = tick;
+
+    snap->selected_slot = cl->inventory.selected;
+    snap->inventory_count = INVENTORY_SLOTS;
+    for (int i = 0; i < INVENTORY_SLOTS; i++) {
+        snap->hotbar[i]            = cl->inventory.slots[i].count;
+        snap->inventory[i].item    = (int)cl->inventory.slots[i].item;
+        snap->inventory[i].count   = cl->inventory.slots[i].count;
+        snap->inventory[i].durability = cl->inventory.slots[i].durability;
+    }
+
+    snap->health = cl->health;
+    snap->food   = cl->food;
+    snap->air    = cl->air;
+    snap->time_of_day = client_estimate_world_ticks(cl);
+    WeatherState wx = client_get_weather(cl);
+    snap->weather = (int)wx.kind;
+
+    /* Gamemode is owned by the server; read it via the test backdoor. */
+    Server* sv = server_get_instance();
+    snap->gamemode = sv ? (int)sv->gamemode : 0;
+
+    /* Targeted block. */
+    if (target && target->hit) {
+        snap->target_hit   = 1;
+        snap->target_x     = target->x;
+        snap->target_y     = target->y;
+        snap->target_z     = target->z;
+        snap->target_block = (int)target->block;
+    }
+    (void)world;
+
+    /* Nearby mobs from the client-side interpolated set. */
+    int mc = 0;
+    if (mobs) {
+        for (int i = 0; i < MOB_MAX && mc < AGENT_MAX_MOBS; i++) {
+            ClientMob* m = &mobs->mobs[i];
+            if (!m->active) continue;
+            snap->mobs[mc].id     = m->id;
+            snap->mobs[mc].type   = m->type;
+            snap->mobs[mc].health = m->health;
+            /* Latest received snapshot position (index 1 is freshest). */
+            int pi = (m->snapshot_count >= 2) ? 1 : 0;
+            snap->mobs[mc].pos[0] = m->positions[pi][0];
+            snap->mobs[mc].pos[1] = m->positions[pi][1];
+            snap->mobs[mc].pos[2] = m->positions[pi][2];
+            mc++;
+        }
+    }
+    snap->mob_count = mc;
+
+    /* Open container contents, if any. */
+    if (cl->container_open) {
+        snap->container_open = 1;
+        if (cl->container.type == CONTAINER_NET_CHEST) {
+            snap->container_type  = 0;
+            snap->container_slots = CONTAINER_NET_CHEST_SLOTS;
+            for (int i = 0; i < CONTAINER_NET_CHEST_SLOTS; i++) {
+                snap->container[i].item  = cl->container.slots[i].item;
+                snap->container[i].count = cl->container.slots[i].count;
+            }
+        } else {
+            snap->container_type  = 1;   /* furnace */
+            snap->container_slots = 3;
+            snap->container[0].item  = cl->container.f_input;
+            snap->container[0].count = cl->container.f_input_count;
+            snap->container[1].item  = cl->container.f_fuel;
+            snap->container[1].count = cl->container.f_fuel_count;
+            snap->container[2].item  = cl->container.f_output;
+            snap->container[2].count = cl->container.f_output_count;
+        }
+    }
+}
+
+/* Apply a gameplay verb / test helper. Returns false on quit. Gameplay verbs
+ * route through client_send_* (authoritative server); helpers use the server
+ * backdoor (server_get_instance + server_test_*). */
+static bool harness_apply_command(const AgentCommand* cmd, Player* pl,
+                                   Client* cl, World* world,
+                                   RaycastHit* target, int* step_ticks)
+{
+    *step_ticks = 0;
+    switch (cmd->type) {
+    case CMD_MOVE:
+        pl->agent_forward = cmd->move.forward;
+        pl->agent_right   = cmd->move.right;
+        break;
+    case CMD_LOOK:
+        pl->camera.yaw   = cmd->look.yaw   * (3.14159265f / 180.0f);
+        pl->camera.pitch = cmd->look.pitch * (3.14159265f / 180.0f);
+        break;
+    case CMD_JUMP:    pl->agent_jump   = true; break;
+    case CMD_SPRINT:  pl->agent_sprint = (cmd->sprint.active != 0); break;
+    case CMD_MODE:
+        pl->mode = (cmd->mode.mode == 0) ? MODE_FREE : MODE_WALKING;
+        glm_vec3_zero(pl->velocity);
+        pl->on_ground = false; pl->in_water = false;
+        break;
+    case CMD_SELECT_SLOT:
+        if (cmd->select_slot.slot >= 0 && cmd->select_slot.slot < INVENTORY_SLOTS)
+            cl->inventory.selected = cmd->select_slot.slot;
+        break;
+    case CMD_GET_STATE: break;       /* state is emitted by the caller */
+    case CMD_DUMP_FRAME:
+        agent_emit_error("dump_frame is not supported in headless harness");
+        break;
+    case CMD_STEP:    *step_ticks = cmd->step.ticks; break;
+
+    /* ---- Gameplay verbs (authoritative via packets) ---- */
+    case CMD_PLACE: {
+        /* Place `block` INTO cell (x,y,z): select a hotbar slot holding it, then
+         * send a place against the cell below with face = +Y so the new block
+         * lands in (x,y,z). Requires the player be within reach (use `tp`). */
+        int slot = -1;
+        for (int i = 0; i < INVENTORY_SLOTS; i++)
+            if ((int)cl->inventory.slots[i].item == cmd->place.block
+                && cl->inventory.slots[i].count > 0) { slot = i; break; }
+        if (slot < 0) { agent_emit_error("place: block not held in inventory"); break; }
+        cl->inventory.selected = slot;
+        client_send_place(cl, cmd->place.x, cmd->place.y - 1, cmd->place.z,
+                          (uint8_t)FACE_PY, (uint8_t)slot);
+        break;
+    }
+    case CMD_BREAK: {
+        int x = cmd->brk.x, y = cmd->brk.y, z = cmd->brk.z;
+        if (x == INT32_MIN) {            /* no coords -> break the current target */
+            if (!target || !target->hit) { agent_emit_error("break: no target"); break; }
+            x = target->x; y = target->y; z = target->z;
+        }
+        BlockID b = world ? world_get_block(world, x, y, z) : BLOCK_AIR;
+        client_send_break(cl, x, y, z, (uint8_t)b, (uint8_t)cl->inventory.selected);
+        break;
+    }
+    case CMD_ATTACK:
+        client_send_mob_attack(cl, (uint16_t)cmd->attack.mob_id);
+        break;
+    case CMD_CRAFT:
+        client_send_craft(cl, (uint16_t)cmd->craft.recipe);
+        break;
+    case CMD_OPEN:
+        client_send_container_open(cl, cmd->open.x, cmd->open.y, cmd->open.z);
+        g_container_x = cmd->open.x; g_container_y = cmd->open.y; g_container_z = cmd->open.z;
+        break;
+    case CMD_MOVE_ITEM: {
+        int x = cmd->move_item.x, y = cmd->move_item.y, z = cmd->move_item.z;
+        if (x == INT32_MIN) { x = g_container_x; y = g_container_y; z = g_container_z; }
+        uint8_t dir = (cmd->move_item.dir == 1) ? CONTAINER_DIR_FROM_INV
+                                                 : CONTAINER_DIR_TO_INV;
+        int cnt = cmd->move_item.count; if (cnt < 1) cnt = 1; if (cnt > 255) cnt = 255;
+        client_send_container_action(cl, x, y, z, (uint8_t)cmd->move_item.slot,
+                                     dir, (uint8_t)cnt);
+        break;
+    }
+    case CMD_EAT:
+        client_send_eat(cl, (uint8_t)cl->inventory.selected);
+        break;
+
+    /* ---- Test-only helpers (server backdoor) ---- */
+    case CMD_GIVE: {
+        Server* sv = server_get_instance();
+        if (!server_test_give(sv, cmd->give.item, cmd->give.count))
+            agent_emit_error("give: no server/client");
+        break;
+    }
+    case CMD_TP: {
+        Server* sv = server_get_instance();
+        /* Move BOTH the server's authoritative position and the local sim. */
+        server_test_tp(sv, cmd->tp.x, cmd->tp.y, cmd->tp.z);
+        pl->position[0] = cmd->tp.x; pl->position[1] = cmd->tp.y; pl->position[2] = cmd->tp.z;
+        glm_vec3_zero(pl->velocity);
+        pl->on_ground = false;
+        break;
+    }
+    case CMD_SPAWN_MOB: {
+        Server* sv = server_get_instance();
+        int id = server_test_spawn_mob(sv, cmd->spawn_mob.type,
+                                       cmd->spawn_mob.x, cmd->spawn_mob.y, cmd->spawn_mob.z);
+        if (!id) agent_emit_error("spawn_mob: failed");
+        break;
+    }
+    case CMD_SET_TIME:
+        server_test_set_time(server_get_instance(), (uint32_t)cmd->set_time.ticks);
+        break;
+    case CMD_SET_WEATHER:
+        server_test_set_weather(server_get_instance(), cmd->set_weather.kind);
+        break;
+
+    case CMD_QUIT:
+        return false;
+    }
+    return true;
+}
+
+static int run_headless_harness(uint16_t port)
+{
+    printf("[harness] headless agent harness starting (no renderer/window)\n");
+    fflush(stdout);
+
+    /* --- Integrated authoritative server, headless (renderer == NULL) --- */
+    ServerArgs* sargs = malloc(sizeof(ServerArgs));
+    sargs->port = port;
+    sargs->max  = SERVER_MAX_CLIENTS;
+    sargs->seed = WORLD_SEED;
+    sargs->save_path[0] = '\0';          /* legacy world.dat overlay */
+    sargs->renderer = NULL;              /* headless: server drives its own pipeline */
+    sargs->render_distance = 0;
+    sargs->gamemode = GAMEMODE_SURVIVAL;
+    PT_Thread server_thread = {0};
+    pt_thread_create(&server_thread, server_thread_func, sargs);
+    pt_sleep_ms(200);                    /* let it bind before connecting */
+
+    /* --- Client simulation (connects to localhost over real UDP) --- */
+    int net_fd = net_socket_client();
+    NetThread net_thread;
+    net_thread_start(&net_thread, net_fd);
+
+    struct sockaddr_in srv_addr = {0};
+    if (net_resolve("127.0.0.1", port, &srv_addr) != NET_RESOLVE_OK) {
+        fprintf(stderr, "[harness] could not resolve localhost\n");
+        return 1;
+    }
+
+    Client client;
+    RemotePlayerSet remote_players;
+    ClientMobSet mob_set;
+    client_init(&client, &net_thread, &srv_addr);
+    remote_player_set_init(&remote_players);
+    client_mob_set_init(&mob_set);
+    g_remote_players = &remote_players;
+    g_client         = &client;
+    g_mobs           = &mob_set;
+    client_set_snapshot_cb(&client, on_snapshot, NULL);
+    client_set_leave_cb(&client, on_player_leave, NULL);
+    client_set_mobs_cb(&client, on_mobs, NULL);
+    client_set_death_cb(&client, on_death, NULL);
+    /* Share the server's world in-process: the headless server drives its own
+     * world_update around the player anchor, so we DON'T need streamed chunks
+     * and can read the same authoritative world for collision + raycasts. */
+    client_set_shared_world(&client, true);
+    client_set_render_distance(&client, 8);
+    client_connect(&client);
+
+    /* Borrow the server's authoritative world for player physics + raycasts. */
+    World* world = NULL;
+    for (int tries = 0; tries < 4000 && !world; tries++) {
+        world = server_get_world();
+        if (!world) pt_sleep_ms(1);
+    }
+    if (!world) { fprintf(stderr, "[harness] server world never appeared\n"); return 1; }
+    g_net_world = NULL;   /* world is borrowed; not network-fed */
+
+    int spawn_y = worldgen_get_height(0, 0, WORLD_SEED) + 4;
+    vec3 spawn = { 0.5f, (float)spawn_y, 0.5f };
+    player_init(&g_player, spawn);
+    g_player_ptr = &g_player;
+    glm_vec3_copy(spawn, g_spawn_pos);
+    g_player.agent_mode = true;
+    g_player.mode = MODE_WALKING;
+
+    agent_init();
+
+    const float dt = 1.0f / (float)SERVER_TICK_RATE;   /* fixed deterministic step */
+    RaycastHit target = {0};
+    uint64_t tick = 0;
+    bool running = true;
+
+    /* One simulation tick: drive player, refresh target, pump network. */
+    #define HARNESS_SIM_TICK() do { \
+        client_send_position(&client, g_player.position[0], g_player.position[1], \
+                             g_player.position[2], g_player.camera.yaw, g_player.camera.pitch); \
+        g_player.agent_jump = (g_player.agent_jump); /* edge handled by player_update */ \
+        player_update(&g_player, NULL, world, dt); \
+        { vec3 d; camera_get_front(&g_player.camera, d); \
+          target = raycast_voxel(world, g_player.eye_pos, d, MAX_REACH); } \
+        client_poll(&client); \
+        for (int _i = 0; _i < client.pending_block_change_count; _i++) {} \
+        client.pending_block_change_count = 0; \
+        g_player.agent_jump = false; \
+        tick++; \
+    } while (0)
+
+    /* Settle: a few ticks so the connect handshake completes + the spawn column
+     * generates before the first command. */
+    for (int i = 0; i < 10; i++) { HARNESS_SIM_TICK(); pt_sleep_ms(5); }
+
+    agent_emit_ready();
+
+    while (running) {
+        AgentCommand cmd;
+        bool got = agent_pop_command(&cmd);
+        if (!got) {
+            /* Idle: brief sleep so we don't busy-spin while waiting for stdin.
+             * The I/O thread is blocked on fgets; nothing to do until a command
+             * arrives. A closed stdin makes agent_pop never return again, so we
+             * also detect EOF via the active flag flipping is unnecessary — the
+             * test always ends with `quit`. */
+            pt_sleep_ms(2);
+            if (!agent_is_active()) break;
+            continue;
+        }
+
+        int step_ticks = 0;
+        running = harness_apply_command(&cmd, &g_player, &client, world,
+                                        &target, &step_ticks);
+        if (!running) break;
+
+        if (cmd.type == CMD_STEP) {
+            for (int i = 0; i < step_ticks; i++) {
+                HARNESS_SIM_TICK();
+                /* Pace ~1 server tick of real time so the wall-clock 20 Hz
+                 * server thread processes our packets between sim ticks. */
+                pt_sleep_ms(1000 / SERVER_TICK_RATE);
+            }
+        } else {
+            /* Non-step commands advance one tick so the action's packet is sent
+             * and any immediate reply is polled before the state is emitted. */
+            HARNESS_SIM_TICK();
+            pt_sleep_ms(1000 / SERVER_TICK_RATE);
+        }
+
+        /* Emit a fresh state line after every command. */
+        AgentSnapshot snap;
+        harness_fill_snapshot(&snap, &g_player, &client, &mob_set, world,
+                              &target, tick);
+        agent_emit_snapshot(&snap);
+    }
+
+    #undef HARNESS_SIM_TICK
+
+    /* Teardown. */
+    g_client = NULL; g_mobs = NULL; g_remote_players = NULL;
+    client_disconnect(&client);
+    net_thread_stop(&net_thread);
+    net_socket_close(net_fd);
+    server_request_stop();
+    pt_thread_join(server_thread);
+    agent_destroy();
+    printf("[harness] headless harness exited cleanly\n");
+    fflush(stdout);
     return 0;
 }
