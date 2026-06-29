@@ -1,0 +1,15 @@
+# mob_takes_damage: spawn a zombie next to the player, attack it, confirm its
+# health dropped. type 0 = MOB_ZOMBIE. The player settles at (0.5,105,0.5); the
+# mob is spawned ~1 block away at ground level so the server's reach check on the
+# attack passes. The first spawned mob gets id 1.
+> {"cmd":"step","ticks":10}
+> {"cmd":"spawn_mob","type":0,"x":1.5,"y":105,"z":0.5}
+> {"cmd":"step","ticks":3}
+expect mobs[0].id == 1
+expect mobs[0].type == 0
+expect mobs[0].health == 20
+> {"cmd":"attack","mob_id":1}
+> {"cmd":"step","ticks":5}
+# A bare-fist hit deals damage; the zombie is below full health and still alive.
+expect mobs[0].health < 20
+expect mobs[0].health > 0

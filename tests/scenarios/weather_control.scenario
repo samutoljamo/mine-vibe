@@ -1,0 +1,10 @@
+# weather_control: force a weather kind and confirm the state reports it.
+# set_weather kind: 0 = clear, 1 = rain, 2 = storm. Backdoor-driven, so it is
+# fully deterministic (no position/chunk races).
+> {"cmd":"step","ticks":5}
+> {"cmd":"set_weather","kind":2}
+> {"cmd":"step","ticks":5}
+expect weather == "storm"
+> {"cmd":"set_weather","kind":0}
+> {"cmd":"step","ticks":5}
+expect weather == "clear"

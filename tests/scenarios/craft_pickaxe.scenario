@@ -1,0 +1,18 @@
+# craft_pickaxe: recipe index 2 = Wooden Pickaxe (3 planks + 2 sticks).
+# Item 13 = BLOCK_PLANKS, item 40 = ITEM_STICK, item 24 = ITEM_WOOD_PICKAXE.
+# Give exactly the inputs; after crafting the inputs are fully consumed and a
+# pickaxe appears. (Planks land in slot 3, sticks in slot 4; the crafted pickaxe
+# replaces the now-empty planks stack and the stick slot clears.)
+> {"cmd":"step","ticks":8}
+> {"cmd":"give","item":13,"count":3}
+> {"cmd":"give","item":40,"count":2}
+> {"cmd":"step","ticks":5}
+expect inventory[3].item == 13
+expect inventory[4].item == 40
+> {"cmd":"craft","recipe":2}
+> {"cmd":"step","ticks":10}
+# A wooden pickaxe was produced...
+expect inventory[3].item == 24
+expect inventory[3].count == 1
+# ...and both inputs were consumed (stick slot now empty).
+expect inventory[4].count == 0

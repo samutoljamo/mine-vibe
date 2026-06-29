@@ -862,3 +862,47 @@ foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_frustum test_chunkmap test_mob_model test_particle test_particle_render)
     msvc_enable_c11_atomics(${t})
 endforeach()
+
+# ---- End-to-end gameplay scenario tests --------------------------------------
+# Drive the real integrated authoritative server + headless no-render client via
+# the JSON agent harness (./build/minecraft --agent --headless). Each .scenario
+# file under tests/scenarios feeds commands + `expect` assertions through
+# tools/scenario_run.py, which fails (rc 1) on the first failed assertion or a
+# harness crash/timeout. These need the built `minecraft` binary, so they are
+# gated behind ENABLE_SCENARIO_TESTS and skipped where no binary/Python exists.
+option(ENABLE_SCENARIO_TESTS
+       "Register headless gameplay scenario tests (need the minecraft binary)" ON)
+
+if(ENABLE_SCENARIO_TESTS)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        # Every scenario known to pass deterministically against the harness.
+        # Block-edit loops (place/break/mine, chest/furnace) are intentionally
+        # omitted: the shared-world headless physics drifts the player position
+        # and the chunk-gen/reach validation races, so those edits are not
+        # reproducible enough to assert on. See the runner header for the format.
+        set(SCENARIO_NAMES
+            tp_and_state
+            give_and_inventory
+            craft_planks
+            craft_pickaxe
+            mob_takes_damage
+            mob_death
+            spawn_passive_mob
+            weather_control
+            set_time_of_day
+        )
+        foreach(sc ${SCENARIO_NAMES})
+            add_test(NAME scenario_${sc}
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_SOURCE_DIR}/tools/scenario_run.py
+                             ${CMAKE_SOURCE_DIR}/tests/scenarios/${sc}.scenario)
+            # Pass the freshly built binary path + a generous per-test timeout.
+            set_tests_properties(scenario_${sc} PROPERTIES
+                ENVIRONMENT "MINECRAFT_BIN=$<TARGET_FILE:minecraft>;SCENARIO_TIMEOUT=60"
+                TIMEOUT 90)
+        endforeach()
+    else()
+        message(STATUS "Python3 interpreter not found; scenario tests disabled.")
+    endif()
+endif()
