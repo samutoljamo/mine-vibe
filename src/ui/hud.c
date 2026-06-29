@@ -69,6 +69,17 @@ void hud_set_underwater(bool underwater)
     g_hud_underwater = underwater;
 }
 
+/* Held-item attack swing: a brief down-and-back arc of the selected item icon
+ * near the crosshair. hud_trigger_swing arms it; hud_tick advances the elapsed
+ * clock; hud_build samples hud_swing_phase/arc to offset the icon. g_swing_t is
+ * the elapsed time since the swing started, or >= HUD_SWING_SEC when at rest. */
+static float g_swing_t = HUD_SWING_SEC;
+
+void hud_trigger_swing(void)
+{
+    g_swing_t = 0.0f;
+}
+
 void hud_tick(float dt)
 {
     if (dt > 0.0f) g_hud_time += dt;
@@ -76,6 +87,30 @@ void hud_tick(float dt)
         g_hurt_flash -= dt / HUD_HURT_FLASH_SEC;
         if (g_hurt_flash < 0.0f) g_hurt_flash = 0.0f;
     }
+    /* Advance the swing clock until it has run its course (then it parks at the
+     * duration so hud_swing_phase reports a finished swing => no offset). */
+    if (g_swing_t < HUD_SWING_SEC) {
+        g_swing_t += dt > 0.0f ? dt : 0.0f;
+        if (g_swing_t > HUD_SWING_SEC) g_swing_t = HUD_SWING_SEC;
+    }
+}
+
+/* Pure: swing progress in [0,1]. Non-positive duration => 1 (finished). */
+float hud_swing_phase(float elapsed, float duration)
+{
+    if (duration <= 0.0f) return 1.0f;
+    float p = elapsed / duration;
+    if (p < 0.0f) p = 0.0f;
+    if (p > 1.0f) p = 1.0f;
+    return p;
+}
+
+/* Pure: half-sine arc, 0 at the ends and 1 at the middle of the swing. */
+float hud_swing_arc(float phase)
+{
+    if (phase < 0.0f) phase = 0.0f;
+    if (phase > 1.0f) phase = 1.0f;
+    return sinf(phase * 3.14159265358979323846f);
 }
 
 /* Pure: low-health overlay intensity (0 above threshold, ramps to 1 at 0 HP). */
@@ -753,6 +788,35 @@ static void hud_draw_crosshair(float sw, float sh)
         ui_rect(arms[i].x, arms[i].y, arms[i].w, arms[i].h, fg);
 }
 
+/* Held-item attack swing: the selected hotbar item drawn near the bottom-right
+ * "hand" position, arcing up-and-in toward the crosshair and back over
+ * HUD_SWING_SEC. At rest (swing finished) nothing is drawn — the static held
+ * item is not shown, only the transient swing, keeping the HUD uncluttered.
+ * Empty/air slots draw nothing. */
+static void hud_draw_swing(const Inventory* inv, float sw, float sh)
+{
+    if (!inv) return;
+    float phase = hud_swing_phase(g_swing_t, HUD_SWING_SEC);
+    if (phase >= 1.0f) return;                 /* swing done / at rest */
+
+    const InventorySlot* s = &inv->slots[inv->selected];
+    if (s->count == 0 || s->item == BLOCK_AIR) return;
+
+    float arc = hud_swing_arc(phase);          /* 0 at ends, 1 mid-swing */
+
+    /* Rest "hand" anchor: lower-right, item icon mostly tucked below the edge.
+     * The swing lifts it up-and-left toward the crosshair, then it falls back. */
+    float size = 56.0f;
+    float rest_x = sw - size - 24.0f;
+    float rest_y = sh - size + 18.0f;          /* peeks just above the bottom */
+    float swing_dx = -90.0f;                   /* travel toward centre */
+    float swing_dy = -120.0f;                  /* travel upward */
+
+    float x = rest_x + swing_dx * arc;
+    float y = rest_y + swing_dy * arc;
+    ui_block_icon(s->item, x, y, size);
+}
+
 /* Red screen-edge vignette while a hurt flash is active. Four soft border bands
  * (top/bottom/left/right) whose alpha decays linearly from the latched start
  * over HUD_HURT_FLASH_SEC; once elapsed it draws nothing. Center stays clear so
@@ -840,6 +904,8 @@ void hud_build(const Inventory* inv, int player_health, float sw, float sh)
         hud_draw_low_health(player_health, sw, sh);
         hud_draw_hurt_flash(sw, sh);
         hud_draw_eat_progress(sw, sh);
+        /* Held-item attack swing (only when actively swinging). */
+        hud_draw_swing(inv, sw, sh);
     }
 
     if (inv) {

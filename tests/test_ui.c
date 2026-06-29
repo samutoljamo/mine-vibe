@@ -413,6 +413,43 @@ static void test_pulse_factor(void)
     printf("PASS: test_pulse_factor\n");
 }
 
+static void test_swing_phase(void)
+{
+    /* Phase is elapsed/duration clamped to [0,1]. */
+    assert(hud_swing_phase(0.0f, 0.25f) == 0.0f && "start => 0");
+    assert(fabsf(hud_swing_phase(0.125f, 0.25f) - 0.5f) < 1e-5f && "mid => 0.5");
+    assert(hud_swing_phase(0.25f, 0.25f) == 1.0f && "end => 1");
+    assert(hud_swing_phase(1.0f, 0.25f) == 1.0f && "past end clamps to 1");
+    assert(hud_swing_phase(-0.5f, 0.25f) == 0.0f && "negative clamps to 0");
+    /* Degenerate duration never NaN/out-of-range. */
+    assert(hud_swing_phase(0.1f, 0.0f) == 1.0f && "zero duration => fully done");
+    assert(hud_swing_phase(0.1f, -1.0f) == 1.0f && "negative duration => fully done");
+    printf("PASS: test_swing_phase\n");
+}
+
+static void test_swing_arc(void)
+{
+    /* The arc is 0 at both ends (rest), peaks at the middle of the swing. */
+    assert(fabsf(hud_swing_arc(0.0f)) < 1e-5f && "arc starts at rest");
+    assert(fabsf(hud_swing_arc(1.0f)) < 1e-5f && "arc ends at rest");
+    float peak = hud_swing_arc(0.5f);
+    assert(peak > 0.9f && peak <= 1.0f && "arc peaks near 1 mid-swing");
+    /* Stays in [0,1] across the whole sweep and rises then falls. */
+    float prev = -1.0f;
+    bool rose = false, fell = false;
+    for (float p = 0.0f; p <= 1.0f + 1e-4f; p += 0.05f) {
+        float a = hud_swing_arc(p);
+        assert(a >= -1e-5f && a <= 1.0f + 1e-5f && "arc stays in [0,1]");
+        if (prev >= 0.0f) {
+            if (a > prev + 1e-4f) rose = true;
+            if (a < prev - 1e-4f) fell = true;
+        }
+        prev = a;
+    }
+    assert(rose && fell && "arc rises then falls (an arc, not monotone)");
+    printf("PASS: test_swing_arc\n");
+}
+
 static void test_chest_slot_layout(void)
 {
     float sw = 1280.0f, sh = 720.0f;
@@ -643,6 +680,8 @@ int main(void)
     test_bar_fill_fraction();
     test_low_health_intensity();
     test_pulse_factor();
+    test_swing_phase();
+    test_swing_arc();
     test_chest_slot_layout();
     test_furnace_slot_layout();
     test_furnace_progress_fill();

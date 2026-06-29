@@ -247,6 +247,15 @@ static SfxRecipe sfx_recipe(SoundId id)
             .decay = 7.5f, .attack = 0.002f, .release = 0.030f,
             .noise_mix = 0.40f, .peak = 0.32f, .seed = 0x8008u,
             .partials = { {1.0f, 1.0f, 0.0f}, {2.0f, 0.40f, 0.0f}, {3.0f, 0.18f, 0.0f} } };
+        /* Melee swing: a quick airy "whoosh" played on every swing (whether or
+         * not it connects). Almost all (filtered) noise over a faint low body,
+         * a downward pitch sweep for the through-the-air feel, soft and short so
+         * it sits under the sharper SFX_HIT thwack when a blow lands. */
+        case SFX_SWING:       return (SfxRecipe){
+            .dur = 0.12f, .freq = 240.0f, .pitch_drop = 0.60f, .pitch_tau = 0.040f,
+            .decay = 4.5f, .attack = 0.010f, .release = 0.045f,
+            .noise_mix = 0.92f, .peak = 0.22f, .seed = 0x9009u,
+            .partials = { {1.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} } };
 
         /* ---- Surface footsteps (dyb.4.2) -------------------------------- *
          * All quiet (peak ~0.18-0.24) and short (~70-100ms). Each is a quick

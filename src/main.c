@@ -22,6 +22,7 @@
 #include "client.h"
 #include "remote_player.h"
 #include "player_model.h"
+#include "particle.h"
 #include "mob_render.h"
 #include "platform_thread.h"
 #include "raycast.h"
@@ -47,6 +48,10 @@ static Player  g_player;
 static Client* g_client = NULL;   /* set in main() so callbacks can reach it */
 static RaycastHit g_target;       /* refreshed each frame for outline + click */
 static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none */
+/* Live client-side mob set; declared here (before the input callbacks) so the
+ * attack handler can look up the struck mob's position for the hit spark. Set
+ * in main() once the client is up. */
+static ClientMobSet*    g_mobs = NULL;
 static bool g_show_stats = false; /* perf overlay visibility; toggled with F3 */
 
 /* Hold-to-eat state. Eating is no longer instant: while the eat key (F) is held
@@ -139,9 +144,16 @@ static void mouse_button_callback(GLFWwindow* w, int button, int action, int mod
     if (action != GLFW_PRESS) return;
     if (!game_ui_world_active(g_ui_state)) return;  /* menu clicks handled in loop */
     if (!g_client) return;
-    if (!g_target.hit && !g_target_mob) return;
 
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        /* Every left-click is an attack swing: play the held-item swing
+         * animation + a quick whoosh immediately, regardless of whether it
+         * connects. (a4s.3.7) */
+        hud_trigger_swing();
+        audio_play(SFX_SWING);
+
+        if (!g_target.hit && !g_target_mob) return;  /* swung at nothing */
+
         /* Mob melee stays a single click. Block breaking is now timed: the
          * held-button progress is accumulated each frame in the main loop and
          * the PKT_BLOCK_BREAK is sent only when mining completes. */
@@ -152,8 +164,28 @@ static void mouse_button_callback(GLFWwindow* w, int button, int action, int mod
              * authoritative over damage/death; this is local feel only. */
             audio_play(SFX_HIT);
             audio_play(SFX_MOB_HURT);
+
+            /* Hit spark: a small particle burst at the struck mob's position,
+             * emitted into the client's own particle pool (the renderer already
+             * uploads it each frame). Subtle attacker-side feedback only. */
+            if (g_mobs) {
+                for (int i = 0; i < MOB_MAX; i++) {
+                    ClientMob* m = &g_mobs->mobs[i];
+                    if (!m->active || m->id != g_target_mob) continue;
+                    /* Latest snapshot position (same field mob_ray_hit tests),
+                     * biased up toward chest height for the spark. */
+                    float hx = m->positions[1][0];
+                    float hy = m->positions[1][1] + 1.0f;
+                    float hz = m->positions[1][2];
+                    particle_emit_block_break(&g_client->particles,
+                                              hx, hy, hz,
+                                              0.95f, 0.85f, 0.30f);
+                    break;
+                }
+            }
         }
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+        if (!g_target.hit) return;  /* nothing to place against */
         client_send_place(g_client,
                           g_target.x, g_target.y, g_target.z,
                           (uint8_t)g_target.face,
@@ -277,7 +309,6 @@ static bool apply_agent_command(const AgentCommand *cmd, Player *player,
 }
 
 static RemotePlayerSet* g_remote_players = NULL;
-static ClientMobSet*    g_mobs           = NULL;
 static Player*          g_player_ptr     = NULL;
 static vec3             g_spawn_pos      = {0, 0, 0};
 static World*           g_net_world      = NULL;  /* remote client's network-fed world */
