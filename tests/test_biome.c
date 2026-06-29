@@ -167,6 +167,117 @@ static void test_height_bias(void) {
     printf("PASS: height_bias\n");
 }
 
+/* ---- Border blending (wa8.3.4) ---------------------------------------- */
+
+/* Climate points that sit comfortably deep inside each biome's region (far
+ * from any decision boundary relative to BIOME_BLEND_RADIUS). */
+static void deep_point(Biome b, float* t, float* h, float* e) {
+    switch (b) {
+        case BIOME_MOUNTAINS: *t =  0.0f; *h =  0.0f; *e =  0.9f; break;
+        case BIOME_SNOW:      *t = -0.9f; *h =  0.0f; *e = -0.5f; break;
+        case BIOME_DESERT:    *t =  0.9f; *h = -0.9f; *e = -0.5f; break;
+        case BIOME_FOREST:    *t =  0.1f; *h =  0.9f; *e = -0.5f; break;
+        case BIOME_PLAINS:
+        default:              *t =  0.1f; *h =  0.0f; *e = -0.5f; break;
+    }
+}
+
+/* Weights are non-negative and sum to ~1 across the whole climate domain. */
+static void test_blend_weights_normalized(void) {
+    for (float t = -1.0f; t <= 1.0f; t += 0.1f)
+        for (float h = -1.0f; h <= 1.0f; h += 0.1f)
+            for (float e = -1.0f; e <= 1.0f; e += 0.1f) {
+                float w[BIOME_COUNT];
+                biome_blend_weights(t, h, e, w);
+                float sum = 0.0f;
+                for (int i = 0; i < BIOME_COUNT; i++) {
+                    assert(w[i] >= 0.0f && w[i] <= 1.0f);
+                    sum += w[i];
+                }
+                assert(sum > 0.999f && sum < 1.001f);
+            }
+    printf("PASS: blend_weights_normalized\n");
+}
+
+/* Deep inside a biome, that biome's weight is ~1 and the blended params equal
+ * the raw per-biome params; the dominant biome matches the classifier. */
+static void test_blend_interior_matches_raw(void) {
+    for (int b = 0; b < BIOME_COUNT; b++) {
+        float t, h, e;
+        deep_point((Biome)b, &t, &h, &e);
+
+        /* The hard classifier agrees this point is biome b. */
+        assert(biome_classify(t, h, e) == (Biome)b);
+
+        float w[BIOME_COUNT];
+        biome_blend_weights(t, h, e, w);
+        assert(w[b] > 0.999f);
+
+        assert(biome_blend_dominant(t, h, e) == (Biome)b);
+
+        float hb = biome_blend_height_bias(t, h, e);
+        float td = biome_blend_tree_density(t, h, e);
+        assert(hb > (float)biome_height_bias((Biome)b) - 0.001f &&
+               hb < (float)biome_height_bias((Biome)b) + 0.001f);
+        assert(td > biome_tree_density((Biome)b) - 0.0001f &&
+               td < biome_tree_density((Biome)b) + 0.0001f);
+    }
+    printf("PASS: blend_interior_matches_raw\n");
+}
+
+/* Near a border the blended param lies strictly between the two neighbours'
+ * raw params — proving the snap is smoothed out. */
+static void test_blend_border_interpolates(void) {
+    /* Plains<->desert border. With humidity dry (-0.5, below both the wet and
+     * dry thresholds so the temperate side is plains, not forest), sweep temp
+     * across the HOT threshold (0.30): hotter -> desert, cooler -> plains.
+     * Exactly two biomes meet here. Confirm with the classifier first. */
+    assert(biome_classify(0.30f + 0.05f, -0.5f, -0.5f) == BIOME_DESERT);
+    assert(biome_classify(0.30f - 0.05f, -0.5f, -0.5f) == BIOME_PLAINS);
+
+    float lo = (float)biome_height_bias(BIOME_DESERT); /* -2 */
+    float hi = (float)biome_height_bias(BIOME_PLAINS); /*  0 */
+    float on_border = biome_blend_height_bias(0.30f, -0.5f, -0.5f);
+    assert(on_border > lo && on_border < hi); /* strictly between -2 and 0 */
+
+    /* Tree density across the same border is also strictly between. */
+    float td_lo = biome_tree_density(BIOME_DESERT); /* 0.0  */
+    float td_hi = biome_tree_density(BIOME_PLAINS); /* 0.02 */
+    float td_b = biome_blend_tree_density(0.30f, -0.5f, -0.5f);
+    assert(td_b > td_lo && td_b < td_hi);
+
+    /* Monotone progression as we cross the border: hotter (more desert) gives a
+     * lower (more negative) height bias than cooler (more plains). */
+    float hot  = biome_blend_height_bias(0.30f + 0.04f, -0.5f, -0.5f);
+    float cool = biome_blend_height_bias(0.30f - 0.04f, -0.5f, -0.5f);
+    assert(hot < cool);
+
+    /* Plains<->mountains elevation border (threshold 0.35): blended bias sits
+     * strictly between plains (0) and mountains (24). */
+    float m_lo = (float)biome_height_bias(BIOME_PLAINS);
+    float m_hi = (float)biome_height_bias(BIOME_MOUNTAINS);
+    float m_b = biome_blend_height_bias(0.1f, 0.0f, 0.35f);
+    assert(m_b > m_lo && m_b < m_hi);
+    printf("PASS: blend_border_interpolates\n");
+}
+
+/* Blend helpers are pure/deterministic. */
+static void test_blend_deterministic(void) {
+    for (float t = -1.0f; t <= 1.0f; t += 0.17f)
+        for (float h = -1.0f; h <= 1.0f; h += 0.19f)
+            for (float e = -1.0f; e <= 1.0f; e += 0.23f) {
+                float w1[BIOME_COUNT], w2[BIOME_COUNT];
+                biome_blend_weights(t, h, e, w1);
+                biome_blend_weights(t, h, e, w2);
+                for (int i = 0; i < BIOME_COUNT; i++) assert(w1[i] == w2[i]);
+                assert(biome_blend_height_bias(t, h, e) ==
+                       biome_blend_height_bias(t, h, e));
+                assert(biome_blend_tree_density(t, h, e) ==
+                       biome_blend_tree_density(t, h, e));
+            }
+    printf("PASS: blend_deterministic\n");
+}
+
 int main(void) {
     test_deterministic();
     test_pure_across_seeds();
@@ -178,6 +289,10 @@ int main(void) {
     test_height_bias();
     test_classify_regions();
     test_classify_total_and_pure();
+    test_blend_weights_normalized();
+    test_blend_interior_matches_raw();
+    test_blend_border_interpolates();
+    test_blend_deterministic();
     printf("ALL BIOME TESTS PASSED\n");
     return 0;
 }

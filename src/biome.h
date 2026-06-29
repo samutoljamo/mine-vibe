@@ -68,4 +68,52 @@ int biome_height_bias(Biome b);
  * Exposed for tests. */
 #define BIOME_SNOW_LINE 120
 
+/* ---------------------------------------------------------------------------
+ * Biome border blending (wa8.3.4)
+ *
+ * biome_classify is a hard step function of (temp, humidity, elevation), so a
+ * column's continuous terrain params (height bias, tree density) snap at biome
+ * borders. The helpers below compute SMOOTH transitions by treating each biome
+ * as having a soft "membership" weight near borders rather than a single
+ * winner-takes-all classification.
+ *
+ * Weights are derived by sampling the existing classifier on a small fixed
+ * grid of offsets in (temp, humidity, elevation) space around the query point
+ * and counting how many samples land in each biome — points deep inside a
+ * biome see only that biome (weight 1), points near a border see a mix that
+ * varies smoothly as the point crosses. Everything is a pure, deterministic
+ * function of its arguments (no global/thread state, no noise sampling).
+ *
+ * Continuous params (height bias, tree density) are returned as the weighted
+ * average over biomes. Discrete choices (surface block) cannot be averaged —
+ * use biome_blend_dominant() to pick the highest-weight biome for those.
+ * ------------------------------------------------------------------------- */
+
+/* Radius (in normalized climate units) of the blend sampling kernel. Borders
+ * smooth over roughly +/- this distance in (temp, humidity, elevation).
+ * Exposed for tests. */
+#define BIOME_BLEND_RADIUS 0.06f
+
+/* Fill out_w[BIOME_COUNT] with soft membership weights for the given climate
+ * point. Weights are non-negative and sum to 1. Deep inside a biome the
+ * dominant weight is ~1; near a border weight is shared between neighbours.
+ * Pure/deterministic. */
+void biome_blend_weights(float temp, float humidity, float elevation,
+                         float out_w[BIOME_COUNT]);
+
+/* Dominant (highest-weight) biome at a climate point. Ties break toward the
+ * lower enum value. Matches biome_classify deep inside a biome; near a border
+ * it tracks whichever side holds the majority of the kernel. */
+Biome biome_blend_dominant(float temp, float humidity, float elevation);
+
+/* Weight-blended additive height bias (blocks) at a climate point. Equals the
+ * raw biome_height_bias deep inside a biome and transitions smoothly across
+ * borders. */
+float biome_blend_height_bias(float temp, float humidity, float elevation);
+
+/* Weight-blended tree-spawn probability ([0,1]) at a climate point. Equals the
+ * raw biome_tree_density deep inside a biome and transitions smoothly across
+ * borders. */
+float biome_blend_tree_density(float temp, float humidity, float elevation);
+
 #endif
