@@ -57,10 +57,8 @@ static const Recipe g_recipe_table[] = {
       .output = { (ItemId)BLOCK_TORCH, 4 } },
 
     /* --- Armour materials --- */
-    /* No furnace yet: "smelt" iron ore directly into an ingot via a 1:1 craft. */
-    { .name = "Iron Ingot", .input_count = 1,
-      .inputs = { {(ItemId)BLOCK_IRON_ORE, 1} },
-      .output = { ITEM_IRON_INGOT, 1 } },
+    /* Iron ore is SMELTED into an ingot in a furnace (see smelting.c), not
+     * crafted; the old placeholder 1:1 ore->ingot craft was removed (a4s.2.7). */
     /* Leather stand-in: tan a hide from planks (no animals/hide drops yet). */
     { .name = "Leather", .input_count = 1,
       .inputs = { {(ItemId)BLOCK_PLANKS, 3} },

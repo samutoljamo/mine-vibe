@@ -289,11 +289,27 @@ static void test_armor_sets_present(void) {
 
 /* The table grew to accommodate the new recipes. */
 static void test_recipe_count_grew(void) {
-    /* Pre-existing rows (planks, sticks, 6 wood/stone tools, torch, iron ingot,
-     * leather, 8 armour) = 19, plus 3 diamond tools + 4 swords + furnace + chest
-     * = 9 new => at least 28. */
-    assert(crafting_recipe_count() >= 28);
+    /* Pre-existing rows (planks, sticks, 6 wood/stone tools, torch, leather,
+     * 8 armour) = 18, plus 3 diamond tools + 4 swords + furnace + chest = 9 new
+     * => at least 27. The placeholder 1:1 iron-ore->ingot craft was removed
+     * (a4s.2.7); ore->ingot is now smelted in a furnace, not crafted. */
+    assert(crafting_recipe_count() >= 27);
     printf("PASS: recipe_count_grew (%d recipes)\n", crafting_recipe_count());
+}
+
+/* a4s.2.7 — the placeholder 1:1 ore->ingot CRAFT was removed once furnace
+ * smelting existed. Holding only raw iron ore must NOT craft an iron ingot, and
+ * no recipe in the table may output an ingot from raw ore as its sole input. */
+static void test_ore_not_craftable_to_ingot(void) {
+    /* No recipe outputs ITEM_IRON_INGOT at all — ingots come from smelting. */
+    assert(find_by_output(ITEM_IRON_INGOT) == NULL);
+
+    /* A snapshot of only raw iron ore crafts nothing (no recipe takes ore as a
+     * lone ingredient). */
+    ItemCounts ore = counts_of((ItemId)BLOCK_IRON_ORE, 64);
+    assert(crafting_find(&ore) == -1);
+
+    printf("PASS: ore_not_craftable_to_ingot\n");
 }
 
 int main(void) {
@@ -304,6 +320,7 @@ int main(void) {
     test_furnace_and_chest();
     test_armor_sets_present();
     test_recipe_count_grew();
+    test_ore_not_craftable_to_ingot();
     test_can_make_have_and_not_have();
     test_can_make_multi_input();
     test_can_make_null();
