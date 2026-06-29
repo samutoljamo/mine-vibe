@@ -157,6 +157,7 @@ add_executable(minecraft
     src/ore.c
     src/cave.c
     src/biome.c
+    src/weather.c
     src/daynight.c
     src/village.c
     src/dungeon.c
@@ -494,6 +495,14 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME loot COMMAND test_loot)
 
+# Weather state machine (pure deterministic, no Vulkan/GLFW required)
+add_executable(test_weather tests/test_weather.c src/weather.c)
+target_include_directories(test_weather PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_weather PRIVATE m)
+endif()
+add_test(NAME weather COMMAND test_weather)
+
 # Crafting recipe matching / consumption math (pure, no Vulkan/GLFW required)
 add_executable(test_crafting tests/test_crafting.c src/crafting.c src/item.c src/block.c)
 target_include_directories(test_crafting PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -790,7 +799,7 @@ add_test(NAME worldqueue COMMAND test_worldqueue)
 
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
-          test_inventory test_container test_raycast test_ore test_cave test_loot test_audio test_hardness test_biome
+          test_inventory test_container test_raycast test_ore test_cave test_loot test_weather test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
           test_crafting test_smelting test_item test_mining test_armor test_combat test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
