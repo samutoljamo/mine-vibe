@@ -26,6 +26,11 @@ static const BlockDef block_defs[BLOCK_COUNT] = {
      * and opaque so it occludes like any block, but seeds block light 14 that
      * propagates into surrounding air. */
     [BLOCK_TORCH]   = { "torch",  true, false, false, 15, 14, 18, 18, 18, HARDNESS_INSTANT },
+    /* Furnace: stone-bodied crafting block. Distinct front face (firebox) vs
+     * the plain stone sides/top. Stone-like hardness so it needs a pickaxe. */
+    [BLOCK_FURNACE] = { "furnace", true, false, false, 15, 0, 51, 50, 51, HARDNESS_HARD },
+    /* Chest: wood-bodied storage block. Wood-like hardness (axe-friendly). */
+    [BLOCK_CHEST]   = { "chest",   true, false, false, 15, 0, 52, 53, 52, HARDNESS_MEDIUM },
 };
 
 const BlockDef* block_get_def(BlockID id) {
@@ -62,6 +67,8 @@ void block_representative_color(BlockID id, uint8_t* r, uint8_t* g, uint8_t* b) 
         case BLOCK_GLASS:   *r = 198; *g = 226; *b = 232; break;
         case BLOCK_PATH:    *r = 120; *g = 105; *b =  84; break;
         case BLOCK_TORCH:   *r = 240; *g = 180; *b =  60; break;
+        case BLOCK_FURNACE: *r = 100; *g = 100; *b = 100; break;
+        case BLOCK_CHEST:   *r = 162; *g = 120; *b =  62; break;
         default:            *r = 255; *g =   0; *b = 255; break;   /* magenta = bug */
     }
 }

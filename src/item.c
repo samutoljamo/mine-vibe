@@ -9,22 +9,32 @@
 /*  synthesizes a block ItemDef on the fly for the low id range.        */
 /* ------------------------------------------------------------------ */
 
-/* Durability per material tier (uses). Strictly increasing wood<stone<iron. */
-#define DUR_WOOD   60
-#define DUR_STONE  132
-#define DUR_IRON   251
+/* Durability per material tier (uses). Strictly increasing wood<stone<iron<diamond. */
+#define DUR_WOOD    60
+#define DUR_STONE   132
+#define DUR_IRON    251
+#define DUR_DIAMOND 1562
 
 static const ItemDef g_tool_defs[ITEM_TOOL_COUNT] = {
-    /*                          name             is_tool kind          material        durability      atlas */
-    [ITEM_WOOD_PICKAXE  - ITEM_TOOL_FIRST] = { "wooden pickaxe", true, TOOL_PICKAXE, MATERIAL_WOOD,  DUR_WOOD,  19 },
-    [ITEM_WOOD_AXE      - ITEM_TOOL_FIRST] = { "wooden axe",     true, TOOL_AXE,     MATERIAL_WOOD,  DUR_WOOD,  20 },
-    [ITEM_WOOD_SHOVEL   - ITEM_TOOL_FIRST] = { "wooden shovel",  true, TOOL_SHOVEL,  MATERIAL_WOOD,  DUR_WOOD,  21 },
-    [ITEM_STONE_PICKAXE - ITEM_TOOL_FIRST] = { "stone pickaxe",  true, TOOL_PICKAXE, MATERIAL_STONE, DUR_STONE, 22 },
-    [ITEM_STONE_AXE     - ITEM_TOOL_FIRST] = { "stone axe",      true, TOOL_AXE,     MATERIAL_STONE, DUR_STONE, 23 },
-    [ITEM_STONE_SHOVEL  - ITEM_TOOL_FIRST] = { "stone shovel",   true, TOOL_SHOVEL,  MATERIAL_STONE, DUR_STONE, 24 },
-    [ITEM_IRON_PICKAXE  - ITEM_TOOL_FIRST] = { "iron pickaxe",   true, TOOL_PICKAXE, MATERIAL_IRON,  DUR_IRON,  25 },
-    [ITEM_IRON_AXE      - ITEM_TOOL_FIRST] = { "iron axe",       true, TOOL_AXE,     MATERIAL_IRON,  DUR_IRON,  26 },
-    [ITEM_IRON_SHOVEL   - ITEM_TOOL_FIRST] = { "iron shovel",    true, TOOL_SHOVEL,  MATERIAL_IRON,  DUR_IRON,  27 },
+    /*                          name              is_tool kind          material         durability   atlas */
+    [ITEM_WOOD_PICKAXE    - ITEM_TOOL_FIRST] = { "wooden pickaxe",  true, TOOL_PICKAXE, MATERIAL_WOOD,    DUR_WOOD,    19 },
+    [ITEM_WOOD_AXE        - ITEM_TOOL_FIRST] = { "wooden axe",      true, TOOL_AXE,     MATERIAL_WOOD,    DUR_WOOD,    20 },
+    [ITEM_WOOD_SHOVEL     - ITEM_TOOL_FIRST] = { "wooden shovel",   true, TOOL_SHOVEL,  MATERIAL_WOOD,    DUR_WOOD,    21 },
+    [ITEM_STONE_PICKAXE   - ITEM_TOOL_FIRST] = { "stone pickaxe",   true, TOOL_PICKAXE, MATERIAL_STONE,   DUR_STONE,   22 },
+    [ITEM_STONE_AXE       - ITEM_TOOL_FIRST] = { "stone axe",       true, TOOL_AXE,     MATERIAL_STONE,   DUR_STONE,   23 },
+    [ITEM_STONE_SHOVEL    - ITEM_TOOL_FIRST] = { "stone shovel",    true, TOOL_SHOVEL,  MATERIAL_STONE,   DUR_STONE,   24 },
+    [ITEM_IRON_PICKAXE    - ITEM_TOOL_FIRST] = { "iron pickaxe",    true, TOOL_PICKAXE, MATERIAL_IRON,    DUR_IRON,    25 },
+    [ITEM_IRON_AXE        - ITEM_TOOL_FIRST] = { "iron axe",        true, TOOL_AXE,     MATERIAL_IRON,    DUR_IRON,    26 },
+    [ITEM_IRON_SHOVEL     - ITEM_TOOL_FIRST] = { "iron shovel",     true, TOOL_SHOVEL,  MATERIAL_IRON,    DUR_IRON,    27 },
+    [ITEM_DIAMOND_PICKAXE - ITEM_TOOL_FIRST] = { "diamond pickaxe", true, TOOL_PICKAXE, MATERIAL_DIAMOND, DUR_DIAMOND, 54 },
+    [ITEM_DIAMOND_AXE     - ITEM_TOOL_FIRST] = { "diamond axe",     true, TOOL_AXE,     MATERIAL_DIAMOND, DUR_DIAMOND, 55 },
+    [ITEM_DIAMOND_SHOVEL  - ITEM_TOOL_FIRST] = { "diamond shovel",  true, TOOL_SHOVEL,  MATERIAL_DIAMOND, DUR_DIAMOND, 56 },
+    /* Swords: dedicated weapon kind. Not mining tools (TOOL_SWORD never matches
+     * a block category) so they get no mining speed bonus / harvest gating. */
+    [ITEM_WOOD_SWORD      - ITEM_TOOL_FIRST] = { "wooden sword",    true, TOOL_SWORD,   MATERIAL_WOOD,    DUR_WOOD,    57 },
+    [ITEM_STONE_SWORD     - ITEM_TOOL_FIRST] = { "stone sword",     true, TOOL_SWORD,   MATERIAL_STONE,   DUR_STONE,   58 },
+    [ITEM_IRON_SWORD      - ITEM_TOOL_FIRST] = { "iron sword",      true, TOOL_SWORD,   MATERIAL_IRON,    DUR_IRON,    59 },
+    [ITEM_DIAMOND_SWORD   - ITEM_TOOL_FIRST] = { "diamond sword",   true, TOOL_SWORD,   MATERIAL_DIAMOND, DUR_DIAMOND, 60 },
 };
 
 /* Armour durability per tier (uses/hits). Iron sturdier than leather. */
@@ -200,10 +210,11 @@ void item_representative_color(ItemId id, uint8_t* r, uint8_t* g, uint8_t* b) {
     }
     /* Tools: tint by material tier so wood/stone/iron read distinctly. */
     switch (item_get_def(id)->material) {
-        case MATERIAL_WOOD:  *r = 150; *g = 111; *b =  51; break;
-        case MATERIAL_STONE: *r = 128; *g = 128; *b = 128; break;
-        case MATERIAL_IRON:  *r = 216; *g = 216; *b = 220; break;
-        default:             *r = 200; *g = 200; *b = 200; break;
+        case MATERIAL_WOOD:    *r = 150; *g = 111; *b =  51; break;
+        case MATERIAL_STONE:   *r = 128; *g = 128; *b = 128; break;
+        case MATERIAL_IRON:    *r = 216; *g = 216; *b = 220; break;
+        case MATERIAL_DIAMOND: *r =  92; *g = 214; *b = 213; break;
+        default:               *r = 200; *g = 200; *b = 200; break;
     }
 }
 
@@ -211,10 +222,11 @@ void item_representative_color(ItemId id, uint8_t* r, uint8_t* g, uint8_t* b) {
  * Strictly increasing wood<stone<iron so higher tiers break faster. */
 static float material_speed(ToolMaterial m) {
     switch (m) {
-        case MATERIAL_WOOD:  return 2.0f;
-        case MATERIAL_STONE: return 4.0f;
-        case MATERIAL_IRON:  return 6.0f;
-        default:             return 1.0f;
+        case MATERIAL_WOOD:    return 2.0f;
+        case MATERIAL_STONE:   return 4.0f;
+        case MATERIAL_IRON:    return 6.0f;
+        case MATERIAL_DIAMOND: return 8.0f;
+        default:               return 1.0f;
     }
 }
 
@@ -228,9 +240,11 @@ static ToolKind block_tool_category(BlockID block) {
         case BLOCK_IRON_ORE:
         case BLOCK_GOLD_ORE:
         case BLOCK_DIAMOND_ORE:
+        case BLOCK_FURNACE:
             return TOOL_PICKAXE;
         case BLOCK_WOOD:
         case BLOCK_PLANKS:
+        case BLOCK_CHEST:
             return TOOL_AXE;
         case BLOCK_DIRT:
         case BLOCK_SAND:

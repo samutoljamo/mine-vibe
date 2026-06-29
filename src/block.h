@@ -27,6 +27,9 @@ enum {
     BLOCK_PATH,
     /* Emissive block: a torch radiating block light (atlas tile 18). */
     BLOCK_TORCH,
+    /* Crafting/storage blocks. FURNACE is stone-bodied; CHEST is wood-bodied. */
+    BLOCK_FURNACE,
+    BLOCK_CHEST,
     BLOCK_COUNT,
 };
 

@@ -255,9 +255,10 @@ def draw_path(size=16):
 HANDLE = (120, 82, 44, 255)   # wooden stick
 
 TIER_HEAD = {
-    'wood':  (156, 110,  58, 255),
-    'stone': (130, 130, 130, 255),
-    'iron':  (216, 216, 222, 255),
+    'wood':    (156, 110,  58, 255),
+    'stone':   (130, 130, 130, 255),
+    'iron':    (216, 216, 222, 255),
+    'diamond': ( 92, 214, 213, 255),
 }
 
 def _draw_handle(img, size):
@@ -305,10 +306,97 @@ def draw_shovel(tier, size=16):
                 img.putpixel((x, y), head)
     return img
 
+def draw_sword(tier, size=16):
+    """A sword: a short wooden grip at the lower-left and a long tier-coloured
+    blade running diagonally to the upper-right, with a small crossguard."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    blade = TIER_HEAD[tier]
+    guard = (110, 82, 44, 255)
+    # Grip: a couple of handle pixels in the lower-left corner.
+    for i in range(2, 5):
+        x = i
+        y = size - 1 - i
+        for (dx, dy) in ((0, 0), (1, 0), (0, 1)):
+            px, py = x + dx, y + dy
+            if 0 <= px < size and 0 <= py < size:
+                img.putpixel((px, py), HANDLE)
+    # Crossguard near the grip, perpendicular to the blade.
+    gx, gy = 5, size - 6
+    for (dx, dy) in ((-1, -1), (1, 1), (0, 0)):
+        px, py = gx + dx, gy + dy
+        if 0 <= px < size and 0 <= py < size:
+            img.putpixel((px, py), guard)
+    # Blade: thick diagonal toward the upper-right tip.
+    for i in range(5, size - 1):
+        x = i
+        y = size - 1 - i
+        for (dx, dy) in ((0, 0), (1, 0), (0, 1)):
+            px, py = x + dx, y + dy
+            if 0 <= px < size and 0 <= py < size:
+                img.putpixel((px, py), blade)
+    return img
+
 def draw_stick(size=16):
     """A single diagonal wooden stick — the crafting material icon."""
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     _draw_handle(img, size)
+    return img
+
+def draw_furnace(size=16):
+    """Stone-faced furnace. Cobble-like body with a dark firebox mouth on the
+    front face (tile 50) — the side/top (tile 51) is plain stone via draw_stone."""
+    img = draw_stone(size)
+    # darker stone frame
+    for i in range(size):
+        if i == 0 or i == size - 1:
+            for j in range(size):
+                img.putpixel((i, j), (80, 80, 80, 255))
+                img.putpixel((j, i), (80, 80, 80, 255))
+    # firebox opening: a dark recessed rectangle with a faint ember glow.
+    _fill_rect(img, 4, 7, size - 4, size - 3, (40, 40, 40, 255))
+    _fill_rect(img, 5, size - 5, size - 5, size - 4, (150, 70, 20, 255))  # embers
+    # a small vent slot above the firebox
+    _fill_rect(img, 5, 3, size - 5, 5, (70, 70, 70, 255))
+    return img
+
+def draw_furnace_side(size=16):
+    """Plain stone side/top for the furnace (tile 51) with a darker frame."""
+    img = draw_stone(size)
+    for i in range(size):
+        if i == 0 or i == size - 1:
+            for j in range(size):
+                img.putpixel((i, j), (80, 80, 80, 255))
+                img.putpixel((j, i), (80, 80, 80, 255))
+    return img
+
+def draw_chest_top(size=16):
+    """Chest lid (tile 52): planks with a dark rim and a small central latch."""
+    img = draw_planks(size)
+    for i in range(size):
+        if i == 0 or i == size - 1:
+            for j in range(size):
+                img.putpixel((i, j), (90, 62, 32, 255))
+                img.putpixel((j, i), (90, 62, 32, 255))
+    # latch in the middle
+    _fill_rect(img, size // 2 - 1, size // 2 - 1, size // 2 + 1, size // 2 + 1,
+               (70, 70, 74, 255))
+    return img
+
+def draw_chest_side(size=16):
+    """Chest front/side (tile 53): planks with a dark rim and an iron latch +
+    keyhole on the lower-middle, reading as the front of a wooden chest."""
+    img = draw_planks(size)
+    for i in range(size):
+        if i == 0 or i == size - 1:
+            for j in range(size):
+                img.putpixel((i, j), (90, 62, 32, 255))
+                img.putpixel((j, i), (90, 62, 32, 255))
+    # horizontal lid seam
+    _fill_rect(img, 1, size // 2 - 1, size - 1, size // 2, (90, 62, 32, 255))
+    # iron latch + keyhole centred below the seam
+    cx = size // 2
+    _fill_rect(img, cx - 1, size // 2 - 1, cx + 1, size // 2 + 3, (80, 80, 84, 255))
+    img.putpixel((cx, size // 2 + 1), (30, 30, 30, 255))  # keyhole
     return img
 
 # ── armour materials + pieces ───────────────────────────────────────────────
@@ -560,6 +648,20 @@ TILE_GENERATORS = {
     47: draw_raw_chicken,
     48: draw_cooked_chicken,
     49: draw_rotten_flesh,
+    # Crafting/storage blocks (furnace front/side, chest top/side).
+    50: draw_furnace,
+    51: draw_furnace_side,
+    52: draw_chest_top,
+    53: draw_chest_side,
+    # Diamond mining tools.
+    54: lambda: draw_pickaxe('diamond'),
+    55: lambda: draw_axe('diamond'),
+    56: lambda: draw_shovel('diamond'),
+    # Swords (wood/stone/iron/diamond).
+    57: lambda: draw_sword('wood'),
+    58: lambda: draw_sword('stone'),
+    59: lambda: draw_sword('iron'),
+    60: lambda: draw_sword('diamond'),
 }
 
 TILE_NAMES = {
@@ -579,6 +681,9 @@ TILE_NAMES = {
     39: "feather", 40: "bone", 41: "arrow", 42: "gunpowder",
     43: "raw_pork", 44: "cooked_pork", 45: "raw_beef", 46: "cooked_beef",
     47: "raw_chicken", 48: "cooked_chicken", 49: "rotten_flesh",
+    50: "furnace_front", 51: "furnace_side", 52: "chest_top", 53: "chest_side",
+    54: "diamond_pickaxe", 55: "diamond_axe", 56: "diamond_shovel",
+    57: "wood_sword", 58: "stone_sword", 59: "iron_sword", 60: "diamond_sword",
 }
 
 # ── player skin ───────────────────────────────────────────────────────────────

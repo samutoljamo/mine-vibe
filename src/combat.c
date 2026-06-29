@@ -18,24 +18,22 @@
  * baseline and contributes nothing. Indexed by ToolMaterial. */
 static float material_damage_bonus(ToolMaterial m) {
     switch (m) {
-        case MATERIAL_WOOD:  return 1.0f;
-        case MATERIAL_STONE: return 2.0f;
-        case MATERIAL_IRON:  return 3.0f;
-        default:             return 0.0f;   /* MATERIAL_NONE */
+        case MATERIAL_WOOD:    return 1.0f;
+        case MATERIAL_STONE:   return 2.0f;
+        case MATERIAL_IRON:    return 3.0f;
+        case MATERIAL_DIAMOND: return 4.0f;
+        default:               return 0.0f;   /* MATERIAL_NONE */
     }
 }
 
 /* Per-kind base melee damage. Swords are the dedicated weapon and sit above
  * the improvised tools; the axe is the best improvised weapon, ahead of the
  * pickaxe/shovel. TOOL_NONE never reaches here (handled as the fist baseline).
- *
- * NOTE: ToolKind has no TOOL_SWORD member today (no sword ItemId exists yet).
- * The sword row is wired through item_get_def's tool_kind, so when a
- * TOOL_SWORD kind + sword ItemDefs are added this table already ranks them
- * above the axe. Until then the switch's named cases cover all live kinds. */
+ * The sword is the dedicated weapon and ranks above the axe; combined with the
+ * per-material bonus this keeps sword > axe within and across tiers. */
 static float kind_base_damage(ToolKind kind) {
     switch (kind) {
-        /* case TOOL_SWORD: return 4.0f;  -- future dedicated weapon (>axe) */
+        case TOOL_SWORD:   return 4.0f;   /* dedicated weapon (> axe) */
         case TOOL_AXE:     return 3.0f;
         case TOOL_PICKAXE: return 2.0f;
         case TOOL_SHOVEL:  return 1.0f;
@@ -61,7 +59,7 @@ float weapon_damage(ItemId weapon) {
  * Tuned so the ordering is axe > pickaxe ~ shovel > fist. */
 static float kind_cooldown(ToolKind kind) {
     switch (kind) {
-        /* case TOOL_SWORD: return 0.45f;  -- future fast dedicated weapon */
+        case TOOL_SWORD:   return 0.45f;  /* fast dedicated weapon */
         case TOOL_AXE:     return 0.80f;
         case TOOL_PICKAXE: return 0.50f;
         case TOOL_SHOVEL:  return 0.50f;

@@ -24,6 +24,7 @@ typedef enum {
     TOOL_PICKAXE,    /* stone, cobble, ores */
     TOOL_AXE,        /* wood, planks */
     TOOL_SHOVEL,     /* dirt, sand, grass, path */
+    TOOL_SWORD,      /* dedicated weapon; not a mining tool */
 } ToolKind;
 
 /* Material tier: governs mining speed multiplier and durability. */
@@ -32,6 +33,7 @@ typedef enum {
     MATERIAL_WOOD,
     MATERIAL_STONE,
     MATERIAL_IRON,
+    MATERIAL_DIAMOND,
 } ToolMaterial;
 
 /* Tool item ids. Layout is material-major (wood, stone, iron) × kind
@@ -51,6 +53,17 @@ enum {
     ITEM_IRON_PICKAXE,
     ITEM_IRON_AXE,
     ITEM_IRON_SHOVEL,
+
+    ITEM_DIAMOND_PICKAXE,
+    ITEM_DIAMOND_AXE,
+    ITEM_DIAMOND_SHOVEL,
+
+    /* Swords: the dedicated melee weapon kind, one per material tier. Not
+     * mining tools (no speed bonus, no harvest gating). */
+    ITEM_WOOD_SWORD,
+    ITEM_STONE_SWORD,
+    ITEM_IRON_SWORD,
+    ITEM_DIAMOND_SWORD,
 
     ITEM_TOOL_END,                                  /* one past last tool */
     ITEM_TOOL_LAST  = ITEM_TOOL_END - 1,

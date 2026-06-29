@@ -12,10 +12,11 @@
  * material tier is one higher. Add MATERIAL_DIAMOND -> 4 here when it lands. */
 static int material_harvest_level(ToolMaterial m) {
     switch (m) {
-        case MATERIAL_WOOD:  return 1;
-        case MATERIAL_STONE: return 2;
-        case MATERIAL_IRON:  return 3;
-        default:             return 0;   /* MATERIAL_NONE / hand */
+        case MATERIAL_WOOD:    return 1;
+        case MATERIAL_STONE:   return 2;
+        case MATERIAL_IRON:    return 3;
+        case MATERIAL_DIAMOND: return 4;
+        default:               return 0;   /* MATERIAL_NONE / hand */
     }
 }
 
@@ -24,10 +25,11 @@ static int material_harvest_level(ToolMaterial m) {
  * new tier is one row. The baseline (no/wrong tool) is 1.0, handled below. */
 static float material_speed_multiplier(ToolMaterial m) {
     switch (m) {
-        case MATERIAL_WOOD:  return 2.0f;
-        case MATERIAL_STONE: return 4.0f;
-        case MATERIAL_IRON:  return 6.0f;
-        default:             return 1.0f;
+        case MATERIAL_WOOD:    return 2.0f;
+        case MATERIAL_STONE:   return 4.0f;
+        case MATERIAL_IRON:    return 6.0f;
+        case MATERIAL_DIAMOND: return 8.0f;
+        default:               return 1.0f;
     }
 }
 
@@ -42,9 +44,11 @@ static ToolKind block_tool_category(BlockID block) {
         case BLOCK_IRON_ORE:
         case BLOCK_GOLD_ORE:
         case BLOCK_DIAMOND_ORE:
+        case BLOCK_FURNACE:
             return TOOL_PICKAXE;
         case BLOCK_WOOD:
         case BLOCK_PLANKS:
+        case BLOCK_CHEST:
             return TOOL_AXE;
         case BLOCK_DIRT:
         case BLOCK_SAND:

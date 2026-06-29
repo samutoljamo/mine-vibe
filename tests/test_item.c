@@ -23,18 +23,19 @@ static void test_block_ids_map_directly(void) {
 
 static void test_tools_are_above_block_range(void) {
     ItemId tools[] = {
-        ITEM_WOOD_PICKAXE, ITEM_STONE_PICKAXE, ITEM_IRON_PICKAXE,
-        ITEM_WOOD_AXE,     ITEM_STONE_AXE,     ITEM_IRON_AXE,
-        ITEM_WOOD_SHOVEL,  ITEM_STONE_SHOVEL,  ITEM_IRON_SHOVEL,
+        ITEM_WOOD_PICKAXE,    ITEM_STONE_PICKAXE,  ITEM_IRON_PICKAXE,  ITEM_DIAMOND_PICKAXE,
+        ITEM_WOOD_AXE,        ITEM_STONE_AXE,      ITEM_IRON_AXE,      ITEM_DIAMOND_AXE,
+        ITEM_WOOD_SHOVEL,     ITEM_STONE_SHOVEL,   ITEM_IRON_SHOVEL,   ITEM_DIAMOND_SHOVEL,
+        ITEM_WOOD_SWORD,      ITEM_STONE_SWORD,    ITEM_IRON_SWORD,    ITEM_DIAMOND_SWORD,
     };
     for (size_t i = 0; i < sizeof(tools) / sizeof(tools[0]); i++) {
         assert(tools[i] >= BLOCK_COUNT);
         assert(item_is_tool(tools[i]));
         assert(!item_is_block(tools[i]));
     }
-    /* Exactly 9 tools, contiguous range. */
+    /* 3 mining kinds × 4 tiers + 4 swords = 16 tools, contiguous range. */
     assert(ITEM_TOOL_FIRST == BLOCK_COUNT);
-    assert(ITEM_TOOL_COUNT == 9);
+    assert(ITEM_TOOL_COUNT == 16);
     assert(ITEM_TOOL_LAST == ITEM_TOOL_FIRST + ITEM_TOOL_COUNT - 1);
     printf("PASS: tools_are_above_block_range\n");
 }
