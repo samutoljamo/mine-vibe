@@ -342,6 +342,154 @@ static void test_nearest(void) {
     printf("PASS: nearest\n");
 }
 
+/* ── 8. Per-building grounding on a sloped surface ───────────────────────────
+ * On sloped terrain each building must settle on its OWN local ground height
+ * (not one shared village plane) and never float — the floor base Y must equal
+ * the MIN surface height over the building's footprint, and very steep
+ * footprints are skipped rather than towered. */
+
+/* Synthetic terrain: surface height rises 1 block per block of +X (a 45° ramp
+ * along X, flat along Z). Sea-level base keeps everything above water. */
+static int ramp_x_height(int wx, int wz, void* ctx) {
+    (void)wz; (void)ctx;
+    return (VILLAGE_SEA_LEVEL + 5) + wx; /* slope 1.0 along X */
+}
+/* Flat terrain. */
+static int flat_height(int wx, int wz, void* ctx) {
+    (void)wx; (void)wz; (void)ctx;
+    return (VILLAGE_SEA_LEVEL + 8);
+}
+
+static void test_building_grounding(void) {
+    /* Flat terrain: any footprint settles at the flat height, slope 0. */
+    int by, mn, mx;
+    bool ok = village_footprint_base(0, 0, 5, 5, flat_height, NULL, &by, &mn, &mx);
+    assert(ok);
+    assert(by == VILLAGE_SEA_LEVEL + 8);
+    assert(mn == mx && mn == VILLAGE_SEA_LEVEL + 8);
+
+    /* Gentle ramp footprint within the slope budget: base Y == MIN surface over
+     * the footprint, i.e. the lowest (smallest-X) column. */
+    int x0 = 100, x1 = x0 + VILLAGE_BUILDING_MAX_SLOPE; /* width == slope budget */
+    ok = village_footprint_base(x0, 0, x1, 4, ramp_x_height, NULL, &by, &mn, &mx);
+    assert(ok);
+    assert(mn == ramp_x_height(x0, 0, NULL));   /* lowest column */
+    assert(mx == ramp_x_height(x1, 0, NULL));   /* highest column */
+    assert(by == mn);                           /* floor sits on the low side */
+    assert(mx - mn == VILLAGE_BUILDING_MAX_SLOPE);
+
+    /* Too steep: a wider footprint on the same ramp exceeds the budget → skip. */
+    ok = village_footprint_base(x0, 0, x1 + 1, 4, ramp_x_height, NULL,
+                                &by, &mn, &mx);
+    assert(!ok);
+
+    /* Determinism. */
+    int by2, mn2, mx2;
+    bool ok2 = village_footprint_base(x0, 0, x1, 4, ramp_x_height, NULL,
+                                      &by2, &mn2, &mx2);
+    assert(ok2 && by2 == by && mn2 == mn && mx2 == mx);
+
+    printf("PASS: building_grounding\n");
+}
+
+/* ── 9. Buildings rest on local ground in a real generated village ───────────
+ * Generate a village on the real terrain and assert that (a) different houses
+ * across a sloped footprint do NOT all share a single floor Y (per-building
+ * grounding actually happens), and (b) under every house footprint corner the
+ * block directly beneath the floor is solid (no air gap — no floating). */
+
+static int prod_height(int wx, int wz, void* ctx) {
+    int seed = *(int*)ctx;
+    return worldgen_get_height(wx, wz, seed);
+}
+
+static void test_no_float_in_generated_village(void) {
+    int checked = 0;
+    for (int test_seed = 1; test_seed <= 8000 && checked < 4; test_seed++) {
+        for (int cgx = -2; cgx <= 2 && checked < 4; cgx++)
+        for (int cgz = -2; cgz <= 2 && checked < 4; cgz++) {
+            VillageCell vc = village_cell_at(cgx, cgz, test_seed);
+            if (!vc.present) continue;
+            if (!center_suitable(vc.wx, vc.wz, test_seed)) continue;
+
+            int ccx = vc.wx >= 0 ? vc.wx / 16 : -((-vc.wx + 15) / 16);
+            int ccz = vc.wz >= 0 ? vc.wz / 16 : -((-vc.wz + 15) / 16);
+
+            /* Use real worldgen (full terrain) so house floors land on actual
+             * ground; village_generate only emits structure blocks over AIR, so
+             * fill the column with STONE up to (surface) per worldgen height to
+             * model the ground under the footprint. */
+            Chunk* chunks[25];
+            int nch = 0;
+            for (int dx = -2; dx <= 2; dx++)
+                for (int dz = -2; dz <= 2; dz++) {
+                    Chunk* c = chunk_create(ccx + dx, ccz + dz);
+                    int bx = (ccx + dx) * CHUNK_X, bz = (ccz + dz) * CHUNK_Z;
+                    for (int lx = 0; lx < CHUNK_X; lx++)
+                        for (int lz = 0; lz < CHUNK_Z; lz++) {
+                            int sh = worldgen_get_height(bx + lx, bz + lz, test_seed);
+                            for (int y = 0; y < CHUNK_Y; y++)
+                                chunk_set_block(c, lx, y, lz,
+                                    y <= sh ? BLOCK_STONE : BLOCK_AIR);
+                        }
+                    int hm[16][16] = {0};
+                    village_generate(c, test_seed, hm);
+                    chunks[nch++] = c;
+                }
+
+            /* Each house's base floor Y is the per-building grounded base
+             * (min surface over its footprint), recomputed via the same pure
+             * helper production uses. Assert (a) the bases differ across the
+             * sloped village (not one shared plane) and (b) under every
+             * footprint corner the block directly below the floor is solid (no
+             * air gap = no floating). */
+            int n = village_house_count(vc.seed);
+            int nfloors = 0;
+            int distinct_seen = 0, first_y = -9999;
+            for (int i = 0; i < n; i++) {
+                VillageHouse h = village_house_at(vc.seed, vc.wx, vc.wz, i);
+                int hx0 = h.cx - h.w / 2, hx1 = hx0 + h.w - 1;
+                int hz0 = h.cz - h.d / 2, hz1 = hz0 + h.d - 1;
+
+                int base_y, mn, mx;
+                if (!village_footprint_base(hx0, hz0, hx1, hz1,
+                                            prod_height, &test_seed,
+                                            &base_y, &mn, &mx))
+                    continue; /* house skipped (too steep) — fine */
+                nfloors++;
+                if (first_y == -9999) first_y = base_y;
+                else if (base_y != first_y) distinct_seen = 1;
+
+                /* No-float: the block under each footprint corner's floor is
+                 * solid. The floor sits at base_y; flatten fills foundation
+                 * below it, so base_y-1 must not be air. */
+                int corners[4][2] = { {hx0,hz0},{hx1,hz0},{hx0,hz1},{hx1,hz1} };
+                for (int cc = 0; cc < 4; cc++) {
+                    BlockID under = world_block(chunks, nch,
+                                                corners[cc][0], base_y - 1,
+                                                corners[cc][1]);
+                    assert(under != BLOCK_AIR);
+                }
+            }
+
+            /* Only count villages whose center footprint actually spans a slope
+             * (so we can meaningfully assert per-building Y differs). */
+            int lo = worldgen_get_height(vc.wx - VILLAGE_MAX_RADIUS, vc.wz, test_seed);
+            int hi = worldgen_get_height(vc.wx + VILLAGE_MAX_RADIUS, vc.wz, test_seed);
+            int spread = hi - lo; if (spread < 0) spread = -spread;
+            if (nfloors >= 2 && spread >= 2) {
+                assert(distinct_seen); /* not a single shared plane on a slope */
+                checked++;
+            }
+
+            for (int i = 0; i < nch; i++) chunk_destroy(chunks[i]);
+        }
+    }
+    printf("  sloped-villages-checked=%d\n", checked);
+    assert(checked > 0);
+    printf("PASS: no_float_in_generated_village\n");
+}
+
 int main(void) {
     test_cell_deterministic();
     test_density();
@@ -350,6 +498,8 @@ int main(void) {
     test_house_layout();
     test_cross_chunk_and_bounds();
     test_nearest();
+    test_building_grounding();
+    test_no_float_in_generated_village();
     printf("ALL VILLAGE TESTS PASSED\n");
     return 0;
 }

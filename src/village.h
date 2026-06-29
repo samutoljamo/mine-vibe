@@ -48,6 +48,16 @@
 #define VILLAGE_HOUSE_MAX    8       /* max house footprint side (blocks)       */
 #define VILLAGE_WALL_H       3       /* wall height in blocks                    */
 
+/* Per-building grounding: each building (and the well) is settled on the local
+ * terrain height at its own footprint rather than a single shared village plane,
+ * so structures no longer float on slopes. The base Y is the MIN surface height
+ * over the building footprint (so the floor never dangles in the air over the
+ * downhill corner); a foundation fill drops dirt/cobble from each footprint
+ * column's local surface down to that base, levelling the platform. If a single
+ * building's footprint is steeper than VILLAGE_BUILDING_MAX_SLOPE the building
+ * is skipped rather than punching a tall foundation tower into a cliff. */
+#define VILLAGE_BUILDING_MAX_SLOPE 6 /* max surface spread under one footprint  */
+
 typedef struct {
     bool present;   /* does this cell host a candidate village?               */
     int  wx, wz;    /* world-space village center (block coords)              */
@@ -78,6 +88,22 @@ int village_house_count(int vseed);
  * given per-village seed. Houses are scattered within VILLAGE_MAX_RADIUS of
  * the center and do not overlap each other. Pure & deterministic. */
 VillageHouse village_house_at(int vseed, int center_wx, int center_wz, int i);
+
+/* Surface-height sampler: returns the terrain surface height at world (wx,wz).
+ * Lets the per-building grounding logic be exercised on synthetic terrain in
+ * unit tests while production code passes a worldgen_get_height wrapper. */
+typedef int (*VillageHeightFn)(int wx, int wz, void* ctx);
+
+/* Settle a rectangular footprint [x0..x1]x[z0..z1] (inclusive, world coords) on
+ * the local terrain by sampling `h` over its columns. On success returns true
+ * and writes the base floor Y (the MIN surface height over the footprint) to
+ * *out_base_y, plus the min/max surface seen to *out_min_h/*out_max_h. Returns
+ * false (skip this building) when the footprint slope exceeds
+ * VILLAGE_BUILDING_MAX_SLOPE — avoids tall foundation towers on cliffs. Pure
+ * given a pure sampler. */
+bool village_footprint_base(int x0, int z0, int x1, int z1,
+                            VillageHeightFn h, void* ctx,
+                            int* out_base_y, int* out_min_h, int* out_max_h);
 
 /* Deterministic locator: find the nearest village center to world position
  * (wx,wz). Scans the surrounding cell neighbourhood and applies the same

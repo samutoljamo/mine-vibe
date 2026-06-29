@@ -162,6 +162,39 @@ VillageHouse village_house_at(int vseed, int center_wx, int center_wz, int i)
     return house;
 }
 
+/* worldgen height wrapper matching VillageHeightFn, used by the generator so
+ * production grounding samples the SAME surface source as worldgen (and thus
+ * agrees with the actual terrain). The seed is passed through ctx. */
+static int worldgen_height_sampler(int wx, int wz, void* ctx)
+{
+    return worldgen_get_height(wx, wz, *(int*)ctx);
+}
+
+/* ── Per-building grounding ──────────────────────────────────────────────────
+ * Settle a footprint on its OWN local terrain so buildings rest on the ground
+ * even on a slope. The base floor Y is the MIN surface height over the footprint
+ * (so no corner dangles in the air); columns that sit higher than the base are
+ * levelled down with a foundation fill on placement. A footprint whose surface
+ * spread exceeds VILLAGE_BUILDING_MAX_SLOPE is rejected so we never punch a tall
+ * tower into a cliff — the caller simply skips that building. */
+bool village_footprint_base(int x0, int z0, int x1, int z1,
+                            VillageHeightFn h, void* ctx,
+                            int* out_base_y, int* out_min_h, int* out_max_h)
+{
+    int mn = h(x0, z0, ctx), mx = mn;
+    for (int wx = x0; wx <= x1; wx++)
+        for (int wz = z0; wz <= z1; wz++) {
+            int s = h(wx, wz, ctx);
+            if (s < mn) mn = s;
+            if (s > mx) mx = s;
+        }
+    if (mx - mn > VILLAGE_BUILDING_MAX_SLOPE) return false;
+    if (out_base_y) *out_base_y = mn;
+    if (out_min_h)  *out_min_h  = mn;
+    if (out_max_h)  *out_max_h  = mx;
+    return true;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Per-chunk generation
  * ───────────────────────────────────────────────────────────────────────── */
@@ -389,9 +422,12 @@ static void emit_path_block(Chunk* c, int base_x, int base_z,
 }
 
 /* Bresenham line in world space from (x0,z0) to (x1,z1), emitting path blocks.
- * Each block is independently clipped to the chunk, so split paths line up. */
+ * Each block is independently clipped to the chunk, so split paths line up.
+ * Every path block is laid on its own local terrain height (via h) so the path
+ * follows the slope instead of floating on a shared plane. */
 static void emit_path(Chunk* c, int base_x, int base_z,
-                      int x0, int z0, int x1, int z1, int py)
+                      int x0, int z0, int x1, int z1,
+                      VillageHeightFn h, void* ctx)
 {
     int dx = x1 - x0, dz = z1 - z0;
     int adx = dx < 0 ? -dx : dx;
@@ -401,6 +437,7 @@ static void emit_path(Chunk* c, int base_x, int base_z,
     int err = adx - adz;
     int x = x0, z = z0;
     for (;;) {
+        int py = h(x, z, ctx);
         emit_path_block(c, base_x, base_z, x, z, py);
         if (x == x1 && z == z1) break;
         int e2 = 2 * err;
@@ -437,20 +474,35 @@ void village_generate(Chunk* chunk, int seed, int height_map[16][16])
                 vz1 < chunk_z0 || vz0 > chunk_z1)
                 continue;
 
-            int py;
-            if (!village_center_suitable(vc.wx, vc.wz, seed, &py))
+            int center_py;
+            if (!village_center_suitable(vc.wx, vc.wz, seed, &center_py))
                 continue;
+
+            int sseed = seed; /* stable address for the height sampler ctx */
 
             /* Emit houses + a path from each house door to the well, then the
              * well last so the central landmark always wins where a house or
-             * path roll happens to land near the center. */
+             * path roll happens to land near the center. Each building settles
+             * on its OWN local terrain height (no shared platform plane), so
+             * structures rest on the ground on sloped terrain instead of
+             * floating. Buildings on too-steep footprints are skipped. */
             int n = village_house_count(vc.seed);
             for (int i = 0; i < n; i++) {
                 VillageHouse h = village_house_at(vc.seed, vc.wx, vc.wz, i);
 
-                /* Door world position (on the door wall). */
+                /* Footprint world AABB. */
                 int hx0 = h.cx - h.w / 2, hx1 = hx0 + h.w - 1;
                 int hz0 = h.cz - h.d / 2, hz1 = hz0 + h.d - 1;
+
+                /* Ground this house on its local terrain (min surface over its
+                 * footprint). Skip if the footprint is too steep. */
+                int house_py;
+                if (!village_footprint_base(hx0, hz0, hx1, hz1,
+                                            worldgen_height_sampler, &sseed,
+                                            &house_py, NULL, NULL))
+                    continue;
+
+                /* Door world position (on the door wall). */
                 int door_wx = h.cx, door_wz = h.cz;
                 switch (h.door_face) {
                     case 0: door_wx = hx1; break;
@@ -458,13 +510,16 @@ void village_generate(Chunk* chunk, int seed, int height_map[16][16])
                     case 2: door_wz = hz1; break;
                     default: door_wz = hz0; break;
                 }
-                /* Path first so the house overwrites any path under its walls. */
+                /* Path follows the local ground along its run so it hugs the
+                 * slope between the door and the well rather than a flat plane. */
                 emit_path(chunk, base_x, base_z,
-                          door_wx, door_wz, vc.wx, vc.wz, py);
-                emit_house(chunk, base_x, base_z, h, py);
+                          door_wx, door_wz, vc.wx, vc.wz,
+                          worldgen_height_sampler, &sseed);
+                emit_house(chunk, base_x, base_z, h, house_py);
             }
 
-            /* Well at the village center, emitted last. */
-            emit_well(chunk, base_x, base_z, vc.wx, vc.wz, py);
+            /* Well at the village center, grounded on the center column. */
+            int well_py = worldgen_get_height(vc.wx, vc.wz, seed);
+            emit_well(chunk, base_x, base_z, vc.wx, vc.wz, well_py);
         }
 }
