@@ -99,6 +99,58 @@ static void test_ao_with_neighbor_on_top(void)
     printf("PASS: test_ao_with_neighbor_on_top\n");
 }
 
+/* Ticket 80l.3.1 named configuration: a single block standing on a flat
+ * plane. The plane's top (+Y) face cells immediately around the standing
+ * block must darken at the corners that touch it (AO < 3), while +Y plane
+ * vertices far from the block stay fully bright (AO == 3). This exercises AO
+ * caused by a neighbor that is NOT part of the same merged face. */
+static void test_ao_block_on_flat_plane(void)
+{
+    Chunk* c = chunk_create(0, 0);
+    const int PY = 64;           /* plane top is at y = PY+1 = 65 */
+    for (int z = 0; z < CHUNK_Z; z++)
+        for (int x = 0; x < CHUNK_X; x++)
+            chunk_set_block(c, x, PY, z, BLOCK_STONE);
+    /* One block standing on the plane. */
+    chunk_set_block(c, 8, PY + 1, 8, BLOCK_STONE);
+    atomic_store(&c->state, CHUNK_GENERATED);
+
+    MeshData md;
+    mesh_data_init(&md);
+    ChunkNeighbors nb = {0};
+    mesher_build(c, &nb, NULL, &md);
+
+    /* Scan the plane's +Y faces (normal id 2) at y == PY+1 == 65. Vertices in
+     * the 2x2 footprint of world corners {8,9}x{8,9} sit at the base of the
+     * standing block and must be occluded; a vertex far away (e.g. at the
+     * chunk's opposite corner) must be fully bright. */
+    int saw_darkened = 0;
+    int saw_far_bright = 0;
+    for (uint32_t i = 0; i < md.vertex_count; i++) {
+        if (md.vertices[i].normal != 2) continue;             /* +Y only */
+        float vy = md.vertices[i].pos[1];
+        if (vy < (float)(PY + 1) - 0.5f || vy > (float)(PY + 1) + 0.5f)
+            continue;                                          /* plane top */
+        float vx = md.vertices[i].pos[0], vz = md.vertices[i].pos[2];
+
+        int touches_block = (vx > 7.5f && vx < 9.5f) &&
+                            (vz > 7.5f && vz < 9.5f);
+        if (touches_block) {
+            if (md.vertices[i].ao < 3) saw_darkened = 1;
+        } else if (vx < 0.5f && vz < 0.5f) {
+            /* far corner of the plane, no occluders */
+            assert(md.vertices[i].ao == 3);
+            saw_far_bright = 1;
+        }
+    }
+    assert(saw_darkened);    /* AO appears next to the standing block */
+    assert(saw_far_bright);  /* open ground stays at full AO level 3 */
+
+    mesh_data_free(&md);
+    chunk_destroy(c);
+    printf("PASS: test_ao_block_on_flat_plane\n");
+}
+
 /* With a fully-lit chunk (sky=15 everywhere), every emitted vertex should
  * have light=15. */
 static void test_smooth_light_uniform(void)
@@ -546,6 +598,7 @@ int main(void)
     test_solid_chunk_mesh();
     test_ao_isolated_block();
     test_ao_with_neighbor_on_top();
+    test_ao_block_on_flat_plane();
     test_smooth_light_uniform();
     test_smooth_light_partial();
     test_greedy_flat_plane_top_merges_to_one();
