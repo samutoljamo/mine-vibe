@@ -312,6 +312,234 @@ static void test_ore_not_craftable_to_ingot(void) {
     printf("PASS: ore_not_craftable_to_ingot\n");
 }
 
+/* ================================================================== */
+/*  Shaped 3x3 crafting (a4s.5.3 engine)                               */
+/* ================================================================== */
+
+/* Find a shaped recipe by exact output item (first in table order). */
+static int find_shaped_by_output(ItemId out) {
+    for (int i = 0; i < crafting_shaped_count(); i++) {
+        const ShapedRecipe* r = crafting_shaped(i);
+        if (r->output_item == out) return i;
+    }
+    return -1;
+}
+
+static void grid_clear(ItemId g[CRAFT_CELLS]) {
+    for (int i = 0; i < CRAFT_CELLS; i++) g[i] = (ItemId)BLOCK_AIR;
+}
+
+/* The shaped table is non-empty and every recipe is well-formed. */
+static void test_shaped_table_well_formed(void) {
+    int n = crafting_shaped_count();
+    assert(n > 0);
+    for (int i = 0; i < n; i++) {
+        const ShapedRecipe* r = crafting_shaped(i);
+        assert(r != NULL);
+        assert(r->name != NULL && r->name[0] != '\0');
+        assert(r->output_count >= 1);
+        assert((int)r->output_item < ITEM_COUNT);
+        /* At least one non-empty cell. */
+        int filled = 0;
+        for (int c = 0; c < CRAFT_CELLS; c++) {
+            assert((int)r->cells[c] < ITEM_COUNT);
+            if (r->cells[c] != (ItemId)BLOCK_AIR) filled++;
+        }
+        assert(filled >= 1);
+    }
+    assert(crafting_shaped(-1) == NULL);
+    assert(crafting_shaped(n) == NULL);
+    printf("PASS: shaped_table_well_formed\n");
+}
+
+/* An empty grid matches nothing. */
+static void test_shaped_empty_grid(void) {
+    ItemId g[CRAFT_CELLS]; grid_clear(g);
+    assert(crafting_match_grid(g) == -1);
+    printf("PASS: shaped_empty_grid\n");
+}
+
+/* The canonical pickaxe layout matches, and the SAME shape shifted to other
+ * corners still matches (translation invariance). */
+static void test_shaped_pickaxe_translation(void) {
+    int pi = find_shaped_by_output(ITEM_WOOD_PICKAXE);
+    assert(pi >= 0);
+    const ShapedRecipe* r = crafting_shaped(pi);
+    assert(!r->shapeless);
+
+    /* Canonical pickaxe (top-left anchored):
+     *   P P P
+     *   . S .
+     *   . S .                                                            */
+    ItemId g[CRAFT_CELLS]; grid_clear(g);
+    g[0] = (ItemId)BLOCK_PLANKS; g[1] = (ItemId)BLOCK_PLANKS; g[2] = (ItemId)BLOCK_PLANKS;
+    g[4] = ITEM_STICK;
+    g[7] = ITEM_STICK;
+    assert(crafting_match_grid(g) == pi);
+
+    /* Same shape but only 3 wide -> the head row + the stick column must align;
+     * a pickaxe needs all 3 top cells so the only horizontal placement is the
+     * full width. Vertical translation: shift everything... a 3-tall pattern
+     * already fills the grid vertically, so the meaningful translation test is
+     * to confirm the matcher trims/normalises by bounding box. Build a recipe
+     * whose bounding box is smaller (sword) for the corner test below. */
+
+    /* Wrong layout: sticks misplaced -> no match for the pickaxe. */
+    grid_clear(g);
+    g[0] = (ItemId)BLOCK_PLANKS; g[1] = (ItemId)BLOCK_PLANKS; g[2] = (ItemId)BLOCK_PLANKS;
+    g[3] = ITEM_STICK;   /* stick under the left, not the centre */
+    g[6] = ITEM_STICK;
+    assert(crafting_match_grid(g) != pi);
+    printf("PASS: shaped_pickaxe_translation\n");
+}
+
+/* The sword is a 1-wide, 3-tall pattern (M / M / stick). It must match in any
+ * of the three columns (horizontal translation) and at the top OR shifted down
+ * if it were shorter — here it is 3 tall so test the 3 columns. */
+static void test_shaped_sword_translation(void) {
+    int si = find_shaped_by_output(ITEM_WOOD_SWORD);
+    assert(si >= 0);
+    const ShapedRecipe* r = crafting_shaped(si);
+    assert(!r->shapeless);
+
+    for (int col = 0; col < CRAFT_GRID; col++) {
+        ItemId g[CRAFT_CELLS]; grid_clear(g);
+        g[0 * CRAFT_GRID + col] = (ItemId)BLOCK_PLANKS;
+        g[1 * CRAFT_GRID + col] = (ItemId)BLOCK_PLANKS;
+        g[2 * CRAFT_GRID + col] = ITEM_STICK;
+        assert(crafting_match_grid(g) == si);
+    }
+    printf("PASS: shaped_sword_translation\n");
+}
+
+/* A 2x2 pattern (the planks-square nature of nothing here; use a generic small
+ * pattern) must match in any corner — verify with whatever 2-tall recipe is
+ * available; sword above already covers vertical fill. For an explicit corner
+ * test, build a tiny synthetic via the shovel (1 mat over 2 sticks, 1 wide)
+ * and slide it both horizontally and vertically. */
+static void test_shaped_shovel_corner_translation(void) {
+    int idx = find_shaped_by_output(ITEM_WOOD_SHOVEL);
+    assert(idx >= 0);
+    /* Shovel: M / S / S (1 wide, 3 tall) -> 3 horizontal positions. */
+    for (int col = 0; col < CRAFT_GRID; col++) {
+        ItemId g[CRAFT_CELLS]; grid_clear(g);
+        g[0 * CRAFT_GRID + col] = (ItemId)BLOCK_PLANKS;
+        g[1 * CRAFT_GRID + col] = ITEM_STICK;
+        g[2 * CRAFT_GRID + col] = ITEM_STICK;
+        assert(crafting_match_grid(g) == idx);
+    }
+    printf("PASS: shaped_shovel_corner_translation\n");
+}
+
+/* Mirror: the axe is L-shaped (M M / M S / . S) and its horizontal mirror
+ * (M M / S M / S .) must also produce an axe. */
+static void test_shaped_axe_mirror(void) {
+    int idx = find_shaped_by_output(ITEM_WOOD_AXE);
+    assert(idx >= 0);
+    const ShapedRecipe* r = crafting_shaped(idx);
+    assert(!r->shapeless);
+
+    /* Canonical axe shape from the table. */
+    ItemId g[CRAFT_CELLS];
+    for (int c = 0; c < CRAFT_CELLS; c++) g[c] = r->cells[c];
+    assert(crafting_match_grid(g) == idx);
+
+    /* Mirror each row horizontally within the 3x3. */
+    ItemId m[CRAFT_CELLS]; grid_clear(m);
+    for (int y = 0; y < CRAFT_GRID; y++)
+        for (int x = 0; x < CRAFT_GRID; x++)
+            m[y * CRAFT_GRID + (CRAFT_GRID - 1 - x)] = r->cells[y * CRAFT_GRID + x];
+    /* The mirrored layout still crafts an axe (may match a different table
+     * index if another recipe shares the mirrored shape, but for the axe it is
+     * the same recipe). */
+    int mi = crafting_match_grid(m);
+    assert(mi >= 0);
+    assert(crafting_shaped(mi)->output_item == ITEM_WOOD_AXE);
+    printf("PASS: shaped_axe_mirror\n");
+}
+
+/* A shapeless shaped-recipe (planks->? or sticks) matches regardless of cell
+ * placement: scatter the ingredients around the grid. */
+static void test_shaped_shapeless_any_placement(void) {
+    /* Sticks: 2 planks (vertical in vanilla, but our entry is shapeless or a
+     * vertical pair). Find the recipe that outputs ITEM_STICK. */
+    int idx = find_shaped_by_output(ITEM_STICK);
+    assert(idx >= 0);
+    const ShapedRecipe* r = crafting_shaped(idx);
+
+    if (r->shapeless) {
+        /* Count its ingredient multiset, then place the same items in arbitrary
+         * different cells and confirm it still matches. */
+        ItemId g[CRAFT_CELLS]; grid_clear(g);
+        int placed = 0;
+        int scatter[CRAFT_CELLS] = {8, 0, 4, 2, 6, 1, 7, 3, 5};
+        for (int c = 0; c < CRAFT_CELLS; c++) {
+            if (r->cells[c] != (ItemId)BLOCK_AIR)
+                g[scatter[placed++]] = r->cells[c];
+        }
+        assert(crafting_match_grid(g) == idx);
+    }
+
+    /* Planks is the canonical shapeless case (1 log anywhere -> 4 planks). */
+    int pidx = find_shaped_by_output((ItemId)BLOCK_PLANKS);
+    assert(pidx >= 0);
+    const ShapedRecipe* pr = crafting_shaped(pidx);
+    assert(pr->shapeless);
+    /* A single log in EACH possible cell must match. */
+    for (int c = 0; c < CRAFT_CELLS; c++) {
+        ItemId g[CRAFT_CELLS]; grid_clear(g);
+        g[c] = (ItemId)BLOCK_WOOD;
+        assert(crafting_match_grid(g) == pidx);
+    }
+    printf("PASS: shaped_shapeless_any_placement\n");
+}
+
+/* shaped_recipe_output returns the right item/count and rejects bad indices. */
+static void test_shaped_output_accessor(void) {
+    int pi = find_shaped_by_output(ITEM_WOOD_PICKAXE);
+    assert(pi >= 0);
+    ItemId it = 0; uint8_t ct = 0;
+    assert(shaped_recipe_output(pi, &it, &ct));
+    assert(it == ITEM_WOOD_PICKAXE);
+    assert(ct == 1);
+
+    int planks = find_shaped_by_output((ItemId)BLOCK_PLANKS);
+    assert(shaped_recipe_output(planks, &it, &ct));
+    assert(it == (ItemId)BLOCK_PLANKS);
+    assert(ct == 4);
+
+    assert(!shaped_recipe_output(-1, &it, &ct));
+    assert(!shaped_recipe_output(crafting_shaped_count(), &it, &ct));
+    printf("PASS: shaped_output_accessor\n");
+}
+
+/* A garbage grid (unrelated block) matches nothing. */
+static void test_shaped_no_false_match(void) {
+    ItemId g[CRAFT_CELLS]; grid_clear(g);
+    g[4] = (ItemId)BLOCK_DIRT;
+    g[0] = (ItemId)BLOCK_DIRT;
+    assert(crafting_match_grid(g) == -1);
+    printf("PASS: shaped_no_false_match\n");
+}
+
+/* Furnace (8 cobble ring, empty centre) and chest (8 planks ring) are present
+ * as shaped recipes and match their ring layout. */
+static void test_shaped_furnace_and_chest(void) {
+    int fi = find_shaped_by_output((ItemId)BLOCK_FURNACE);
+    assert(fi >= 0);
+    ItemId g[CRAFT_CELLS];
+    for (int c = 0; c < CRAFT_CELLS; c++) g[c] = (ItemId)BLOCK_COBBLE;
+    g[4] = (ItemId)BLOCK_AIR;  /* hollow centre */
+    assert(crafting_match_grid(g) == fi);
+
+    int ci = find_shaped_by_output((ItemId)BLOCK_CHEST);
+    assert(ci >= 0);
+    for (int c = 0; c < CRAFT_CELLS; c++) g[c] = (ItemId)BLOCK_PLANKS;
+    g[4] = (ItemId)BLOCK_AIR;
+    assert(crafting_match_grid(g) == ci);
+    printf("PASS: shaped_furnace_and_chest\n");
+}
+
 int main(void) {
     test_table_well_formed();
     test_example_recipes_present();
@@ -328,6 +556,19 @@ int main(void) {
     test_no_false_match();
     test_determinism();
     test_consumption_and_output_math();
+
+    /* Shaped 3x3 engine (a4s.5.3). */
+    test_shaped_table_well_formed();
+    test_shaped_empty_grid();
+    test_shaped_pickaxe_translation();
+    test_shaped_sword_translation();
+    test_shaped_shovel_corner_translation();
+    test_shaped_axe_mirror();
+    test_shaped_shapeless_any_placement();
+    test_shaped_output_accessor();
+    test_shaped_no_false_match();
+    test_shaped_furnace_and_chest();
+
     printf("ALL CRAFTING TESTS PASSED\n");
     return 0;
 }

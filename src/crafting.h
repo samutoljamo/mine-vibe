@@ -77,4 +77,56 @@ struct Inventory;
 void          crafting_counts_from_inventory(const struct Inventory* inv,
                                              ItemCounts* out);
 
+/* ================================================================== */
+/*  Shaped 3x3 crafting (a4s.5.3 engine)                               */
+/*                                                                     */
+/*  This is the ADDITIVE grid-based crafting model that runs alongside  */
+/*  the shapeless API above (which is unchanged and still used by the   */
+/*  current server/HUD/client). A future ticket migrates the callers    */
+/*  over to this matcher and bumps the protocol; until then both        */
+/*  coexist.                                                            */
+/*                                                                     */
+/*  A ShapedRecipe is a 3x3 ItemId grid (row-major, index = y*3 + x;    */
+/*  cell value 0 / BLOCK_AIR means empty). It produces output_count of   */
+/*  output_item.                                                        */
+/*                                                                     */
+/*    - shapeless == false: a positional pattern. Matching is done      */
+/*      modulo TRANSLATION (the pattern's bounding box may sit anywhere  */
+/*      in the 3x3, as in vanilla) and modulo horizontal MIRROR.        */
+/*    - shapeless == true: cells are an unordered ingredient multiset;   */
+/*      matching ignores placement entirely.                            */
+/*                                                                     */
+/*  All functions are PURE + deterministic.                            */
+/* ================================================================== */
+
+#define CRAFT_GRID  3                    /* 3x3 grid */
+#define CRAFT_CELLS (CRAFT_GRID * CRAFT_GRID)  /* 9 cells */
+
+typedef struct {
+    ItemId      cells[CRAFT_CELLS];  /* row-major; 0 / BLOCK_AIR == empty */
+    ItemId      output_item;
+    uint8_t     output_count;
+    bool        shapeless;           /* true: cells are an unordered multiset */
+    const char* name;                /* human label for the UI */
+} ShapedRecipe;
+
+/* Number of shaped recipes in the table. */
+int  crafting_shaped_count(void);
+
+/* Shaped recipe by index, or NULL if out of range. */
+const ShapedRecipe* crafting_shaped(int index);
+
+/* Match a filled 3x3 grid against the shaped recipe table.
+ *
+ * Returns the index of the FIRST matching shaped recipe (stable table order),
+ * or -1 if none match. `grid` is row-major (index = y*CRAFT_GRID + x); a cell
+ * of 0 / BLOCK_AIR is empty. Shaped recipes match modulo translation + mirror;
+ * shapeless recipes match by ingredient multiset. An all-empty grid -> -1.
+ * Pure. */
+int  crafting_match_grid(const ItemId grid[CRAFT_CELLS]);
+
+/* Output of a shaped recipe by index. Returns false (and leaves outputs
+ * untouched) for an out-of-range index. Pure. */
+bool shaped_recipe_output(int index, ItemId* out_item, uint8_t* out_count);
+
 #endif /* CRAFTING_H */
