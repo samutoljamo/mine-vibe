@@ -30,6 +30,11 @@ enum {
     /* Crafting/storage blocks. FURNACE is stone-bodied; CHEST is wood-bodied. */
     BLOCK_FURNACE,
     BLOCK_CHEST,
+    /* Natural/decorative terrain blocks (atlas tiles 61-64). */
+    BLOCK_SANDSTONE,
+    BLOCK_SNOW,
+    BLOCK_ICE,
+    BLOCK_MOSSY_COBBLESTONE,
     BLOCK_COUNT,
 };
 

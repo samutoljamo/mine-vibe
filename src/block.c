@@ -31,6 +31,15 @@ static const BlockDef block_defs[BLOCK_COUNT] = {
     [BLOCK_FURNACE] = { "furnace", true, false, false, 15, 0, 51, 50, 51, HARDNESS_HARD },
     /* Chest: wood-bodied storage block. Wood-like hardness (axe-friendly). */
     [BLOCK_CHEST]   = { "chest",   true, false, false, 15, 0, 52, 53, 52, HARDNESS_MEDIUM },
+    /* Sandstone: solid opaque rock, pickaxe-mined like stone. */
+    [BLOCK_SANDSTONE] = { "sandstone", true, false, false, 15, 0, 61, 61, 61, HARDNESS_HARD },
+    /* Snow: soft solid opaque block. */
+    [BLOCK_SNOW]      = { "snow",      true, false, false, 15, 0, 62, 62, 62, HARDNESS_SOFT },
+    /* Ice: solid but transparent with low light absorption so light leaks
+     * through and neighbour faces render (like glass). */
+    [BLOCK_ICE]       = { "ice",       true, true,  false, 2,  0, 63, 63, 63, HARDNESS_LOW },
+    /* Mossy cobblestone: stone-bodied, hard like cobble. */
+    [BLOCK_MOSSY_COBBLESTONE] = { "mossy_cobblestone", true, false, false, 15, 0, 64, 64, 64, HARDNESS_HARD },
 };
 
 const BlockDef* block_get_def(BlockID id) {
@@ -69,6 +78,10 @@ void block_representative_color(BlockID id, uint8_t* r, uint8_t* g, uint8_t* b) 
         case BLOCK_TORCH:   *r = 240; *g = 180; *b =  60; break;
         case BLOCK_FURNACE: *r = 100; *g = 100; *b = 100; break;
         case BLOCK_CHEST:   *r = 162; *g = 120; *b =  62; break;
+        case BLOCK_SANDSTONE: *r = 219; *g = 203; *b = 152; break;
+        case BLOCK_SNOW:      *r = 240; *g = 244; *b = 250; break;
+        case BLOCK_ICE:       *r = 158; *g = 198; *b = 236; break;
+        case BLOCK_MOSSY_COBBLESTONE: *r = 100; *g = 120; *b =  90; break;
         default:            *r = 255; *g =   0; *b = 255; break;   /* magenta = bug */
     }
 }

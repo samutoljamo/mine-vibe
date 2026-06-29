@@ -592,6 +592,75 @@ def draw_rotten_flesh(size=16):
             img.putpixel((px, py), (95, 120, 70, 255))
     return img
 
+def draw_sandstone(size=16):
+    """Pale sandy stone: sand-toned base with faint horizontal strata lines and
+    a slightly darker top/bottom band, reading as compacted layered rock."""
+    img = Image.new('RGBA', (size, size))
+    for y in range(size):
+        for x in range(size):
+            img.putpixel((x, y), _noise(214, 200, 150, 255, x, y, 8))
+    # faint horizontal strata seams
+    for y in (4, 8, 12):
+        for x in range(size):
+            img.putpixel((x, y), _noise(190, 174, 124, 255, x, y, 6))
+    # darker capping bands top and bottom
+    for x in range(size):
+        img.putpixel((x, 0), (188, 172, 122, 255))
+        img.putpixel((x, size - 1), (188, 172, 122, 255))
+    return img
+
+def draw_snow(size=16):
+    """Bright near-white snow with a faint cool tint and sparse pale speckles."""
+    img = Image.new('RGBA', (size, size))
+    for y in range(size):
+        for x in range(size):
+            img.putpixel((x, y), _noise(238, 242, 248, 255, x, y, 6))
+    rng = random.Random(31)
+    for _ in range(10):
+        px, py = rng.randint(0, size-1), rng.randint(0, size-1)
+        img.putpixel((px, py), (252, 254, 255, 255))
+    return img
+
+def draw_ice(size=16):
+    """Translucent pale-blue ice with brighter cracks and a glossy corner glint.
+    Semi-transparent so the block reads as see-through like glass."""
+    img = Image.new('RGBA', (size, size))
+    for y in range(size):
+        for x in range(size):
+            img.putpixel((x, y), _noise(150, 192, 232, 150, x, y, 8))
+    # a few brighter cracks
+    rng = random.Random(63)
+    for _ in range(5):
+        x0 = rng.randint(1, size - 2)
+        y0 = rng.randint(1, size - 2)
+        for k in range(rng.randint(2, 5)):
+            px, py = min(size - 1, x0 + k), min(size - 1, y0 + k)
+            img.putpixel((px, py), (210, 232, 248, 200))
+    # diagonal glint
+    for i in range(2, 6):
+        img.putpixel((i, i + 1), (235, 248, 255, 220))
+    return img
+
+def draw_mossy_cobblestone(size=16):
+    """Cobblestone overgrown with moss: cobble base with green moss patches in
+    the mortar seams and a few scattered green tufts."""
+    img = draw_cobble(size)
+    rng = random.Random(88)
+    # moss in the mortar grid cells
+    for y in range(size):
+        for x in range(size):
+            if rng.random() < 0.22:
+                base = img.getpixel((x, y))
+                # blend toward mossy green, keeping some of the stone luminance
+                lum = (base[0] + base[1] + base[2]) // 3
+                g = min(255, 90 + lum // 3)
+                img.putpixel((x, y), (max(0, 40 + lum // 4), g, max(0, 40 + lum // 6), 255))
+    # a few brighter moss tufts
+    for _ in range(8):
+        px, py = rng.randint(0, size-1), rng.randint(0, size-1)
+        img.putpixel((px, py), (70, 140, 60, 255))
+    return img
+
 TILE_GENERATORS = {
     0:  draw_stone,
     1:  draw_dirt,
@@ -662,6 +731,11 @@ TILE_GENERATORS = {
     58: lambda: draw_sword('stone'),
     59: lambda: draw_sword('iron'),
     60: lambda: draw_sword('diamond'),
+    # Natural/decorative terrain blocks.
+    61: draw_sandstone,
+    62: draw_snow,
+    63: draw_ice,
+    64: draw_mossy_cobblestone,
 }
 
 TILE_NAMES = {
@@ -684,6 +758,7 @@ TILE_NAMES = {
     50: "furnace_front", 51: "furnace_side", 52: "chest_top", 53: "chest_side",
     54: "diamond_pickaxe", 55: "diamond_axe", 56: "diamond_shovel",
     57: "wood_sword", 58: "stone_sword", 59: "iron_sword", 60: "diamond_sword",
+    61: "sandstone", 62: "snow", 63: "ice", 64: "mossy_cobblestone",
 }
 
 # ── player skin ───────────────────────────────────────────────────────────────
