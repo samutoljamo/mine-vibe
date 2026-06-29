@@ -25,11 +25,28 @@ typedef enum {
     BIOME_FOREST,
     BIOME_DESERT,
     BIOME_MOUNTAINS,
+    BIOME_SNOW,        /* cold tundra / snowfields (appended — keep last) */
     BIOME_COUNT,
 } Biome;
 
 /* Classify the biome at a world column. Pure function of (wx, wz, seed). */
 Biome biome_at(int wx, int wz, int seed);
+
+/* Pure climate classifier underlying biome_at. Maps a normalized climate
+ * sample to a biome. All three inputs are in [-1, 1]:
+ *   temp      — temperature (low = cold, high = hot)
+ *   humidity  — moisture    (low = dry,  high = wet)
+ *   elevation — terrain height field (high = mountainous)
+ *
+ * Decision order (first match wins):
+ *   1. high elevation                -> MOUNTAINS  (climate-independent)
+ *   2. cold                          -> SNOW
+ *   3. hot & dry                     -> DESERT
+ *   4. temperate/warm & humid        -> FOREST
+ *   5. otherwise                     -> PLAINS
+ *
+ * Deterministic, no global state. Exposed for unit testing the thresholds. */
+Biome biome_classify(float temp, float humidity, float elevation);
 
 /* Surface skin block for a biome, given the column's surface height so high
  * mountain peaks can switch to a snow stand-in. Returns GRASS / SAND / STONE. */

@@ -54,13 +54,56 @@ static void test_all_biomes_appear(void) {
             counts[b]++;
             total++;
         }
-    printf("  plains=%ld forest=%ld desert=%ld mountains=%ld total=%ld\n",
+    printf("  plains=%ld forest=%ld desert=%ld mountains=%ld snow=%ld total=%ld\n",
            counts[BIOME_PLAINS], counts[BIOME_FOREST],
-           counts[BIOME_DESERT], counts[BIOME_MOUNTAINS], total);
+           counts[BIOME_DESERT], counts[BIOME_MOUNTAINS], counts[BIOME_SNOW],
+           total);
     for (int i = 0; i < BIOME_COUNT; i++)
         assert(counts[i] > 0);                 /* all biomes present     */
     assert(counts[BIOME_PLAINS] > total / 100); /* plains not vanishingly rare */
     printf("PASS: all_biomes_appear\n");
+}
+
+/* Pure climate -> biome classifier: each climate region maps as expected.
+ * Inputs are normalized noise values in [-1, 1]. */
+static void test_classify_regions(void) {
+    /* High elevation always wins -> mountains, regardless of climate. */
+    assert(biome_classify( 0.9f,  0.0f,  0.9f) == BIOME_MOUNTAINS);
+    assert(biome_classify(-0.9f,  0.9f,  0.9f) == BIOME_MOUNTAINS);
+    assert(biome_classify( 0.9f, -0.9f,  0.9f) == BIOME_MOUNTAINS);
+
+    /* Cold (low temp), lowland -> snow/tundra, whatever the humidity. */
+    assert(biome_classify(-0.9f,  0.0f, 0.0f) == BIOME_SNOW);
+    assert(biome_classify(-0.9f,  0.9f, 0.0f) == BIOME_SNOW);
+    assert(biome_classify(-0.9f, -0.9f, 0.0f) == BIOME_SNOW);
+
+    /* Hot + dry, lowland -> desert. */
+    assert(biome_classify( 0.9f, -0.9f, 0.0f) == BIOME_DESERT);
+
+    /* Temperate + humid -> forest. */
+    assert(biome_classify( 0.1f,  0.9f, 0.0f) == BIOME_FOREST);
+
+    /* Temperate + moderate humidity -> plains. */
+    assert(biome_classify( 0.1f,  0.0f, 0.0f) == BIOME_PLAINS);
+
+    /* Hot but humid is NOT a desert (deserts require dryness). */
+    assert(biome_classify( 0.9f,  0.9f, 0.0f) != BIOME_DESERT);
+
+    printf("PASS: classify_regions\n");
+}
+
+/* classify is a total, deterministic, in-range pure function over the input
+ * domain, and matches biome_at where elevation is supplied separately. */
+static void test_classify_total_and_pure(void) {
+    for (float t = -1.0f; t <= 1.0f; t += 0.05f)
+        for (float h = -1.0f; h <= 1.0f; h += 0.05f)
+            for (float e = -1.0f; e <= 1.0f; e += 0.05f) {
+                Biome a = biome_classify(t, h, e);
+                Biome b = biome_classify(t, h, e);
+                assert(a == b);
+                assert(a >= 0 && a < BIOME_COUNT);
+            }
+    printf("PASS: classify_total_and_pure\n");
 }
 
 /* Surface-block mapping correctness for each biome. */
@@ -75,6 +118,9 @@ static void test_surface_block_mapping(void) {
     assert(biome_surface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE - 1) == BLOCK_STONE);
     assert(biome_surface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE) != BLOCK_STONE);
     assert(biome_surface_block(BIOME_MOUNTAINS, BIOME_SNOW_LINE + 50) != BLOCK_STONE);
+    /* Snow biome surface is a light, non-stone, non-grass skin. */
+    assert(biome_surface_block(BIOME_SNOW, 70) != BLOCK_GRASS);
+    assert(biome_surface_block(BIOME_SNOW, 70) != BLOCK_AIR);
     /* Surface block is always a real, non-air block. */
     for (int b = 0; b < BIOME_COUNT; b++) {
         BlockID s = biome_surface_block((Biome)b, 70);
@@ -93,6 +139,8 @@ static void test_tree_density(void) {
     assert(biome_tree_density(BIOME_PLAINS) > 0.0f);
     assert(biome_tree_density(BIOME_DESERT) == 0.0f);
     assert(biome_tree_density(BIOME_MOUNTAINS) == 0.0f);
+    /* Snow/tundra is sparse-to-bare, never denser than forest. */
+    assert(biome_tree_density(BIOME_SNOW) < biome_tree_density(BIOME_FOREST));
     printf("PASS: tree_density\n");
 }
 
@@ -112,6 +160,8 @@ int main(void) {
     test_surface_block_mapping();
     test_tree_density();
     test_height_bias();
+    test_classify_regions();
+    test_classify_total_and_pure();
     printf("ALL BIOME TESTS PASSED\n");
     return 0;
 }
