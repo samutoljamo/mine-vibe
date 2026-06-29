@@ -53,6 +53,10 @@ World* server_get_world(void) {
     return atomic_load_explicit(&g_server_world, memory_order_acquire);
 }
 
+void server_set_gamemode(Server* s, GameMode gm) {
+    if (s) s->gamemode = gm;
+}
+
 /* server.c is the first translation unit that pulls in both the inventory
  * model and the inventory wire format, so this is where we assert the
  * cross-header invariant. */
@@ -1169,6 +1173,10 @@ static void server_wear_armor(Server* s, ServerClient* c, int dmg) {
 }
 
 void server_damage_player(Server* s, ServerClient* c, int dmg) {
+    /* Creative mode takes zero damage from every source (mob/fall/drown/lava/
+     * starve all funnel through here). Early-out before any health mutation or
+     * broadcast so a no-op never sends a health/death packet. */
+    if (!gamemode_allows_damage(s->gamemode)) return;
     if (c->health <= 0) return;
     if (c->respawn_grace > 0.0f) return;   /* invulnerable after respawn */
     if (dmg <= 0) return;

@@ -16,6 +16,7 @@
 #include "mob.h"
 #include "survival.h"
 #include "chunk_stream.h"   /* ChunkCoord + streaming-policy diff */
+#include "worldsave.h"      /* GameMode + gamemode_allows_damage (read-only) */
 
 typedef struct Renderer Renderer;
 
@@ -79,6 +80,11 @@ typedef struct {
     bool         running;
     World*       world;          /* headless; mob terrain + collision      */
     int          seed;
+    GameMode     gamemode;       /* per-world mode; gates ALL player damage.
+                                  * Defaults to GAMEMODE_SURVIVAL (zero-init)
+                                  * so current behaviour is unchanged until
+                                  * main.c calls server_set_gamemode() after
+                                  * loading WorldMeta. */
     MobSet       mobs;           /* (added/used in Task 5)                  */
     float        mob_spawn_timer; /* accumulates time toward MOB_SPAWN_INTERVAL */
     float        passive_spawn_timer; /* accumulates toward PASSIVE_SPAWN_INTERVAL */
@@ -129,6 +135,11 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
  * this briefly after starting the server thread. The returned world is owned
  * by the server — the caller must NOT destroy it. */
 World* server_get_world(void);
+
+/* Set the world's game mode. In GAMEMODE_CREATIVE the server applies zero
+ * player damage from every source (mob/fall/drown/lava/starve). main.c should
+ * call this after loading WorldMeta, before/while the server loop runs. */
+void server_set_gamemode(Server* s, GameMode gm);
 
 /* Signal the running server loop (on its own thread in host mode) to exit, so
  * the main thread can join it cleanly on shutdown. Thread-safe. */
