@@ -11,6 +11,7 @@
 #include "swapchain.h"
 #include "vertex.h"
 #include "player_model.h"
+#include "mob.h"           /* MobType / MOB_TYPE_COUNT */
 #include "ui/hud.h"
 
 struct Inventory;       /* forward decl, keep includes lean */
@@ -163,8 +164,13 @@ typedef struct Renderer {
     /* Player descriptor sets (per frame) */
     VkDescriptorSet             player_descriptor_sets[MAX_FRAMES_IN_FLIGHT];
 
-    /* Player model (static mesh) */
+    /* Player model (static humanoid mesh — used for players). */
     PlayerModel                 player_model;
+
+    /* Per-type baked mob meshes, indexed by MobType (MOB_TYPE_COUNT entries).
+     * Baked once from mob_model_for() at init; drawn with the same player
+     * pipeline. A zero-initialized (unbaked) entry is skipped at draw. */
+    PlayerModel                 mob_meshes[MOB_TYPE_COUNT];
 
     /* Window */
     GLFWwindow*                 window;

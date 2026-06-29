@@ -224,8 +224,17 @@ void renderer_draw_frame(Renderer* r,
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 r->player_pipeline_layout, 0, 1,
                                 &r->player_descriptor_sets[fi], 0, NULL);
-        player_model_draw(r, cmd, &r->player_model, players, player_count);
-        r->stat_draw_calls += player_count;   /* one instanced/per-player draw each */
+        /* Select a baked mesh per render state: humanoid for players
+         * (mesh_type < 0), the per-type mob mesh otherwise. Falls back to the
+         * humanoid if a mob mesh failed to bake. */
+        for (uint32_t i = 0; i < player_count; i++) {
+            const PlayerModel* mesh = &r->player_model;
+            int mt = players[i].mesh_type;
+            if (mt >= 0 && mt < MOB_TYPE_COUNT && r->mob_meshes[mt].vertex_buffer)
+                mesh = &r->mob_meshes[mt];
+            player_model_draw_one(r, cmd, mesh, &players[i]);
+        }
+        r->stat_draw_calls += player_count;   /* one per-player/mob draw each */
     }
 
     /* Block outline (semi-transparent black wireframe on the targeted block).

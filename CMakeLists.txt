@@ -347,6 +347,7 @@ add_test(NAME mob_ai COMMAND test_mob_ai)
 add_executable(test_mob_render
     tests/test_mob_render.c
     src/mob_render.c
+    src/mob_model.c
 )
 target_include_directories(test_mob_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_mob_render PRIVATE cglm)

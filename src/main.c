@@ -1252,6 +1252,7 @@ int main(int argc, char *argv[])
                 rp_states[rcount].scale[0] = 1.0f;  /* unscaled player model */
                 rp_states[rcount].scale[1] = 1.0f;
                 rp_states[rcount].scale[2] = 1.0f;
+                rp_states[rcount].mesh_type = -1;   /* humanoid player mesh */
                 rcount++;
             }
             for (int i = 0; i < MOB_MAX && rcount < REMOTE_PLAYER_MAX + MOB_MAX; i++) {
@@ -1274,9 +1275,15 @@ int main(int argc, char *argv[])
                 rp_states[rcount].tint2[0] = def.secondary[0];
                 rp_states[rcount].tint2[1] = def.secondary[1];
                 rp_states[rcount].tint2[2] = def.secondary[2];
-                rp_states[rcount].scale[0] = def.half_w / MOB_RENDER_BASE_HALF_W;
-                rp_states[rcount].scale[1] = def.height / MOB_RENDER_BASE_HEIGHT;
-                rp_states[rcount].scale[2] = def.depth  / MOB_RENDER_BASE_DEPTH;
+                /* Each per-type mesh has its own normalized extents, so fit it
+                 * to the type's silhouette (not a shared humanoid base). */
+                float fit[3];
+                mob_model_fit_scale((MobType)m->type, fit);
+                rp_states[rcount].scale[0] = fit[0];
+                rp_states[rcount].scale[1] = fit[1];
+                rp_states[rcount].scale[2] = fit[2];
+                /* Draw this mob with its own per-type baked mesh. */
+                rp_states[rcount].mesh_type = (int)m->type;
                 rcount++;
             }
         }

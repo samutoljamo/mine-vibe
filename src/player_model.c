@@ -1,9 +1,12 @@
 #include "player_model.h"
 #include "renderer.h"
+#include "mob_model.h"
+#include "mob_render.h"
 #include <cglm/cglm.h>
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* 6 body parts × 6 faces × 4 verts = 144 verts, 6 indices per face = 216 */
 #define PLAYER_VERTEX_COUNT 144
@@ -199,6 +202,63 @@ bool player_model_init(Renderer* r, PlayerModel* m)
     return true;
 }
 
+/* ── Per-type mob mesh baker (0xm) ──────────────────────────────────────────
+ * Bakes an arbitrary MobModel box list into a PlayerModel using the SAME
+ * PlayerVertex format + player pipeline. Each box -> 6 faces (24 verts / 36
+ * indices). Two-tone is expressed purely through UVs: upper-body parts use a
+ * top-half skin region (the shader paints those with the primary tint) and legs
+ * use a bottom-half region (secondary tint), so shaders/pipeline are unchanged.
+ *
+ * The MobModel is authored in normalized player-sized space (feet-center
+ * origin). The renderer's per-type silhouette scale (PlayerRenderState.scale)
+ * is applied at draw time, exactly as for the humanoid. */
+bool mob_mesh_bake(Renderer* r, const MobModel* model, PlayerModel* out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!model || model->count <= 0) return false;
+
+    const uint32_t verts_per_box = 24;   /* 6 faces × 4 */
+    const uint32_t idxs_per_box  = 36;   /* 6 faces × 6 */
+    uint32_t vcap = (uint32_t)model->count * verts_per_box;
+    uint32_t icap = (uint32_t)model->count * idxs_per_box;
+
+    PlayerVertex* verts = malloc(vcap * sizeof(PlayerVertex));
+    uint32_t*     idxs  = malloc(icap * sizeof(uint32_t));
+    if (!verts || !idxs) { free(verts); free(idxs); return false; }
+
+    uint32_t vi = 0, ii = 0;
+    for (int b = 0; b < model->count; b++) {
+        const MobBox* box = &model->boxes[b];
+        float hx = box->w * 0.5f, hy = box->h * 0.5f, hz = box->d * 0.5f;
+        float x0 = box->cx - hx, x1 = box->cx + hx;
+        float y0 = box->cy - hy, y1 = box->cy + hy;
+        float z0 = box->cz - hz, z1 = box->cz + hz;
+        /* Route to a skin half so the shader's v<0.5 split picks primary for
+         * upper parts and secondary for legs. */
+        const BoxUV* uv = mob_part_is_upper_tone(box->role) ? &HEAD_UV : &LEG_UV;
+        add_box(verts, &vi, idxs, &ii, x0, y0, z0, x1, y1, z1, uv, false);
+    }
+    assert(vi == vcap && ii == icap);
+
+    bool ok = upload_buffer(r, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            verts, vi * sizeof(PlayerVertex),
+                            &out->vertex_buffer, &out->vertex_alloc);
+    if (ok)
+        ok = upload_buffer(r, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                           idxs, ii * sizeof(uint32_t),
+                           &out->index_buffer, &out->index_alloc);
+    if (!ok) {
+        if (out->vertex_buffer)
+            vmaDestroyBuffer(r->allocator, out->vertex_buffer, out->vertex_alloc);
+        memset(out, 0, sizeof(*out));
+    } else {
+        out->index_count = ii;
+    }
+    free(verts);
+    free(idxs);
+    return ok;
+}
+
 void player_model_destroy(Renderer* r, PlayerModel* m)
 {
     if (m->index_buffer)
@@ -208,48 +268,55 @@ void player_model_destroy(Renderer* r, PlayerModel* m)
     memset(m, 0, sizeof(*m));
 }
 
+void player_model_draw_one(Renderer* r, VkCommandBuffer cmd,
+                           const PlayerModel* m,
+                           const PlayerRenderState* state)
+{
+    if (!m->vertex_buffer) return;
+
+    mat4 model;
+    glm_mat4_identity(model);
+    vec3 pos = { state->pos[0], state->pos[1], state->pos[2] };
+    glm_translate(model, pos);
+    glm_rotate(model, (float)GLM_PI_2 - state->yaw, (vec3){0.0f, 1.0f, 0.0f});
+
+    /* Per-axis body scale (mobs scale their box to their silhouette).
+     * Treat 0 as "unspecified" -> 1.0 so the player path stays unscaled. */
+    float sx = state->scale[0] != 0.0f ? state->scale[0] : 1.0f;
+    float sy = state->scale[1] != 0.0f ? state->scale[1] : 1.0f;
+    float sz = state->scale[2] != 0.0f ? state->scale[2] : 1.0f;
+    glm_scale(model, (vec3){sx, sy, sz});
+
+    /* 96-byte push block: mat4 model (64) then vec4 tint (16) then vec4
+     * tint2 (16), laid out as a flat float array so there is no struct-
+     * alignment padding (cglm may over-align mat4, which would bloat a
+     * struct past the push range and corrupt the tints). */
+    float pc[24];
+    memcpy(pc, model, sizeof(model));   /* 64 bytes: the model matrix */
+    pc[16] = state->tint[0];
+    pc[17] = state->tint[1];
+    pc[18] = state->tint[2];
+    pc[19] = state->tint[3];
+    pc[20] = state->tint2[0];
+    pc[21] = state->tint2[1];
+    pc[22] = state->tint2[2];
+    pc[23] = 0.0f;
+
+    vkCmdPushConstants(cmd, r->player_pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc), pc);
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &m->vertex_buffer, &offset);
+    vkCmdBindIndexBuffer(cmd, m->index_buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, m->index_count, 1, 0, 0, 0);
+}
+
 void player_model_draw(Renderer* r, VkCommandBuffer cmd,
                        const PlayerModel* m,
                        const PlayerRenderState* states, uint32_t count)
 {
     if (!count || !m->vertex_buffer) return;
-
-    for (uint32_t i = 0; i < count; i++) {
-        mat4 model;
-        glm_mat4_identity(model);
-        vec3 pos = { states[i].pos[0], states[i].pos[1], states[i].pos[2] };
-        glm_translate(model, pos);
-        glm_rotate(model, (float)GLM_PI_2 - states[i].yaw, (vec3){0.0f, 1.0f, 0.0f});
-
-        /* Per-axis body scale (mobs scale the shared box to their silhouette).
-         * Treat 0 as "unspecified" -> 1.0 so the player path stays unscaled. */
-        float sx = states[i].scale[0] != 0.0f ? states[i].scale[0] : 1.0f;
-        float sy = states[i].scale[1] != 0.0f ? states[i].scale[1] : 1.0f;
-        float sz = states[i].scale[2] != 0.0f ? states[i].scale[2] : 1.0f;
-        glm_scale(model, (vec3){sx, sy, sz});
-
-        /* 96-byte push block: mat4 model (64) then vec4 tint (16) then vec4
-         * tint2 (16), laid out as a flat float array so there is no struct-
-         * alignment padding (cglm may over-align mat4, which would bloat a
-         * struct past the push range and corrupt the tints). */
-        float pc[24];
-        memcpy(pc, model, sizeof(model));   /* 64 bytes: the model matrix */
-        pc[16] = states[i].tint[0];
-        pc[17] = states[i].tint[1];
-        pc[18] = states[i].tint[2];
-        pc[19] = states[i].tint[3];
-        pc[20] = states[i].tint2[0];
-        pc[21] = states[i].tint2[1];
-        pc[22] = states[i].tint2[2];
-        pc[23] = 0.0f;
-
-        vkCmdPushConstants(cmd, r->player_pipeline_layout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(pc), pc);
-
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m->vertex_buffer, &offset);
-        vkCmdBindIndexBuffer(cmd, m->index_buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, m->index_count, 1, 0, 0, 0);
-    }
+    for (uint32_t i = 0; i < count; i++)
+        player_model_draw_one(r, cmd, m, &states[i]);
 }

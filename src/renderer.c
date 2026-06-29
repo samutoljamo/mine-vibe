@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "pipeline.h"
 #include "player_model.h"
+#include "mob_model.h"
 #include "texture.h"
 #include "frustum.h"
 #include "chunk_mesh.h"
@@ -1080,9 +1081,16 @@ bool renderer_init(Renderer* r, GLFWwindow* window, RenderSettings settings)
                                 &r->player_pipeline_layout, &r->player_pipeline))
         return false;
 
-    /* --- Player model (static mesh) --- */
+    /* --- Player model (static humanoid mesh) --- */
     if (!player_model_init(r, &r->player_model))
         return false;
+
+    /* --- Per-type mob meshes, baked from the pure mob_model box data --- */
+    for (int t = 0; t < MOB_TYPE_COUNT; t++) {
+        const MobModel* mm = mob_model_for((MobType)t);
+        if (!mob_mesh_bake(r, mm, &r->mob_meshes[t]))
+            fprintf(stderr, "Failed to bake mob mesh for type %d\n", t);
+    }
 
     /* --- Block-outline pipeline + per-frame VBs --- */
     if (!create_outline_buffers(r))
@@ -1394,8 +1402,10 @@ void renderer_cleanup(Renderer* r)
     if (r->atlas_image)
         vmaDestroyImage(r->allocator, r->atlas_image, r->atlas_alloc);
 
-    /* Player model */
+    /* Player model + per-type mob meshes */
     player_model_destroy(r, &r->player_model);
+    for (int t = 0; t < MOB_TYPE_COUNT; t++)
+        player_model_destroy(r, &r->mob_meshes[t]);
 
     /* Player pipeline */
     if (r->player_pipeline)

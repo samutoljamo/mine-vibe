@@ -6,6 +6,7 @@
 #include "../src/player.h"      /* JUMP_VEL, needed by mob.h tunables */
 #include "../src/mob.h"
 #include "../src/mob_render.h"
+#include "../src/mob_model.h"
 
 static int rgb_in_range(const float c[3]) {
     for (int i = 0; i < 3; i++)
@@ -79,11 +80,51 @@ static void test_unknown_type_falls_back_to_zombie(void) {
     printf("PASS: unknown_type_falls_back_to_zombie\n");
 }
 
+static void test_part_tone_routing(void) {
+    /* Legs are the only part routed to the lower/secondary tone. */
+    assert(mob_part_is_upper_tone(MOB_PART_HEAD));
+    assert(mob_part_is_upper_tone(MOB_PART_TORSO));
+    assert(mob_part_is_upper_tone(MOB_PART_ARM));
+    assert(mob_part_is_upper_tone(MOB_PART_SNOUT));
+    assert(mob_part_is_upper_tone(MOB_PART_BEAK));
+    assert(mob_part_is_upper_tone(MOB_PART_WING));
+    assert(mob_part_is_upper_tone(MOB_PART_HORN));
+    assert(!mob_part_is_upper_tone(MOB_PART_LEG));
+    printf("PASS: part_tone_routing\n");
+}
+
+static void test_fit_scale(void) {
+    /* For every type, fitting the normalized model to its silhouette yields
+     * positive, finite scales, and reproduces the target dimensions when
+     * applied to the model's measured extent. */
+    for (int t = 0; t < MOB_TYPE_COUNT; t++) {
+        float s[3];
+        mob_model_fit_scale((MobType)t, s);
+        for (int a = 0; a < 3; a++) {
+            assert(s[a] > 0.0f);
+            assert(isfinite(s[a]));
+        }
+        /* Apply scale to the model's Y extent → should equal target height. */
+        const MobModel* m = mob_model_for((MobType)t);
+        float lo = 1e9f, hi = -1e9f;
+        for (int i = 0; i < m->count; i++) {
+            float c = m->boxes[i].cy, h = m->boxes[i].h * 0.5f;
+            if (c - h < lo) lo = c - h;
+            if (c + h > hi) hi = c + h;
+        }
+        float scaled_h = (hi - lo) * s[1];
+        assert(fabsf(scaled_h - mob_render_def((MobType)t).height) < 1e-3f);
+    }
+    printf("PASS: fit_scale\n");
+}
+
 int main(void) {
     test_all_types_sane();
     test_each_type_differs_from_zombie();
     test_known_silhouettes();
     test_unknown_type_falls_back_to_zombie();
+    test_part_tone_routing();
+    test_fit_scale();
     printf("ALL MOB_RENDER TESTS PASSED\n");
     return 0;
 }

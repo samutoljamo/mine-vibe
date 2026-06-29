@@ -1,4 +1,5 @@
 #include "mob_render.h"
+#include "mob_model.h"
 
 /* Per-type render table. Dimensions are absolute (blocks); the renderer scales
  * the shared box model by these relative to MOB_RENDER_BASE_*. The two tones
@@ -49,4 +50,31 @@ MobRenderDef mob_render_def(MobType type) {
     if ((unsigned)type >= (unsigned)MOB_TYPE_COUNT)
         return MOB_RENDER[MOB_ZOMBIE];
     return MOB_RENDER[type];
+}
+
+bool mob_part_is_upper_tone(MobPartRole role) {
+    /* Legs take the lower/secondary tone; everything else (head, torso, arms,
+     * snout, beak, wings, horns) takes the upper/primary tone. */
+    return role != MOB_PART_LEG;
+}
+
+void mob_model_fit_scale(MobType type, float out_scale[3]) {
+    const MobModel* m = mob_model_for(type);
+    float lo[3] = {  1e9f,  1e9f,  1e9f };
+    float hi[3] = { -1e9f, -1e9f, -1e9f };
+    for (int i = 0; i < m->count; i++) {
+        const MobBox* b = &m->boxes[i];
+        float c[3] = { b->cx, b->cy, b->cz };
+        float h[3] = { b->w * 0.5f, b->h * 0.5f, b->d * 0.5f };
+        for (int a = 0; a < 3; a++) {
+            if (c[a] - h[a] < lo[a]) lo[a] = c[a] - h[a];
+            if (c[a] + h[a] > hi[a]) hi[a] = c[a] + h[a];
+        }
+    }
+    MobRenderDef def = mob_render_def(type);
+    float target[3] = { def.half_w * 2.0f, def.height, def.depth * 2.0f };
+    for (int a = 0; a < 3; a++) {
+        float ext = hi[a] - lo[a];
+        out_scale[a] = (ext > 1e-4f) ? target[a] / ext : 1.0f;
+    }
 }
