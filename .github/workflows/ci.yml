@@ -67,3 +67,71 @@ jobs:
           name: minecraft-windows-x86_64
           path: build/Release/minecraft.exe
           if-no-files-found: error
+
+  # ------------------------------------------------------------------------
+  # Render smoke test: launch the game headless under a SOFTWARE Vulkan driver
+  # (Mesa lavapipe) + Xvfb, dump one frame via --screenshot, and assert the
+  # frame is a plausible rendered scene (not blank / not static-noise garbage).
+  # Catches visual-corruption regressions unit tests can't see, e.g. a
+  # greedy-mesher bug that turns terrain into random static.
+  #
+  # The screenshot leg is BEST-EFFORT (continue-on-error) because software
+  # Vulkan in CI is occasionally flaky — we want signal, not a hard gate.
+  # The img_sanity --self-test leg is a HARD gate: it needs no GPU/display and
+  # proves the checker itself still distinguishes good frames from corrupt ones.
+  # ------------------------------------------------------------------------
+  render-smoke:
+    name: render-smoke (lavapipe, best-effort)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # HARD gate: the analyzer must correctly classify synthesized
+      # good/blank/noise/magenta images. No GPU required.
+      - name: img_sanity self-test (hard gate)
+        run: python3 tools/img_sanity.py --self-test
+
+      - name: Install deps (lavapipe + Xvfb + build)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libgl1-mesa-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            libvulkan-dev glslang-tools \
+            mesa-vulkan-drivers vulkan-tools xvfb python3-pil
+
+      - name: Cache FetchContent
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: render-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: render-deps-
+
+      - name: Configure & build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel
+
+      # Everything below is best-effort: software Vulkan can fail to init in CI.
+      - name: Screenshot + image sanity (best-effort)
+        continue-on-error: true
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          # Point the Vulkan loader at the lavapipe (software) ICD.
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: |
+          vulkaninfo --summary || true
+          # Render 240 frames so nearby chunks stream in + mesh, then dump 1 PNG.
+          xvfb-run -a ./build/minecraft --screenshot /tmp/shot.png 240
+          python3 tools/img_sanity.py /tmp/shot.png
+
+      - name: Upload screenshot (best-effort)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-smoke-screenshot
+          path: /tmp/shot.png
+          if-no-files-found: ignore
