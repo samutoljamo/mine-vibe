@@ -93,6 +93,41 @@ static const Recipe g_recipe_table[] = {
     { .name = "Iron Boots", .input_count = 1,
       .inputs = { {ITEM_IRON_INGOT, 4} },
       .output = { ITEM_IRON_BOOTS, 1 } },
+
+    /* --- Diamond tools: diamond ore (no gem item) + sticks ---            */
+    /* Counts mirror the wood/stone tool shapes: pickaxe/axe = 3 mat + 2     */
+    /* sticks, shovel = 1 mat + 2 sticks.                                    */
+    { .name = "Diamond Pickaxe", .input_count = 2,
+      .inputs = { {(ItemId)BLOCK_DIAMOND_ORE, 3}, {ITEM_STICK, 2} },
+      .output = { ITEM_DIAMOND_PICKAXE, 1 } },
+    { .name = "Diamond Axe", .input_count = 2,
+      .inputs = { {(ItemId)BLOCK_DIAMOND_ORE, 3}, {ITEM_STICK, 2} },
+      .output = { ITEM_DIAMOND_AXE, 1 } },
+    { .name = "Diamond Shovel", .input_count = 2,
+      .inputs = { {(ItemId)BLOCK_DIAMOND_ORE, 1}, {ITEM_STICK, 2} },
+      .output = { ITEM_DIAMOND_SHOVEL, 1 } },
+
+    /* --- Swords (all tiers): 2 material + 1 stick --- */
+    { .name = "Wooden Sword", .input_count = 2,
+      .inputs = { {(ItemId)BLOCK_PLANKS, 2}, {ITEM_STICK, 1} },
+      .output = { ITEM_WOOD_SWORD, 1 } },
+    { .name = "Stone Sword", .input_count = 2,
+      .inputs = { {(ItemId)BLOCK_COBBLE, 2}, {ITEM_STICK, 1} },
+      .output = { ITEM_STONE_SWORD, 1 } },
+    { .name = "Iron Sword", .input_count = 2,
+      .inputs = { {ITEM_IRON_INGOT, 2}, {ITEM_STICK, 1} },
+      .output = { ITEM_IRON_SWORD, 1 } },
+    { .name = "Diamond Sword", .input_count = 2,
+      .inputs = { {(ItemId)BLOCK_DIAMOND_ORE, 2}, {ITEM_STICK, 1} },
+      .output = { ITEM_DIAMOND_SWORD, 1 } },
+
+    /* --- Utility blocks --- */
+    { .name = "Furnace", .input_count = 1,
+      .inputs = { {(ItemId)BLOCK_COBBLE, 8} },
+      .output = { (ItemId)BLOCK_FURNACE, 1 } },
+    { .name = "Chest", .input_count = 1,
+      .inputs = { {(ItemId)BLOCK_PLANKS, 8} },
+      .output = { (ItemId)BLOCK_CHEST, 1 } },
 };
 
 #define RECIPE_COUNT ((int)(sizeof(g_recipe_table) / sizeof(g_recipe_table[0])))

@@ -197,9 +197,113 @@ static void test_consumption_and_output_math(void) {
     printf("PASS: consumption_and_output_math\n");
 }
 
+/* a4s.5.1 — diamond tools + swords (all tiers). a4s.5.2 — furnace + chest.
+ * Each new recipe is craftable from an exact ItemCounts snapshot built from its
+ * own inputs, and produces the expected output stack. */
+
+/* Generic: a recipe with the given output exists, is affordable when its inputs
+ * are present in exact amount, and yields >= 1 of the output. */
+static void assert_craftable(ItemId out) {
+    const Recipe* r = find_by_output(out);
+    assert(r);
+    ItemCounts c; memset(&c, 0, sizeof(c));
+    for (int k = 0; k < r->input_count; k++)
+        add(&c, r->inputs[k].item, r->inputs[k].count);
+    assert(crafting_can_make(r, &c));
+    assert(r->output.item == out);
+    assert(r->output.count >= 1);
+    /* One short on the first ingredient must fail. */
+    ItemCounts c2 = c;
+    c2.n[r->inputs[0].item] = (uint16_t)(c2.n[r->inputs[0].item] - 1);
+    assert(!crafting_can_make(r, &c2));
+}
+
+/* Diamond tools: BLOCK_DIAMOND_ORE + sticks, matching wood/stone tool counts
+ * (pickaxe/axe = 3 material + 2 sticks, shovel = 1 material + 2 sticks). */
+static void test_diamond_tools(void) {
+    const ItemId tools[3] = { ITEM_DIAMOND_PICKAXE, ITEM_DIAMOND_AXE,
+                              ITEM_DIAMOND_SHOVEL };
+    for (int i = 0; i < 3; i++) {
+        const Recipe* r = find_by_output(tools[i]);
+        assert(r && r->input_count == 2);
+        bool has_diamond = false, has_stick = false;
+        for (int k = 0; k < r->input_count; k++) {
+            if (r->inputs[k].item == (ItemId)BLOCK_DIAMOND_ORE) has_diamond = true;
+            if (r->inputs[k].item == ITEM_STICK)                has_stick   = true;
+        }
+        assert(has_diamond && has_stick);
+        assert_craftable(tools[i]);
+    }
+    printf("PASS: diamond_tools\n");
+}
+
+/* Swords, all four tiers: 2 material + 1 stick. */
+static void test_swords(void) {
+    struct { ItemId out; ItemId mat; } sw[4] = {
+        { ITEM_WOOD_SWORD,    (ItemId)BLOCK_PLANKS },
+        { ITEM_STONE_SWORD,   (ItemId)BLOCK_COBBLE },
+        { ITEM_IRON_SWORD,    ITEM_IRON_INGOT },
+        { ITEM_DIAMOND_SWORD, (ItemId)BLOCK_DIAMOND_ORE },
+    };
+    for (int i = 0; i < 4; i++) {
+        const Recipe* r = find_by_output(sw[i].out);
+        assert(r && r->input_count == 2);
+        bool has_mat = false, has_stick = false;
+        for (int k = 0; k < r->input_count; k++) {
+            if (r->inputs[k].item == sw[i].mat && r->inputs[k].count == 2) has_mat = true;
+            if (r->inputs[k].item == ITEM_STICK && r->inputs[k].count == 1) has_stick = true;
+        }
+        assert(has_mat && has_stick);
+        assert_craftable(sw[i].out);
+    }
+    printf("PASS: swords\n");
+}
+
+/* Furnace = 8 cobblestone; chest = 8 planks. */
+static void test_furnace_and_chest(void) {
+    const Recipe* furnace = find_by_output((ItemId)BLOCK_FURNACE);
+    assert(furnace && furnace->input_count == 1);
+    assert(furnace->inputs[0].item == (ItemId)BLOCK_COBBLE);
+    assert(furnace->inputs[0].count == 8);
+    assert_craftable((ItemId)BLOCK_FURNACE);
+
+    const Recipe* chest = find_by_output((ItemId)BLOCK_CHEST);
+    assert(chest && chest->input_count == 1);
+    assert(chest->inputs[0].item == (ItemId)BLOCK_PLANKS);
+    assert(chest->inputs[0].count == 8);
+    assert_craftable((ItemId)BLOCK_CHEST);
+    printf("PASS: furnace_and_chest\n");
+}
+
+/* Armour sets (leather + iron tiers) are all present — no diamond armour. */
+static void test_armor_sets_present(void) {
+    const ItemId armor[8] = {
+        ITEM_LEATHER_HELMET, ITEM_LEATHER_CHESTPLATE,
+        ITEM_LEATHER_LEGGINGS, ITEM_LEATHER_BOOTS,
+        ITEM_IRON_HELMET, ITEM_IRON_CHESTPLATE,
+        ITEM_IRON_LEGGINGS, ITEM_IRON_BOOTS,
+    };
+    for (int i = 0; i < 8; i++) assert_craftable(armor[i]);
+    printf("PASS: armor_sets_present\n");
+}
+
+/* The table grew to accommodate the new recipes. */
+static void test_recipe_count_grew(void) {
+    /* Pre-existing rows (planks, sticks, 6 wood/stone tools, torch, iron ingot,
+     * leather, 8 armour) = 19, plus 3 diamond tools + 4 swords + furnace + chest
+     * = 9 new => at least 28. */
+    assert(crafting_recipe_count() >= 28);
+    printf("PASS: recipe_count_grew (%d recipes)\n", crafting_recipe_count());
+}
+
 int main(void) {
     test_table_well_formed();
     test_example_recipes_present();
+    test_diamond_tools();
+    test_swords();
+    test_furnace_and_chest();
+    test_armor_sets_present();
+    test_recipe_count_grew();
     test_can_make_have_and_not_have();
     test_can_make_multi_input();
     test_can_make_null();
