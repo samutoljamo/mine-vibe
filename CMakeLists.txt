@@ -155,6 +155,7 @@ add_executable(minecraft
     src/chunk_map.c
     src/worldgen.c
     src/ore.c
+    src/cave.c
     src/biome.c
     src/daynight.c
     src/village.c
@@ -443,6 +444,22 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_ore PRIVATE m)
 endif()
 add_test(NAME ore COMMAND test_ore)
+
+# Cave carving (pure 3D-noise model, no Vulkan/GLFW required). Uses
+# FastNoiseLite (header-only) for its noise fields, hence the include dir.
+# This test links cave.c without worldgen.c, so it must generate the
+# FastNoiseLite implementation itself (FNL_IMPL); in the main build worldgen.c
+# provides FNL_IMPL, so cave.c never defines it there (avoids duplicate symbols).
+add_executable(test_cave tests/test_cave.c src/cave.c)
+target_include_directories(test_cave PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${fastnoiselite_SOURCE_DIR}/C
+)
+target_compile_definitions(test_cave PRIVATE FNL_IMPL)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_cave PRIVATE m)
+endif()
+add_test(NAME cave COMMAND test_cave)
 
 # Weighted loot-table model (pure, no Vulkan/GLFW required)
 add_executable(test_loot tests/test_loot.c src/loot.c src/item.c src/block.c)
@@ -744,7 +761,7 @@ add_test(NAME worldqueue COMMAND test_worldqueue)
 
 foreach(t minecraft test_block_physics test_agent test_net test_ui
           test_remote_player test_mob test_mesher test_lighting test_client
-          test_inventory test_container test_raycast test_ore test_loot test_audio test_hardness test_biome
+          test_inventory test_container test_raycast test_ore test_cave test_loot test_audio test_hardness test_biome
           test_daynight test_village test_worldgen test_survival test_world_persist
           test_crafting test_smelting test_item test_mining test_armor test_combat test_worldsave
           test_physics test_chunk test_player test_worldqueue test_chunk_stream
