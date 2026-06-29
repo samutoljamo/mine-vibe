@@ -110,6 +110,11 @@ static void ui_set_state(GameUiState s)
 static float g_mining_progress = 0.0f;
 static int   g_mining_x = INT32_MIN, g_mining_y = INT32_MIN, g_mining_z = INT32_MIN;
 
+/* Footstep cadence (63k): accumulate horizontal ground-distance walked and emit
+ * a footstep every FOOTSTEP_STRIDE metres. step_seq varies the per-step gain. */
+static float    g_footstep_accum = 0.0f;
+static uint64_t g_footstep_seq   = 0;
+
 static void scroll_callback(GLFWwindow* w, double xoff, double yoff) {
     (void)w; (void)xoff;
     if (!game_ui_world_active(g_ui_state)) return;   /* hotbar scroll only in-world */
@@ -1052,6 +1057,52 @@ int main(int argc, char *argv[])
             if (fabsf(g_kb_vx) < 0.05f && fabsf(g_kb_vy) < 0.05f &&
                 fabsf(g_kb_vz) < 0.05f)
                 g_kb_vx = g_kb_vy = g_kb_vz = 0.0f;
+        }
+
+        /* Underwater HUD tint (dyb.4.3): the tint is keyed off the CAMERA being
+         * submerged, not the feet, so it appears only when the head dips under
+         * water. Sample the block at the eye position. */
+        {
+            int ex = (int)floorf(g_player.eye_pos[0]);
+            int ey = (int)floorf(g_player.eye_pos[1]);
+            int ez = (int)floorf(g_player.eye_pos[2]);
+            bool head_in_water =
+                world_get_block(world, ex, ey, ez) == BLOCK_WATER;
+            hud_set_underwater(head_in_water);
+        }
+
+        /* Footstep triggers (63k): while moving on solid ground (not airborne,
+         * not in water), accumulate horizontal distance and play a surface-aware
+         * footstep every FOOTSTEP_STRIDE metres. The block under the feet picks
+         * the material. dx/dz is measured from last frame's position. */
+        {
+            static float prev_x = 0.0f, prev_z = 0.0f;
+            static bool  have_prev = false;
+            float cx = g_player.position[0];
+            float cz = g_player.position[2];
+            if (have_prev && g_player.on_ground && !g_player.in_water) {
+                float dx = cx - prev_x;
+                float dz = cz - prev_z;
+                float moved = sqrtf(dx * dx + dz * dz);
+                int steps = footstep_step_count(&g_footstep_accum, moved,
+                                                FOOTSTEP_STRIDE);
+                if (steps > 0) {
+                    /* Block directly beneath the feet (one below the feet cell). */
+                    int fx = (int)floorf(g_player.position[0]);
+                    int fy = (int)floorf(g_player.position[1]) - 1;
+                    int fz = (int)floorf(g_player.position[2]);
+                    BlockID under = world_get_block(world, fx, fy, fz);
+                    FootstepMaterial mat = audio_footstep_material_for_block(under);
+                    for (int s = 0; s < steps; s++)
+                        audio_play_footstep(mat, g_footstep_seq++);
+                }
+            } else {
+                /* Airborne / in water / first frame: don't bank distance. */
+                g_footstep_accum = 0.0f;
+            }
+            prev_x = cx;
+            prev_z = cz;
+            have_prev = true;
         }
 
         /* Hold-to-eat: while F is held and the eat was armed on a still-valid

@@ -33,6 +33,19 @@ bool jump_should_fire(bool space_now, bool space_prev, bool on_ground,
     return space_now && !space_prev && on_ground && !in_water;
 }
 
+int footstep_step_count(float* accum, float added_dist, float stride)
+{
+    if (!accum) return 0;
+    if (added_dist > 0.0f) *accum += added_dist;
+    if (stride <= 0.0f) return 0;
+    int steps = 0;
+    while (*accum >= stride) {
+        *accum -= stride;
+        steps++;
+    }
+    return steps;
+}
+
 void player_init(Player* player, vec3 start_pos)
 {
     camera_init(&player->camera);

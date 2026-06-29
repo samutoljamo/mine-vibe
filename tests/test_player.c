@@ -204,10 +204,40 @@ static void test_held_jump_fires_once(void) {
     printf("PASS: held_jump_fires_once  (fires=%d)\n", fires);
 }
 
+/* Stride-based footstep cadence (pure helper). Distance accumulates across
+ * frames; one step fires per full stride, remainder carried forward. */
+static void test_footstep_step_count(void) {
+    float a = 0.0f;
+    /* Below a stride: no step, distance retained. */
+    assert(footstep_step_count(&a, 1.5f, 2.0f) == 0);
+    assert(fabsf(a - 1.5f) < 1e-5f);
+    /* Crossing one stride: exactly one step, remainder carried. */
+    assert(footstep_step_count(&a, 1.0f, 2.0f) == 1);
+    assert(fabsf(a - 0.5f) < 1e-5f);   /* 2.5 - 2.0 */
+    /* A long single frame yields multiple steps. */
+    a = 0.0f;
+    assert(footstep_step_count(&a, 7.0f, 2.0f) == 3);   /* 3 strides, 1.0 left */
+    assert(fabsf(a - 1.0f) < 1e-5f);
+    /* Zero/negative added distance: no step, accumulator unchanged. */
+    a = 1.0f;
+    assert(footstep_step_count(&a, 0.0f, 2.0f) == 0);
+    assert(fabsf(a - 1.0f) < 1e-5f);
+    assert(footstep_step_count(&a, -5.0f, 2.0f) == 0);
+    assert(fabsf(a - 1.0f) < 1e-5f);
+    /* Invalid stride: no step (still safe). */
+    a = 5.0f;
+    assert(footstep_step_count(&a, 0.0f, 0.0f) == 0);
+    assert(footstep_step_count(&a, 0.0f, -2.0f) == 0);
+    /* NULL accumulator: safe, no steps. */
+    assert(footstep_step_count(NULL, 10.0f, 2.0f) == 0);
+    printf("PASS: footstep_step_count\n");
+}
+
 int main(void) {
     test_init_defaults();
     test_jump_should_fire_edge();
     test_held_jump_fires_once();
+    test_footstep_step_count();
     test_eye_position_and_crouch_dip();
     test_free_noclip_movement();
     test_free_noclip_vertical();
