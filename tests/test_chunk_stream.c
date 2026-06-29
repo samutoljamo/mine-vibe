@@ -206,6 +206,74 @@ static void test_capacity_clamp(void) {
     printf("PASS: capacity_clamp (send clamped to %zu)\n", ns);
 }
 
+/* Per-player streaming priority (0w8.2): the server runs chunk_stream_diff once
+ * per connected client, each centered on THAT client's own chunk, with a fixed
+ * per-tick send budget. This models that loop with two players at different
+ * positions and asserts the priority guarantees the server relies on:
+ *   - each player's batch is centered on its OWN position (nearest coord is the
+ *     player's own chunk, distance 0),
+ *   - each batch is strictly nearest-first by squared distance to that center,
+ *   - each batch respects the same per-tick budget independently (fairness: one
+ *     player loading cannot consume another's budget — they get separate calls),
+ *   - the two batches are computed independently (a chunk close to player A but
+ *     far from player B is prioritized for A, not B). */
+static void test_per_player_priority_and_budget(void) {
+    int rd = 8;
+    const int budget = 4;          /* mirrors SERVER_STREAM_BUDGET in server.c */
+
+    /* Player A centered at (0,0); Player B far away at (40,40). Both fresh. */
+    const int32_t a_cx = 0,  a_cz = 0;
+    const int32_t b_cx = 40, b_cz = 40;
+
+    ChunkCoord sendA[CAP], sendB[CAP], unload[CAP];
+    size_t nsA = 0, nsB = 0, nu = 0;
+
+    /* One server-tick worth of streaming for each player (independent calls). */
+    chunk_stream_diff(a_cx, a_cz, rd, NULL, 0,
+                      sendA, CAP, &nsA, budget, unload, CAP, &nu);
+    assert(nu == 0);
+    chunk_stream_diff(b_cx, b_cz, rd, NULL, 0,
+                      sendB, CAP, &nsB, budget, unload, CAP, &nu);
+    assert(nu == 0);
+
+    /* Each player gets at most `budget` chunks this tick (independent budgets:
+     * A consuming its budget does not reduce B's). */
+    assert((int)nsA <= budget && nsA > 0);
+    assert((int)nsB <= budget && nsB > 0);
+
+    /* Each batch is centered on that player's OWN chunk (distance-0 first). */
+    assert(sendA[0].cx == a_cx && sendA[0].cz == a_cz);
+    assert(sendB[0].cx == b_cx && sendB[0].cz == b_cz);
+
+    /* Each batch is strictly nearest-first by squared distance to its center. */
+    long prevA = -1;
+    for (size_t i = 0; i < nsA; i++) {
+        long dx = sendA[i].cx - a_cx, dz = sendA[i].cz - a_cz;
+        long d = dx*dx + dz*dz;
+        assert(d >= prevA); prevA = d;
+    }
+    long prevB = -1;
+    for (size_t i = 0; i < nsB; i++) {
+        long dx = sendB[i].cx - b_cx, dz = sendB[i].cz - b_cz;
+        long d = dx*dx + dz*dz;
+        assert(d >= prevB); prevB = d;
+    }
+
+    /* Independence: every chunk in A's batch is in A's disc (and, being near the
+     * origin while B is at (40,40), far outside B's disc), and vice versa. A
+     * player's budget is spent only on chunks near that player. */
+    for (size_t i = 0; i < nsA; i++) {
+        assert(chunk_stream_in_range(a_cx, a_cz, sendA[i].cx, sendA[i].cz, rd));
+        assert(!chunk_stream_in_range(b_cx, b_cz, sendA[i].cx, sendA[i].cz, rd));
+    }
+    for (size_t i = 0; i < nsB; i++) {
+        assert(chunk_stream_in_range(b_cx, b_cz, sendB[i].cx, sendB[i].cz, rd));
+        assert(!chunk_stream_in_range(a_cx, a_cz, sendB[i].cx, sendB[i].cz, rd));
+    }
+    printf("PASS: per_player_priority_and_budget (A %zu, B %zu, budget %d)\n",
+           nsA, nsB, budget);
+}
+
 int main(void) {
     test_fresh_full_disc();
     test_nearest_first();
@@ -214,6 +282,7 @@ int main(void) {
     test_move_one_chunk();
     test_unload_after_teleport();
     test_capacity_clamp();
+    test_per_player_priority_and_budget();
     printf("ALL CHUNK_STREAM TESTS PASSED\n");
     return 0;
 }
