@@ -8,6 +8,7 @@
 #include "../src/block.h"
 #include "../src/biome.h"
 #include "../src/cave.h"
+#include "../src/dungeon.h"
 
 /* SEA_LEVEL is private to worldgen.c; mirror its value here. */
 #define SEA_LEVEL 62
@@ -327,6 +328,78 @@ static void test_cave_entrances(void) {
     printf("PASS: cave_entrances\n");
 }
 
+/* ── 10. Dungeon rooms in generated chunks ──────────────────────────────────
+ * Locate a present dungeon (pure model), generate every chunk its footprint
+ * overlaps, and reconstruct the room from the real block array. Assert: the
+ * shell voxels are mossy cobblestone (except where bedrock was protected), the
+ * interior is air, and exactly one chest sits inside. Also asserts cross-chunk
+ * continuity at the generation level: each chunk wrote only its slice and the
+ * slices reassemble into one coherent room (no clipping, no duplication). */
+static void test_dungeon_room(void) {
+    int seed = 1337;
+
+    /* Find a present dungeon candidate in a modest cell range. */
+    DungeonRoom r = (DungeonRoom){0};
+    for (int cgx = -20; cgx <= 20 && !r.present; cgx++)
+        for (int cgz = -20; cgz <= 20 && !r.present; cgz++) {
+            DungeonRoom c = dungeon_cell_at(cgx, cgz, (uint32_t)seed);
+            if (c.present) r = c;
+        }
+    assert(r.present);
+
+    int x1 = r.x0 + r.w - 1, y1 = r.y0 + r.h - 1, z1 = r.z0 + r.d - 1;
+
+    /* Generate all chunks the footprint spans, cache pointers in a small grid. */
+    int cx0 = (int)floor((double)r.x0 / CHUNK_X);
+    int cx1 = (int)floor((double)x1   / CHUNK_X);
+    int cz0 = (int)floor((double)r.z0 / CHUNK_Z);
+    int cz1 = (int)floor((double)z1   / CHUNK_Z);
+
+    long chests = 0, interior_air = 0, shell_mossy = 0, shell_total = 0;
+    /* Read a world voxel by locating its chunk among the generated set. */
+    for (int cx = cx0; cx <= cx1; cx++)
+        for (int cz = cz0; cz <= cz1; cz++) {
+            Chunk* c = gen(cx, cz, seed);
+            int base_x = cx * CHUNK_X, base_z = cz * CHUNK_Z;
+            for (int wx = r.x0; wx <= x1; wx++)
+                for (int wz = r.z0; wz <= z1; wz++) {
+                    int lx = wx - base_x, lz = wz - base_z;
+                    if (lx < 0 || lx >= CHUNK_X || lz < 0 || lz >= CHUNK_Z)
+                        continue; /* not this chunk's slice */
+                    for (int wy = r.y0; wy <= y1; wy++) {
+                        BlockID b = chunk_get_block(c, lx, wy, lz);
+                        int role = dungeon_voxel_role(&r, wx, wy, wz);
+                        if (wx == r.chest_x && wy == r.chest_y &&
+                            wz == r.chest_z) {
+                            assert(b == BLOCK_CHEST);
+                            chests++;
+                            continue;
+                        }
+                        if (role == 1) {
+                            shell_total++;
+                            /* Shell is mossy cobble unless bedrock was protected
+                             * (never happens this high, but allow it defensively). */
+                            if (b == BLOCK_MOSSY_COBBLESTONE) shell_mossy++;
+                            else assert(b == BLOCK_BEDROCK);
+                        } else if (role == 2) {
+                            assert(b == BLOCK_AIR);
+                            interior_air++;
+                        }
+                    }
+                }
+            chunk_destroy(c);
+        }
+
+    printf("  dungeon at (%d,%d,%d) %dx%dx%d : shell_mossy=%ld/%ld "
+           "interior_air=%ld chests=%ld\n",
+           r.x0, r.y0, r.z0, r.w, r.h, r.d,
+           shell_mossy, shell_total, interior_air, chests);
+    assert(chests == 1);            /* exactly one chest, placed once */
+    assert(shell_mossy == shell_total); /* full mossy-cobble shell */
+    assert(interior_air > 0);       /* genuinely hollow */
+    printf("PASS: dungeon_room\n");
+}
+
 int main(void) {
     test_deterministic();
     test_bedrock_floor();
@@ -337,6 +410,7 @@ int main(void) {
     test_biome_surface_blocks();
     test_cave_density();
     test_cave_entrances();
+    test_dungeon_room();
     printf("ALL WORLDGEN TESTS PASSED\n");
     return 0;
 }

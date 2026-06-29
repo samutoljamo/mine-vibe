@@ -7,6 +7,7 @@
 #include "village.h"
 #include "biome.h"
 #include "cave.h"
+#include "dungeon.h"
 #include <stdlib.h>
 #include <math.h>
 
@@ -143,6 +144,79 @@ static void carve_caves(Chunk* chunk, int seed,
     }
 }
 
+/* Emit the slice of any underground dungeon room overlapping this chunk.
+ *
+ * Placement is the pure model in src/dungeon.c (a function of cell + seed only),
+ * so a room straddling a chunk boundary materializes bit-identically from either
+ * side: each chunk simply writes the voxels of the room that fall within its own
+ * x/z extent. We consult this chunk's placement cell plus its 8 neighbours,
+ * because a jittered room can sit anywhere inside a cell and a cell is larger
+ * than a chunk — a neighbouring cell's room can therefore reach into this chunk.
+ *
+ * Voxels written:
+ *   - shell (walls/floor/ceiling): BLOCK_MOSSY_COBBLESTONE
+ *   - interior: BLOCK_AIR (hollow room)
+ *   - one BLOCK_CHEST on the interior floor against a corner wall
+ *
+ * The shell never overwrites bedrock, keeping the y=0 floor and the bedrock mix
+ * band intact (the placement band sits at y>=DUNGEON_MIN_Y, well above it). The
+ * chest is placed as a bare block; populating it with loot requires a
+ * server-side block-entity at generation time and is a follow-up. */
+static void generate_dungeons(Chunk* chunk, int seed)
+{
+    int base_x = chunk->cx * CHUNK_X;
+    int base_z = chunk->cz * CHUNK_Z;
+    int chunk_x0 = base_x, chunk_x1 = base_x + CHUNK_X - 1;
+    int chunk_z0 = base_z, chunk_z1 = base_z + CHUNK_Z - 1;
+
+    int ccx = dungeon_cell_index(base_x);
+    int ccz = dungeon_cell_index(base_z);
+
+    for (int dcx = -1; dcx <= 1; dcx++)
+        for (int dcz = -1; dcz <= 1; dcz++) {
+            DungeonRoom r = dungeon_cell_at(ccx + dcx, ccz + dcz, (uint32_t)seed);
+            if (!r.present) continue;
+
+            int rx1 = r.x0 + r.w - 1;
+            int rz1 = r.z0 + r.d - 1;
+            /* AABB reject: room footprint vs this chunk. */
+            if (rx1 < chunk_x0 || r.x0 > chunk_x1 ||
+                rz1 < chunk_z0 || r.z0 > chunk_z1)
+                continue;
+
+            /* Clamp the room's world-x/z range to this chunk and write only the
+             * overlapping voxels. */
+            int x_lo = r.x0 > chunk_x0 ? r.x0 : chunk_x0;
+            int x_hi = rx1  < chunk_x1 ? rx1  : chunk_x1;
+            int z_lo = r.z0 > chunk_z0 ? r.z0 : chunk_z0;
+            int z_hi = rz1  < chunk_z1 ? rz1  : chunk_z1;
+
+            for (int wx = x_lo; wx <= x_hi; wx++)
+                for (int wz = z_lo; wz <= z_hi; wz++)
+                    for (int wy = r.y0; wy < r.y0 + r.h; wy++) {
+                        if (wy <= 0 || wy >= CHUNK_Y) continue;
+                        int lx = wx - base_x, lz = wz - base_z;
+                        int role = dungeon_voxel_role(&r, wx, wy, wz);
+                        if (role == 1) {
+                            /* Shell — never replace bedrock. */
+                            if (chunk_get_block(chunk, lx, wy, lz) != BLOCK_BEDROCK)
+                                chunk_set_block(chunk, lx, wy, lz,
+                                                BLOCK_MOSSY_COBBLESTONE);
+                        } else if (role == 2) {
+                            chunk_set_block(chunk, lx, wy, lz, BLOCK_AIR);
+                        }
+                    }
+
+            /* Chest: only if it lands in this chunk. */
+            if (r.chest_x >= chunk_x0 && r.chest_x <= chunk_x1 &&
+                r.chest_z >= chunk_z0 && r.chest_z <= chunk_z1 &&
+                r.chest_y > 0 && r.chest_y < CHUNK_Y) {
+                chunk_set_block(chunk, r.chest_x - base_x, r.chest_y,
+                                r.chest_z - base_z, BLOCK_CHEST);
+            }
+        }
+}
+
 void worldgen_generate(Chunk* chunk, int seed)
 {
     /* Cache noise states per worker thread — seed is constant after startup.
@@ -234,6 +308,11 @@ void worldgen_generate(Chunk* chunk, int seed)
             }
         }
     }
+
+    /* Carve underground dungeon rooms (rare, mossy-cobble shell + chest). Done
+     * after caves/ores so the room shell reclaims any cave-air or ore that the
+     * earlier passes left inside its footprint, giving a clean enclosed room. */
+    generate_dungeons(chunk, seed);
 
     /* Place trees: per-biome density on grass blocks, constrained to [2..13]
      * local X/Z. Desert/mountain biomes report density 0 (and lack grass), so
