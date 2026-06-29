@@ -172,6 +172,63 @@ static void test_drop_when_full(void) {
     printf("PASS: drop_when_full\n");
 }
 
+/* Rain emits downward-falling (vy < 0) particles; count scales with intensity;
+ * intensity 0 spawns none; bounded by PARTICLE_MAX; deterministic for a seed. */
+static void test_emit_rain(void) {
+    ParticleSystem ps;
+
+    /* Intensity 0 spawns nothing. */
+    particle_system_init(&ps, 1u);
+    particle_emit_rain(&ps, 0, 64, 0, 0.0f);
+    assert(ps.count == 0);
+
+    /* Light rain spawns some downward-moving droplets. */
+    particle_system_init(&ps, 1u);
+    particle_emit_rain(&ps, 0, 64, 0, 0.5f);
+    int light = ps.count;
+    assert(light > 0 && light <= PARTICLE_MAX);
+    for (int i = 0; i < ps.count; i++) {
+        assert(ps.p[i].vy < 0.0f);   /* falling DOWN */
+        assert(ps.p[i].life > 0.0f);
+        assert(ps.p[i].max_life > 0.0f);
+        assert(ps.p[i].size > 0.0f);
+        /* spawned above the player center */
+        assert(ps.p[i].y > 64.0f);
+    }
+
+    /* Heavier rain spawns more than lighter rain. */
+    particle_system_init(&ps, 1u);
+    particle_emit_rain(&ps, 0, 64, 0, 1.0f);
+    int heavy = ps.count;
+    assert(heavy > light);
+
+    /* Never overflows the pool. */
+    particle_system_init(&ps, 9u);
+    for (int i = 0; i < 10000; i++) {
+        particle_emit_rain(&ps, 0, 64, 0, 1.0f);
+        assert(ps.count >= 0 && ps.count <= PARTICLE_MAX);
+    }
+
+    printf("PASS: emit_rain (light %d, heavy %d)\n", light, heavy);
+}
+
+/* Rain is deterministic for a fixed seed + identical call sequence. */
+static void test_rain_determinism(void) {
+    ParticleSystem a, b;
+    particle_system_init(&a, 0x5A1Du);
+    particle_system_init(&b, 0x5A1Du);
+    for (int i = 0; i < 30; i++) {
+        particle_emit_rain(&a, 1, 64, 3, 0.7f);
+        particle_emit_rain(&b, 1, 64, 3, 0.7f);
+        particle_update(&a, 0.05f);
+        particle_update(&b, 0.05f);
+    }
+    assert(a.count == b.count);
+    assert(a.rng == b.rng);
+    assert(memcmp(a.p, b.p, sizeof(Particle) * (size_t)a.count) == 0);
+    printf("PASS: rain_determinism\n");
+}
+
 /* Deterministic for a fixed seed + identical call sequence. */
 static void test_determinism(void) {
     ParticleSystem a, b;
@@ -202,6 +259,8 @@ int main(void) {
     test_partial_compaction();
     test_no_overflow();
     test_drop_when_full();
+    test_emit_rain();
+    test_rain_determinism();
     test_determinism();
     printf("ALL PARTICLE TESTS PASSED\n");
     return 0;

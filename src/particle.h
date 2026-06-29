@@ -61,4 +61,14 @@ void particle_emit_explosion(ParticleSystem *ps, float x, float y, float z);
 /* Spawn an upward water-droplet spray at (x,y,z). */
 void particle_emit_splash(ParticleSystem *ps, float x, float y, float z);
 
+/* Spawn a small batch of fast DOWNWARD-falling rain streaks in a box centered
+ * horizontally on (cx,cz) and starting ABOVE cy, so weather is visible around
+ * the player. `intensity` in [0,1] scales the per-call droplet count (0 spawns
+ * none). Droplets are thin, bluish and short-lived (they fall fast and expire
+ * before piling up); the count is capped so the pool keeps headroom for other
+ * effects, and any excess is dropped when the pool is full. Deterministic given
+ * the system rng. */
+void particle_emit_rain(ParticleSystem *ps, float cx, float cy, float cz,
+                        float intensity);
+
 #endif /* PARTICLE_H */

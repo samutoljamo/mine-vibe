@@ -151,3 +151,52 @@ void particle_emit_splash(ParticleSystem *ps, float x, float y, float z)
             break;
     }
 }
+
+/* Per-call droplet count at full intensity. Kept small so a few hundred frames
+ * of rain plus block-break bursts never saturate PARTICLE_MAX; combined with the
+ * short lifetime below this holds the live rain count well under the cap. */
+#define PARTICLE_RAIN_MAX_PER_CALL 12
+/* Horizontal half-extent of the spawn box around the player (world units). */
+#define PARTICLE_RAIN_RADIUS 8.0f
+/* Height above the player center where droplets start. */
+#define PARTICLE_RAIN_HEIGHT 10.0f
+
+void particle_emit_rain(ParticleSystem *ps, float cx, float cy, float cz,
+                        float intensity)
+{
+    if (!ps || intensity <= 0.0f)
+        return;
+    if (intensity > 1.0f)
+        intensity = 1.0f;
+
+    /* Scale the batch by intensity; at least one droplet for any positive
+     * intensity so light rain is still visible. Round to nearest. */
+    int count = (int)(PARTICLE_RAIN_MAX_PER_CALL * intensity + 0.5f);
+    if (count < 1)
+        count = 1;
+
+    for (int i = 0; i < count; i++) {
+        Particle pt;
+        /* Random offset in a box centered on the player, spawned overhead. */
+        pt.x = cx + rng_range(&ps->rng, -PARTICLE_RAIN_RADIUS, PARTICLE_RAIN_RADIUS);
+        pt.y = cy + rng_range(&ps->rng, PARTICLE_RAIN_HEIGHT * 0.5f,
+                                        PARTICLE_RAIN_HEIGHT);
+        pt.z = cz + rng_range(&ps->rng, -PARTICLE_RAIN_RADIUS, PARTICLE_RAIN_RADIUS);
+        /* Fast downward streak with a faint horizontal drift. Gravity will
+         * accelerate it further during update. */
+        pt.vx = rng_range(&ps->rng, -0.4f, 0.4f);
+        pt.vy = rng_range(&ps->rng, -16.0f, -12.0f);
+        pt.vz = rng_range(&ps->rng, -0.4f, 0.4f);
+        /* Short life so droplets clear the player's vicinity and don't pile up. */
+        pt.max_life = rng_range(&ps->rng, 0.5f, 0.9f);
+        pt.life = pt.max_life;
+        /* Thin streaks. */
+        pt.size = rng_range(&ps->rng, 0.03f, 0.06f);
+        /* Bluish-grey rain. */
+        pt.r = rng_range(&ps->rng, 0.35f, 0.5f);
+        pt.g = rng_range(&ps->rng, 0.45f, 0.6f);
+        pt.b = rng_range(&ps->rng, 0.75f, 0.95f);
+        if (!particle_push(ps, &pt))
+            break; /* pool full: drop the rest (block-break bursts win) */
+    }
+}
