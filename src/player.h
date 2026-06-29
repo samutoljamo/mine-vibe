@@ -61,4 +61,19 @@ void player_update(Player* player, GLFWwindow* window, World* world, float dt);
 bool jump_should_fire(bool space_now, bool space_prev, bool on_ground,
                       bool in_water);
 
+/* Default horizontal distance (world units / metres) between footstep sounds. */
+#define FOOTSTEP_STRIDE 2.0f
+
+/* Stride-based footstep cadence (pure, unit-tested). Advances `*accum` by the
+ * horizontal distance walked this frame and reports how many footsteps are due.
+ * For every full `stride` accumulated it emits one step, carrying the remainder
+ * forward in `*accum` (so cadence is distance-based, not frame-rate-based).
+ *
+ * Caller is responsible for only calling this while the player is actually
+ * stepping (grounded, moving, out of water); this helper is purely the
+ * distance->step-count quantiser. Negative/zero stride or non-positive added
+ * distance yields 0 steps and leaves the accumulator unchanged-by-this-call
+ * (added distance is still applied when positive). */
+int footstep_step_count(float* accum, float added_dist, float stride);
+
 #endif
