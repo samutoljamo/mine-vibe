@@ -192,6 +192,17 @@ typedef struct Renderer {
     void*            outline_vb_mapped[MAX_FRAMES_IN_FLIGHT];
     uint32_t         outline_vert_count;   /* reset to 0 per frame; one block emits 24 verts */
 
+    /* Particle pipeline: camera-facing billboard quads built CPU-side from the
+     * client's live ParticleSystem each frame and drawn in the world renderpass
+     * (depth-tested vs the scene, depth-write off, alpha-blended). Per-frame
+     * dynamic VBs mirror the outline buffers. */
+    VkPipeline       particle_pipeline;
+    VkPipelineLayout particle_pipeline_layout;
+    VkBuffer         particle_vb[MAX_FRAMES_IN_FLIGHT];
+    VmaAllocation    particle_vb_alloc[MAX_FRAMES_IN_FLIGHT];
+    void*            particle_vb_mapped[MAX_FRAMES_IN_FLIGHT];
+    uint32_t         particle_vert_count;   /* uploaded this frame (6 per particle) */
+
     /* Per-frame perf counters, written by renderer_draw_frame each frame and
      * read back by the caller for the stats overlay. visible_chunks counts the
      * chunk meshes that survived frustum culling and were drawn; draw_calls

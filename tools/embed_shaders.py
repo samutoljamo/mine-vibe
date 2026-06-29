@@ -20,6 +20,8 @@ SHADERS = [
     ('build/shaders/hud.frag.spv',     'g_hud_frag_spv'),
     ('build/shaders/outline.vert.spv', 'g_outline_vert_spv'),
     ('build/shaders/outline.frag.spv', 'g_outline_frag_spv'),
+    ('build/shaders/particle.vert.spv', 'g_particle_vert_spv'),
+    ('build/shaders/particle.frag.spv', 'g_particle_frag_spv'),
 ]
 
 def spv_to_c(path, name):
