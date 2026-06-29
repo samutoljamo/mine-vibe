@@ -133,3 +133,4 @@
 {"id":"int-ba7a54b2","kind":"field_change","created_at":"2026-06-29T06:08:36.158511101Z","actor":"Samu Toljamo","issue_id":"mine-vibe-wa8.1.2","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-5f62496e","kind":"field_change","created_at":"2026-06-29T06:08:36.982922294Z","actor":"Samu Toljamo","issue_id":"mine-vibe-wa8.2.1","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-f23f7cca","kind":"field_change","created_at":"2026-06-29T06:08:37.846704162Z","actor":"Samu Toljamo","issue_id":"mine-vibe-wa8.3.2","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-c9cabf6e","kind":"field_change","created_at":"2026-06-29T06:13:34.675764203Z","actor":"Samu Toljamo","issue_id":"mine-vibe-a4s.2.7","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}

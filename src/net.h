@@ -61,7 +61,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 11
+#define NET_PROTOCOL_VERSION 12   /* 12: crafting table reindexed (placeholder ore->ingot craft removed) — PKT_CRAFT recipe indices shifted */
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
