@@ -112,6 +112,13 @@ typedef struct {
      * outbound keepalive that holds the NAT pinhole open while idle. */
     double last_server_recv_time;
     double last_keepalive_time;
+
+    /* Last container snapshot received (PKT_CONTAINER_STATE). The full
+     * interactive container UI is a separate ticket (a4s.6.4); this client just
+     * stores the most recent state so the UI/agent can read it. `open` is true
+     * once the local player has opened a container and not yet closed it. */
+    bool                 container_open;
+    ContainerStatePacket container;   /* valid when container_open */
 } Client;
 
 void client_init(Client* c, NetThread* net,
@@ -162,6 +169,22 @@ void client_send_equip(Client* c, uint8_t slot);
  * one, restores hunger, and replies with fresh PKT_INVENTORY + PKT_PLAYER_HEALTH
  * snapshots. */
 void client_send_eat(Client* c, uint8_t slot);
+
+/* Open the container block-entity (furnace/chest) at (x,y,z): sends a reliable
+ * PKT_CONTAINER_OPEN. The server validates reach and replies with
+ * PKT_CONTAINER_STATE, which client_poll stores in c->container. */
+void client_send_container_open(Client* c, int x, int y, int z);
+
+/* Stop viewing the container at (x,y,z): sends a reliable PKT_CONTAINER_CLOSE
+ * and clears the local open flag. */
+void client_send_container_close(Client* c, int x, int y, int z);
+
+/* Move `count` items between the container at (x,y,z) and the player inventory.
+ * `dir` is a ContainerNetDir (CONTAINER_DIR_TO_INV moves a container slot to the
+ * inventory; CONTAINER_DIR_FROM_INV moves an inventory slot into the container).
+ * The server validates + applies the move and resends container + inventory. */
+void client_send_container_action(Client* c, int x, int y, int z,
+                                  uint8_t slot, uint8_t dir, uint8_t count);
 
 /* Process all inbound messages from the net thread.
  * Returns number of PKT_WORLD_STATE packets processed. */

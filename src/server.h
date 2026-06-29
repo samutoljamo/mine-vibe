@@ -64,6 +64,14 @@ typedef struct {
     uint16_t           chunk_msg_id;        /* next PKT_CHUNK_DATA reassembly id    */
 } ServerClient;
 
+/* A container block-entity (furnace or chest) lives at a fixed block position
+ * and owns its contents server-side. The full struct (which embeds the
+ * smelting/container models) is defined privately in server.c, so server.h stays
+ * free of those headers — and of their `ItemStack` typedef, which would clash
+ * with crafting.h's identically-named one in any TU that includes both. The
+ * Server here only holds an opaque pointer to a dynamic array of them. */
+typedef struct BlockEntity BlockEntity;
+
 typedef struct {
     NetThread*   net;
     ServerClient clients[SERVER_MAX_CLIENTS];
@@ -89,6 +97,13 @@ typedef struct {
     bool         overlay_dirty;   /* edits since last flush                   */
     float        save_timer;      /* accumulates time toward SERVER_SAVE_INTERVAL */
     char         save_path[1024];
+
+    /* Container block-entities (furnaces + chests). Created when a
+     * BLOCK_FURNACE/BLOCK_CHEST is placed, destroyed (contents returned to the
+     * breaker) when broken. Dynamic array, searched by block position. */
+    BlockEntity* block_entities;
+    size_t       block_entity_count;
+    size_t       block_entity_cap;
 } Server;
 
 /* Blocking server loop — call from a dedicated thread or main().

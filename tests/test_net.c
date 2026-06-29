@@ -241,6 +241,106 @@ static void test_eat_roundtrip(void) {
     printf("PASS: eat_roundtrip\n");
 }
 
+static void test_container_open_roundtrip(void) {
+    uint8_t buf[64];
+    PacketHeader hdr = { .type = PKT_CONTAINER_OPEN, .player_id = 2 };
+    size_t off = net_write_container_open(buf, &hdr, -5, 70, 12);
+    assert(off == HEADER_WIRE_SIZE + 12);
+
+    PacketHeader h; int32_t x, y, z;
+    assert(net_parse_container_open(buf, off, &h, &x, &y, &z));
+    assert(h.type == PKT_CONTAINER_OPEN && h.player_id == 2);
+    assert(x == -5 && y == 70 && z == 12);
+
+    /* CLOSE shares the wire shape. */
+    assert(net_parse_container_close(buf, off, &h, &x, &y, &z));
+    assert(x == -5 && y == 70 && z == 12);
+
+    for (size_t L = 0; L < off; L++) {
+        uint8_t* t = malloc(L ? L : 1); memcpy(t, buf, L);
+        assert(!net_parse_container_open(t, L, &h, &x, &y, &z)); free(t);
+    }
+    printf("PASS: container_open_roundtrip\n");
+}
+
+static void test_container_action_roundtrip(void) {
+    uint8_t buf[64];
+    PacketHeader hdr = { .type = PKT_CONTAINER_ACTION, .player_id = 7 };
+    size_t off = net_write_container_action(buf, &hdr, 3, 64, -9,
+                                            5, CONTAINER_DIR_FROM_INV, 17);
+    assert(off == HEADER_WIRE_SIZE + 12 + 3);
+
+    PacketHeader h; int32_t x, y, z; uint8_t slot, dir, count;
+    assert(net_parse_container_action(buf, off, &h, &x, &y, &z,
+                                      &slot, &dir, &count));
+    assert(h.type == PKT_CONTAINER_ACTION && h.player_id == 7);
+    assert(x == 3 && y == 64 && z == -9);
+    assert(slot == 5 && dir == CONTAINER_DIR_FROM_INV && count == 17);
+
+    for (size_t L = 0; L < off; L++) {
+        uint8_t* t = malloc(L ? L : 1); memcpy(t, buf, L);
+        assert(!net_parse_container_action(t, L, &h, &x, &y, &z,
+                                           &slot, &dir, &count)); free(t);
+    }
+    printf("PASS: container_action_roundtrip\n");
+}
+
+static void test_container_state_roundtrip(void) {
+    uint8_t buf[512];
+    PacketHeader hdr = { .type = PKT_CONTAINER_STATE, .player_id = 0 };
+
+    /* --- Furnace variant --- */
+    ContainerStatePacket f = {0};
+    f.x = 1; f.y = 2; f.z = 3; f.type = CONTAINER_NET_FURNACE;
+    f.f_input = 14;  f.f_input_count  = 8;
+    f.f_fuel  = 9;   f.f_fuel_count   = 3;
+    f.f_output = 21; f.f_output_count = 2;
+    f.f_burn_ticks_left = 150;
+    f.f_cook_progress   = 77;
+    size_t foff = net_write_container_state(buf, &hdr, &f);
+
+    PacketHeader h; ContainerStatePacket g;
+    assert(net_parse_container_state(buf, foff, &h, &g));
+    assert(h.type == PKT_CONTAINER_STATE);
+    assert(g.x == 1 && g.y == 2 && g.z == 3 && g.type == CONTAINER_NET_FURNACE);
+    assert(g.f_input == 14 && g.f_input_count == 8);
+    assert(g.f_fuel == 9 && g.f_fuel_count == 3);
+    assert(g.f_output == 21 && g.f_output_count == 2);
+    assert(g.f_burn_ticks_left == 150 && g.f_cook_progress == 77);
+    for (size_t L = 0; L < foff; L++) {
+        uint8_t* t = malloc(L ? L : 1); memcpy(t, buf, L);
+        assert(!net_parse_container_state(t, L, &h, &g)); free(t);
+    }
+
+    /* --- Chest variant --- */
+    ContainerStatePacket cst = {0};
+    cst.x = -7; cst.y = 40; cst.z = 8; cst.type = CONTAINER_NET_CHEST;
+    for (int i = 0; i < CONTAINER_NET_CHEST_SLOTS; i++) {
+        cst.slots[i].item  = (uint16_t)(i + 1);
+        cst.slots[i].count = (uint8_t)(i % 64);
+    }
+    size_t coff = net_write_container_state(buf, &hdr, &cst);
+    assert(coff == HEADER_WIRE_SIZE + 13 + CONTAINER_NET_CHEST_SLOTS * 3);
+
+    ContainerStatePacket cg;
+    assert(net_parse_container_state(buf, coff, &h, &cg));
+    assert(cg.x == -7 && cg.y == 40 && cg.z == 8 && cg.type == CONTAINER_NET_CHEST);
+    for (int i = 0; i < CONTAINER_NET_CHEST_SLOTS; i++) {
+        assert(cg.slots[i].item == (uint16_t)(i + 1));
+        assert(cg.slots[i].count == (uint8_t)(i % 64));
+    }
+    for (size_t L = 0; L < coff; L++) {
+        uint8_t* t = malloc(L ? L : 1); memcpy(t, buf, L);
+        assert(!net_parse_container_state(t, L, &h, &cg)); free(t);
+    }
+
+    /* Unknown type tag is rejected even at full length. */
+    buf[HEADER_WIRE_SIZE + 12] = 0xEE;   /* clobber the type byte */
+    assert(!net_parse_container_state(buf, coff, &h, &cg));
+
+    printf("PASS: container_state_roundtrip\n");
+}
+
 static void test_disconnect_reason_roundtrip(void) {
     uint8_t buf[64];
     size_t off = 0;
@@ -994,6 +1094,9 @@ int main(void)
     test_legacy_connect_request_reads_version_zero();
     test_craft_roundtrip();
     test_eat_roundtrip();
+    test_container_open_roundtrip();
+    test_container_action_roundtrip();
+    test_container_state_roundtrip();
     test_disconnect_reason_roundtrip();
     test_fragment_roundtrip();
     test_fragment_out_of_order();

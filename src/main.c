@@ -150,6 +150,23 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
         if (g_client && game_ui_world_active(g_ui_state))
             client_send_eat(g_client, (uint8_t)g_client->inventory.selected);
     }
+    if (key == GLFW_KEY_U && action == GLFW_PRESS) {
+        /* U opens (or, if already open, closes) the container block-entity the
+         * player is looking at — furnace/chest. The rich interactive container
+         * UI is a separate ticket (a4s.6.4); for now this just sends the open
+         * request so the server marks us a viewer and streams CONTAINER_STATE
+         * (stored in g_client->container). The server no-ops the open if the
+         * targeted cell isn't a tracked container, so it is safe to send for any
+         * aimed block. In-world only. */
+        if (g_client && game_ui_world_active(g_ui_state) && g_target.hit) {
+            if (g_client->container_open)
+                client_send_container_close(g_client, g_target.x,
+                                            g_target.y, g_target.z);
+            else
+                client_send_container_open(g_client, g_target.x,
+                                           g_target.y, g_target.z);
+        }
+    }
     if (key == GLFW_KEY_F3 && action == GLFW_PRESS)
         g_show_stats = !g_show_stats;   /* toggle the perf overlay */
     if (key == GLFW_KEY_M && action == GLFW_PRESS) {

@@ -179,6 +179,7 @@ add_executable(minecraft
     src/chunk_stream.c
     src/chunk_reasm.c
     src/server.c
+    src/server_block_entity.c
     src/client.c
     src/audio.c
     src/music.c

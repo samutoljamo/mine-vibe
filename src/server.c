@@ -20,6 +20,9 @@
 #include "reliable.h"    /* RELIABLE_MAX_PAYLOAD (chunk fragment sizing) */
 #include "world.h"
 #include "daynight.h"    /* world clock + darkness gate for spawning */
+#include "server_block_entity.h" /* container block-entity store (furnace+chest);
+                                  * isolates container.h/smelting.h from this TU,
+                                  * whose crafting.h would clash on ItemStack.   */
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -59,6 +62,8 @@ _Static_assert(ARMOR_SLOT_COUNT == ARMOR_NET_SLOTS,
     "wire format and armour model must agree on armour slot count");
 _Static_assert(CHUNK_DATA_RELIABLE_MAX == RELIABLE_MAX_PAYLOAD,
     "chunk-data fragment sizing in net.h must match the reliable payload cap");
+_Static_assert(SERVER_MAX_CLIENTS <= 32,
+    "block-entity viewers bitmask is a uint32_t — needs <= 32 client slots");
 
 /* Chunk streaming tunables. Budget caps how many NEW columns we encode+send per
  * client per tick so a fresh joiner doesn't flood the link (and the reliable
@@ -206,6 +211,9 @@ static void disconnect_client(Server* s, ServerClient* c)
     if (!c->active) return;
     printf("[server] player %d disconnected\n", c->player_id);
     broadcast_player_leave(s, c->player_id);
+    /* Drop this client's viewer bit from every container so a furnace tick
+     * doesn't try to push state to a now-dead slot (which may be reused). */
+    sbe_clear_viewer_all(s, (int)(c - s->clients));
     c->active = false;
     /* Release the per-client streamed-chunk set (alloc_client memsets the slot
      * on reuse, which would otherwise leak this array). */
@@ -538,6 +546,46 @@ static bool server_block_intersects_player(Server* s, int bx, int by, int bz)
     return false;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Container block-entities (furnace + chest) — networking glue         */
+/*                                                                     */
+/*  The store + smelting/chest models live in server_block_entity.c     */
+/*  (which owns container.h/smelting.h, kept out of THIS TU because      */
+/*  container.h's ItemStack clashes with crafting.h's). server.c only    */
+/*  parses/validates packets and sends snapshots.                       */
+/* ------------------------------------------------------------------ */
+
+/* Index of `c` within s->clients (for the per-block-entity viewers bitmask). */
+static int server_client_index(const Server* s, const ServerClient* c) {
+    return (int)(c - s->clients);
+}
+
+static void server_send_container_state(Server* s, ServerClient* c,
+                                        const BlockEntity* be) {
+    ContainerStatePacket p;
+    sbe_fill_state(be, &p);
+    PacketHeader h = { .type = PKT_CONTAINER_STATE, .player_id = 0 };
+    uint8_t buf[256];
+    size_t  len = net_write_container_state(buf, &h, &p);
+    send_reliable(s, c, buf, (uint16_t)len);
+}
+
+/* Push the current container state to every client marked as a viewer. */
+static void server_broadcast_container_state(Server* s, const BlockEntity* be) {
+    uint32_t viewers = sbe_viewers(be);
+    for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
+        if (!(viewers & (1u << i))) continue;
+        ServerClient* c = &s->clients[i];
+        if (!c->active) continue;
+        server_send_container_state(s, c, be);
+    }
+}
+
+/* furnace_tick on-change callback: re-send state to the entity's viewers. */
+static void server_container_on_change(void* user, const BlockEntity* be) {
+    server_broadcast_container_state((Server*)user, be);
+}
+
 static void handle_block_break(Server* s, ServerClient* c,
                                 const uint8_t* data, size_t len)
 {
@@ -590,6 +638,10 @@ static void handle_block_break(Server* s, ServerClient* c,
         /* No room — refuse the break. Don't broadcast, don't send inventory. */
         return;
     }
+    /* Breaking a furnace/chest: tear down its block-entity and pour its contents
+     * back into the breaker's inventory (anything that doesn't fit is lost). */
+    if (sbe_block_is_container(actual, NULL))
+        sbe_destroy_return(s, p.x, p.y, p.z, &c->inventory);
     /* Successful break: wear the held tool (no-op if the slot isn't a tool).
      * If it breaks, inventory_damage_tool empties the slot; the snapshot below
      * carries the change to the client. */
@@ -683,6 +735,95 @@ static void handle_block_place(Server* s, ServerClient* c,
     inventory_consume(&c->inventory, p.slot);
     server_persist_edit(s, tx, ty, tz, b);
     server_broadcast_block_change(s, tx, ty, tz, b);
+    server_send_inventory(s, c);
+
+    /* Placing a furnace/chest spins up its (empty) block-entity so it can hold
+     * contents + smelt. sbe_create is idempotent; placement validation above
+     * guarantees the cell was air/water, so a stale entity shouldn't exist. */
+    {
+        SbeType bet;
+        if (sbe_block_is_container(b, &bet)) sbe_create(s, tx, ty, tz, bet);
+    }
+}
+
+/* Reach check shared by container open/action: the targeted block centre must be
+ * within MAX_REACH of the player's eye (matches block break/place). */
+static bool server_block_in_reach(const ServerClient* c, int x, int y, int z) {
+    float dx = (x + 0.5f) - c->x;
+    float dy = (y + 0.5f) - (c->y + PLAYER_EYE_H);
+    float dz = (z + 0.5f) - c->z;
+    return dx*dx + dy*dy + dz*dz <= MAX_REACH * MAX_REACH;
+}
+
+/* PKT_CONTAINER_OPEN: validate reach, find the block-entity, mark this client a
+ * viewer, and reply with the current container state. */
+static void handle_container_open(Server* s, ServerClient* c,
+                                  const uint8_t* data, size_t len) {
+    PacketHeader h; int32_t x, y, z;
+    if (!net_parse_container_open(data, len, &h, &x, &y, &z)) {
+        server_drop_malformed("container-open");
+        return;
+    }
+    bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+    if (!is_new) return;
+    c->last_recv_time = net_time();
+
+    if (!c->position_received) return;
+    if (!server_block_in_reach(c, x, y, z)) return;
+
+    BlockEntity* be = sbe_find(s, x, y, z);
+    if (!be) return;                        /* not a container (or not tracked) */
+
+    sbe_add_viewer(be, server_client_index(s, c));
+    server_send_container_state(s, c, be);
+}
+
+/* PKT_CONTAINER_CLOSE: un-mark this client as a viewer (best-effort). */
+static void handle_container_close(Server* s, ServerClient* c,
+                                   const uint8_t* data, size_t len) {
+    PacketHeader h; int32_t x, y, z;
+    if (!net_parse_container_close(data, len, &h, &x, &y, &z)) {
+        server_drop_malformed("container-close");
+        return;
+    }
+    bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+    if (!is_new) return;
+    c->last_recv_time = net_time();
+
+    BlockEntity* be = sbe_find(s, x, y, z);
+    if (be) sbe_remove_viewer(be, server_client_index(s, c));
+}
+
+/* PKT_CONTAINER_ACTION: move items between a container slot and the player's
+ * inventory. Server-authoritative: validates reach, the slot index, and applies
+ * the move via the container transfer helpers (in server_block_entity.c), then
+ * resyncs viewers + the acting client's inventory. */
+static void handle_container_action(Server* s, ServerClient* c,
+                                    const uint8_t* data, size_t len) {
+    PacketHeader h; int32_t x, y, z; uint8_t slot, dir, count;
+    if (!net_parse_container_action(data, len, &h, &x, &y, &z,
+                                    &slot, &dir, &count)) {
+        server_drop_malformed("container-action");
+        return;
+    }
+    bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+    if (!is_new) return;
+    c->last_recv_time = net_time();
+
+    if (!c->position_received) return;
+    if (!server_block_in_reach(c, x, y, z)) return;
+    if (count == 0) return;
+
+    BlockEntity* be = sbe_find(s, x, y, z);
+    if (!be) return;
+    if (dir != CONTAINER_DIR_TO_INV && dir != CONTAINER_DIR_FROM_INV) return;
+    /* TO_INV: `slot` indexes the container; FROM_INV: `slot` indexes inventory. */
+    if (dir == CONTAINER_DIR_TO_INV && slot >= sbe_slot_count(be)) return;
+    if (dir == CONTAINER_DIR_FROM_INV && slot >= INVENTORY_SLOTS) return;
+
+    sbe_transfer(be, slot, dir, count, &c->inventory);
+
+    server_broadcast_container_state(s, be);
     server_send_inventory(s, c);
 }
 
@@ -1392,6 +1533,9 @@ static void server_tick(Server* s, int tick_num)
             else if (type == PKT_CRAFT)        handle_craft(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_EQUIP)        handle_equip(s, c, msg->data, (size_t)msg->len);
             else if (type == PKT_EAT)          handle_eat(s, c, msg->data, (size_t)msg->len);
+            else if (type == PKT_CONTAINER_OPEN)   handle_container_open(s, c, msg->data, (size_t)msg->len);
+            else if (type == PKT_CONTAINER_ACTION) handle_container_action(s, c, msg->data, (size_t)msg->len);
+            else if (type == PKT_CONTAINER_CLOSE)  handle_container_close(s, c, msg->data, (size_t)msg->len);
         }
         free(msg);
     }
@@ -1424,6 +1568,11 @@ static void server_tick(Server* s, int tick_num)
         if (!c->active) continue;
         server_simulate_survival(s, c, 1.0f / SERVER_TICK_RATE);
     }
+
+    /* Furnaces: advance smelting one server tick (consume fuel, accrue cook
+     * progress, emit results) and push state to any viewers. The pure
+     * furnace_tick model owns the per-tick transition. */
+    sbe_tick_furnaces(s, 1, server_container_on_change, s);
 
     /* Chunk streaming: push terrain to each REMOTE client around its position
      * (budget-capped per tick), unloading chunks that left range. No-op for the
@@ -1659,6 +1808,7 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
         free(s.clients[i].streamed);
         s.clients[i].streamed = NULL;
     }
+    sbe_free_all(&s);
 
     /* Final save before teardown. Detach the overlay from the world first so
      * no worker can read it while we free it (workers stop in world_destroy). */

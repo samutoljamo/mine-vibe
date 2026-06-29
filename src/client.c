@@ -269,6 +269,38 @@ void client_send_eat(Client* c, uint8_t slot) {
     reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
 }
 
+void client_send_container_open(Client* c, int x, int y, int z) {
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_CONTAINER_OPEN, .player_id = c->local_player_id,
+                       .seq = c->tick++ };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[32];
+    size_t len = net_write_container_open(buf, &h, x, y, z);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
+}
+
+void client_send_container_close(Client* c, int x, int y, int z) {
+    c->container_open = false;
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_CONTAINER_CLOSE, .player_id = c->local_player_id,
+                       .seq = c->tick++ };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[32];
+    size_t len = net_write_container_close(buf, &h, x, y, z);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
+}
+
+void client_send_container_action(Client* c, int x, int y, int z,
+                                  uint8_t slot, uint8_t dir, uint8_t count) {
+    if (c->state != CLIENT_CONNECTED) return;
+    PacketHeader h = { .type = PKT_CONTAINER_ACTION, .player_id = c->local_player_id,
+                       .seq = c->tick++ };
+    reliable_fill_ack(&c->reliable, &h.ack, &h.ack_bits);
+    uint8_t buf[32];
+    size_t len = net_write_container_action(buf, &h, x, y, z, slot, dir, count);
+    reliable_send(&c->reliable, c->net->fd, &c->server_addr, buf, (uint16_t)len);
+}
+
 int client_poll(Client* c)
 {
     int state_packets = 0;
@@ -553,6 +585,20 @@ int client_poll(Client* c)
              * refreshed above; nothing else to do (acks piggyback the header,
              * but keepalive is sent unreliable so we don't feed reliable_on_recv
              * its seq — it carries no reliable payload). */
+
+        } else if (type == PKT_CONTAINER_STATE && c->state == CLIENT_CONNECTED) {
+            /* Store the latest container snapshot. The full interactive
+             * container UI is a separate ticket (a4s.6.4); for now we just keep
+             * the state so the UI/agent can read it and nothing breaks. */
+            PacketHeader h; ContainerStatePacket cs;
+            if (!net_parse_container_state(msg->data, (size_t)msg->len, &h, &cs)) {
+                client_drop_malformed("container-state"); free(msg); continue;
+            }
+            bool is_new = reliable_on_recv(&c->reliable, h.seq, h.ack, h.ack_bits);
+            if (is_new) {
+                c->container = cs;
+                c->container_open = true;
+            }
 
         } else if (type == PKT_DISCONNECT) {
             uint8_t reason = net_read_disconnect_reason(msg->data, (size_t)msg->len);

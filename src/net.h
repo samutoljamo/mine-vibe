@@ -36,6 +36,20 @@ typedef enum {
                                * slot. Server validates it is a food item and the
                                * player isn't full, then consumes 1 + restores
                                * hunger and resyncs inventory + health (v10).    */
+    PKT_CONTAINER_OPEN  = 21, /* client → server: open the container block-entity
+                               * (furnace/chest) at {x,y,z}. Server validates reach,
+                               * marks this client a viewer, replies CONTAINER_STATE
+                               * (v11).                                          */
+    PKT_CONTAINER_STATE = 22, /* server → one:  full container snapshot — {pos,
+                               * type} then a CHEST's 27 (item,count) slots, or a
+                               * FURNACE's input/fuel/output (item,count) + burn +
+                               * cook progress (v11).                            */
+    PKT_CONTAINER_ACTION= 23, /* client → server: move items between a container
+                               * slot and the player inventory {pos, slot, dir,
+                               * count}. Server applies via the container transfer
+                               * helpers + resyncs viewers/inventory (v11).      */
+    PKT_CONTAINER_CLOSE = 24, /* client → server: stop viewing the container at
+                               * {x,y,z} (un-marks this client as a viewer) (v11).*/
 } PacketType;
 
 #define NET_MAX_PLAYERS  255
@@ -47,7 +61,7 @@ typedef enum {
  * silently misparsing each other's bytes. A client that sends a different
  * version (or none — legacy header-only connect, read as 0) is refused with
  * NET_DISCONNECT_VERSION_MISMATCH. */
-#define NET_PROTOCOL_VERSION 10
+#define NET_PROTOCOL_VERSION 11
 
 typedef enum {
     NET_DISCONNECT_NORMAL           = 0,
@@ -1144,6 +1158,170 @@ static inline int net_parse_keepalive(const uint8_t* buf, size_t len,
 {
     NetReader r = net_reader_init(buf, len);
     net_reader_header(&r, h);
+    return net_reader_ok(&r);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Container packets (furnace + chest block-entities, protocol v11)    */
+/*                                                                     */
+/*  A container block-entity lives server-side, keyed by its block      */
+/*  position. The client opens it (PKT_CONTAINER_OPEN), the server       */
+/*  validates reach + replies with a tagged snapshot (PKT_CONTAINER_     */
+/*  STATE), the client moves items in/out (PKT_CONTAINER_ACTION) and     */
+/*  finally stops viewing it (PKT_CONTAINER_CLOSE). All wire fields use  */
+/*  the bounds-checked cursor codec; every parser rejects truncation.   */
+/* ------------------------------------------------------------------ */
+
+/* Container type tag on the wire (kept independent of any gameplay enum so
+ * net.h stays at the bottom of the dependency tree). */
+typedef enum {
+    CONTAINER_NET_FURNACE = 0,
+    CONTAINER_NET_CHEST   = 1,
+} ContainerNetType;
+
+/* Direction of an item move in PKT_CONTAINER_ACTION. */
+typedef enum {
+    CONTAINER_DIR_TO_INV   = 0,  /* container slot -> player inventory */
+    CONTAINER_DIR_FROM_INV = 1,  /* player inventory slot -> container */
+} ContainerNetDir;
+
+/* Must match CHEST_SLOTS in container.h; restated here so net.h has no
+ * dependency on container.h. A _Static_assert in server.c guards them. */
+#define CONTAINER_NET_CHEST_SLOTS  27
+
+/* ---- PKT_CONTAINER_OPEN — client → server, 8 + 3*i32 = 20 bytes ---- */
+static inline size_t net_write_container_open(uint8_t* buf, const PacketHeader* h,
+                                              int32_t x, int32_t y, int32_t z) {
+    size_t off = 0;
+    net_write_header(buf, &off, h);
+    net_write_i32(buf, &off, x);
+    net_write_i32(buf, &off, y);
+    net_write_i32(buf, &off, z);
+    return off;
+}
+
+static inline int net_parse_container_open(const uint8_t* buf, size_t len,
+                                           PacketHeader* h,
+                                           int32_t* x, int32_t* y, int32_t* z) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, h);
+    *x = net_reader_i32(&r);
+    *y = net_reader_i32(&r);
+    *z = net_reader_i32(&r);
+    return net_reader_ok(&r);
+}
+
+/* ---- PKT_CONTAINER_CLOSE — client → server, same shape as OPEN ---- */
+static inline size_t net_write_container_close(uint8_t* buf, const PacketHeader* h,
+                                               int32_t x, int32_t y, int32_t z) {
+    return net_write_container_open(buf, h, x, y, z);
+}
+
+static inline int net_parse_container_close(const uint8_t* buf, size_t len,
+                                            PacketHeader* h,
+                                            int32_t* x, int32_t* y, int32_t* z) {
+    return net_parse_container_open(buf, len, h, x, y, z);
+}
+
+/* ---- PKT_CONTAINER_ACTION — client → server, 8 + 3*i32 + 1 + 1 + 1 = 23 ---- */
+static inline size_t net_write_container_action(uint8_t* buf, const PacketHeader* h,
+                                                int32_t x, int32_t y, int32_t z,
+                                                uint8_t slot, uint8_t dir,
+                                                uint8_t count) {
+    size_t off = 0;
+    net_write_header(buf, &off, h);
+    net_write_i32(buf, &off, x);
+    net_write_i32(buf, &off, y);
+    net_write_i32(buf, &off, z);
+    net_write_u8(buf, &off, slot);
+    net_write_u8(buf, &off, dir);
+    net_write_u8(buf, &off, count);
+    return off;
+}
+
+static inline int net_parse_container_action(const uint8_t* buf, size_t len,
+                                             PacketHeader* h,
+                                             int32_t* x, int32_t* y, int32_t* z,
+                                             uint8_t* slot, uint8_t* dir,
+                                             uint8_t* count) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, h);
+    *x     = net_reader_i32(&r);
+    *y     = net_reader_i32(&r);
+    *z     = net_reader_i32(&r);
+    *slot  = net_reader_u8(&r);
+    *dir   = net_reader_u8(&r);
+    *count = net_reader_u8(&r);
+    return net_reader_ok(&r);
+}
+
+/* ---- PKT_CONTAINER_STATE — server → one, tagged by container type ----
+ * Wire: [header 8][x i32][y i32][z i32][type u8] then, by type:
+ *   FURNACE: input(item u16,count u8) fuel(u16,u8) output(u16,u8)
+ *            [burn_ticks_left i32][cook_progress i32]
+ *   CHEST:   27 × (item u16, count u8)
+ * A single struct carries both; the writer/parser branch on `type`. */
+typedef struct {
+    int32_t  x, y, z;
+    uint8_t  type;              /* ContainerNetType */
+    /* furnace fields (valid when type == CONTAINER_NET_FURNACE) */
+    uint16_t f_input;  uint8_t f_input_count;
+    uint16_t f_fuel;   uint8_t f_fuel_count;
+    uint16_t f_output; uint8_t f_output_count;
+    int32_t  f_burn_ticks_left;
+    int32_t  f_cook_progress;
+    /* chest fields (valid when type == CONTAINER_NET_CHEST) */
+    struct { uint16_t item; uint8_t count; } slots[CONTAINER_NET_CHEST_SLOTS];
+} ContainerStatePacket;
+
+static inline size_t net_write_container_state(uint8_t* buf,
+                                               const PacketHeader* h,
+                                               const ContainerStatePacket* p) {
+    size_t off = 0;
+    net_write_header(buf, &off, h);
+    net_write_i32(buf, &off, p->x);
+    net_write_i32(buf, &off, p->y);
+    net_write_i32(buf, &off, p->z);
+    net_write_u8(buf, &off, p->type);
+    if (p->type == CONTAINER_NET_FURNACE) {
+        net_write_u16(buf, &off, p->f_input);  net_write_u8(buf, &off, p->f_input_count);
+        net_write_u16(buf, &off, p->f_fuel);   net_write_u8(buf, &off, p->f_fuel_count);
+        net_write_u16(buf, &off, p->f_output); net_write_u8(buf, &off, p->f_output_count);
+        net_write_i32(buf, &off, p->f_burn_ticks_left);
+        net_write_i32(buf, &off, p->f_cook_progress);
+    } else {
+        for (int i = 0; i < CONTAINER_NET_CHEST_SLOTS; i++) {
+            net_write_u16(buf, &off, p->slots[i].item);
+            net_write_u8 (buf, &off, p->slots[i].count);
+        }
+    }
+    return off;
+}
+
+static inline int net_parse_container_state(const uint8_t* buf, size_t len,
+                                            PacketHeader* h,
+                                            ContainerStatePacket* p) {
+    NetReader r = net_reader_init(buf, len);
+    net_reader_header(&r, h);
+    p->x    = net_reader_i32(&r);
+    p->y    = net_reader_i32(&r);
+    p->z    = net_reader_i32(&r);
+    p->type = net_reader_u8(&r);
+    if (!net_reader_ok(&r)) return 0;
+    if (p->type == CONTAINER_NET_FURNACE) {
+        p->f_input  = net_reader_u16(&r); p->f_input_count  = net_reader_u8(&r);
+        p->f_fuel   = net_reader_u16(&r); p->f_fuel_count   = net_reader_u8(&r);
+        p->f_output = net_reader_u16(&r); p->f_output_count = net_reader_u8(&r);
+        p->f_burn_ticks_left = net_reader_i32(&r);
+        p->f_cook_progress   = net_reader_i32(&r);
+    } else if (p->type == CONTAINER_NET_CHEST) {
+        for (int i = 0; i < CONTAINER_NET_CHEST_SLOTS; i++) {
+            p->slots[i].item  = net_reader_u16(&r);
+            p->slots[i].count = net_reader_u8(&r);
+        }
+    } else {
+        return 0;   /* unknown type tag */
+    }
     return net_reader_ok(&r);
 }
 
