@@ -301,8 +301,30 @@ void    hud_set_survival(int food, int air);
 void    hud_trigger_hurt_flash(void);
 
 /* Advance time-based HUD effects (hurt flash decay + the low-health pulse
- * clock) by dt seconds. Called once per frame from the main loop. */
+ * clock + the held-item swing) by dt seconds. Called once per frame from the
+ * main loop. */
 void    hud_tick(float dt);
+
+/* ------------------------------------------------------------------ */
+/*  Held-item attack swing (a4s.3.7)                                    */
+/* ------------------------------------------------------------------ */
+
+/* Total duration of the held-item swing animation, in seconds. */
+#define HUD_SWING_SEC 0.25f
+
+/* Arm a fresh swing of the held-item icon. Called from main.c on a left-click
+ * attack. Re-arming restarts the swing from the top. hud_tick decays it. */
+void    hud_trigger_swing(void);
+
+/* Pure: swing progress in [0,1] for `elapsed` seconds into a swing of
+ * `duration` seconds. Clamped to [0,1]; a non-positive duration yields 1 (the
+ * swing is treated as already finished). Unit-tested. */
+float   hud_swing_phase(float elapsed, float duration);
+
+/* Pure: the swing arc value in [0,1] for a phase in [0,1]. 0 at both ends
+ * (hand at rest) and ~1 at the middle of the swing, so the held item arcs
+ * down-and-back. A half-sine: sin(phase * PI). Unit-tested. */
+float   hud_swing_arc(float phase);
 
 /* ------------------------------------------------------------------ */
 /*  Persistent screen feedback (low-health pulse / underwater tint)     */

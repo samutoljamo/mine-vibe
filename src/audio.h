@@ -36,6 +36,7 @@ typedef enum {
     SFX_MOB_HURT,
     SFX_EAT,
     SFX_HIT,            /* attacker-side cue: the local player landed a melee blow */
+    SFX_SWING,          /* attacker-side cue: a quick whoosh on every melee swing */
     /* Surface-aware footsteps (dyb.4.2). Short, quiet noise bursts shaped per
      * material so grass/dirt read soft and earthy, stone hard and bright, sand
      * the softest hiss, wood a hollow knock. Picked via audio_footstep_for_block. */
