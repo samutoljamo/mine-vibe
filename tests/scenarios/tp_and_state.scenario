@@ -1,0 +1,8 @@
+# tp_and_state: teleport the player and confirm get_state reports the new pos.
+# tp moves both the local sim and the server's authoritative position; the
+# resulting state line reflects it immediately. (Note: a later `step` lets the
+# server reconcile the player back toward its spawn anchor, so we assert right
+# after the tp, before stepping.)
+> {"cmd":"tp","x":8.5,"y":80.0,"z":-4.5}
+expect pos[0] == 8.5
+expect pos[2] == -4.5

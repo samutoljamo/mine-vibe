@@ -1,0 +1,17 @@
+# craft_planks: the shapeless recipe at index 0 turns 1 wood log into 4 planks.
+# Item 5 = BLOCK_WOOD (log), item 13 = BLOCK_PLANKS. Craft is server-authoritative
+# so we step to let the consume + output sync land. Give 2 logs so we can prove
+# exactly one is consumed (slot 3 log count 2 -> 1) and 4 planks appear (slot 4).
+> {"cmd":"step","ticks":8}
+> {"cmd":"give","item":5,"count":2}
+> {"cmd":"step","ticks":5}
+expect inventory[3].item == 5
+expect inventory[3].count == 2
+> {"cmd":"craft","recipe":0}
+> {"cmd":"step","ticks":10}
+# One log consumed...
+expect inventory[3].item == 5
+expect inventory[3].count == 1
+# ...and four planks produced.
+expect inventory[4].item == 13
+expect inventory[4].count == 4

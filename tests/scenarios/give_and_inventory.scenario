@@ -1,0 +1,10 @@
+# give_and_inventory: give N of a block item, confirm it lands in the inventory.
+# A fresh player gets a starter kit (wood pickaxe/axe/shovel) in slots 0..2, so a
+# given stack lands in slot 3. Item 1 = BLOCK_STONE. Step first so the starter-kit
+# inventory sync has arrived before we give.
+> {"cmd":"step","ticks":5}
+> {"cmd":"give","item":1,"count":17}
+> {"cmd":"step","ticks":2}
+> {"cmd":"get_state"}
+expect inventory[3].item == 1
+expect inventory[3].count == 17

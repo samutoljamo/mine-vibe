@@ -1,0 +1,20 @@
+# mob_death: beat a zombie to death and confirm it is removed from the world.
+# type 0 = MOB_ZOMBIE, 20 hp; a bare-fist hit deals 4, so 5 hits kill it. The
+# attack has a cooldown, so we step ~15 ticks between swings to let each land.
+# When dead the mob despawns and the mobs array empties.
+> {"cmd":"step","ticks":10}
+> {"cmd":"spawn_mob","type":0,"x":1.5,"y":105,"z":0.5}
+> {"cmd":"step","ticks":3}
+expect mobs[0].health == 20
+> {"cmd":"attack","mob_id":1}
+> {"cmd":"step","ticks":15}
+> {"cmd":"attack","mob_id":1}
+> {"cmd":"step","ticks":15}
+> {"cmd":"attack","mob_id":1}
+> {"cmd":"step","ticks":15}
+> {"cmd":"attack","mob_id":1}
+> {"cmd":"step","ticks":15}
+> {"cmd":"attack","mob_id":1}
+> {"cmd":"step","ticks":15}
+# Five hits (20 hp / 4 dmg) kill the zombie; it is removed from the world.
+expect mobs == []

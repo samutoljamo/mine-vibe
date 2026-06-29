@@ -1,0 +1,9 @@
+# set_time_of_day: force the world clock and confirm the state reports it.
+# The day is 24000 ticks; 18000 is the middle of the night. The client estimate
+# advances a few ticks while it settles, so we assert a small window rather than
+# an exact equality.
+> {"cmd":"step","ticks":5}
+> {"cmd":"set_time","ticks":18000}
+> {"cmd":"step","ticks":3}
+expect time_of_day >= 18000
+expect time_of_day < 18100
