@@ -159,6 +159,13 @@ typedef struct {
      * buffer each frame — so no main.c plumbing is needed to draw it. */
     ParticleSystem particles;
     double         particles_last_update;  /* net_time() of last integrate */
+
+    /* Last local player position passed to client_send_position. Cached so the
+     * per-poll weather step can spawn rain centered on the player (which it
+     * doesn't otherwise have access to). have_local_pos guards against spawning
+     * before the first position is sent (e.g. before connect). */
+    float local_x, local_y, local_z;
+    bool  have_local_pos;
 } Client;
 
 void client_init(Client* c, NetThread* net,

@@ -193,6 +193,8 @@ void client_init(Client* c, NetThread* net,
      * cryptographic randomness). Publish it for the renderer to read. */
     particle_system_init(&c->particles, 0xC0FFEEu);
     c->particles_last_update = net_time();
+    c->have_local_pos = false;
+    c->local_x = c->local_y = c->local_z = 0.0f;
     g_active_particles = &c->particles;
 }
 
@@ -248,6 +250,14 @@ void client_send_position(Client* c,
                             float x, float y, float z,
                             float yaw, float pitch)
 {
+    /* Cache the local position for the rain-render step (client_poll spawns
+     * weather particles centered here). Done before the connected-state guard so
+     * the camera position is current even on the frame we connect. */
+    c->local_x = x;
+    c->local_y = y;
+    c->local_z = z;
+    c->have_local_pos = true;
+
     if (c->state != CLIENT_CONNECTED) return;
 
     PositionPacket p = {0};
@@ -838,6 +848,21 @@ int client_poll(Client* c)
         if (dt < 0.0) dt = 0.0;
         if (dt > 0.1) dt = 0.1;
         if (dt > 0.0) particle_update(&c->particles, (float)dt);
+
+        /* Weather: while it's raining (per the server-synced state) spawn a
+         * throttled batch of rain droplets centered on the local player so the
+         * weather is visible and follows the camera. particle_emit_rain caps the
+         * per-call count and scales it by intensity; clear weather spawns none.
+         * Gated on dt so a stalled poll doesn't spam, and on have_local_pos so we
+         * don't rain at the origin before the first position is known. */
+        if (dt > 0.0 && c->have_local_pos) {
+            WeatherState w = client_get_weather(c);
+            if (weather_is_raining(&w)) {
+                particle_emit_rain(&c->particles,
+                                   c->local_x, c->local_y, c->local_z,
+                                   weather_rain_intensity(&w));
+            }
+        }
     }
 
     /* Pump the audio engine once per frame (client_poll is the per-frame drain
