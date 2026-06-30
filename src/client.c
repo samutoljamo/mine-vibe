@@ -629,7 +629,8 @@ int client_poll(Client* c)
                 for (uint8_t i = 0; i < ip.slot_count && i < INVENTORY_SLOTS; i++) {
                     ItemId it = (ItemId)ip.slots[i].item;
                     if (!item_is_block(it) && !item_is_tool(it) &&
-                        !item_is_material(it) && !item_is_armor(it))
+                        !item_is_material(it) && !item_is_armor(it) &&
+                        !item_is_food(it))
                         continue;                       /* ignore garbage ids */
                     c->inventory.slots[i].item       = it;
                     c->inventory.slots[i].count      = ip.slots[i].count;
