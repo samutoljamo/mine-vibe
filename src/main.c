@@ -1827,9 +1827,16 @@ static int run_headless_harness(uint16_t port)
     printf("[harness] headless agent harness starting (no renderer/window)\n");
     fflush(stdout);
 
-    /* --- Integrated authoritative server, headless (renderer == NULL) --- */
+    /* --- Integrated authoritative server, headless (renderer == NULL) ---
+     * Bind to port 0 so the OS assigns an EPHEMERAL port. This makes many
+     * harness processes run back-to-back (and even in parallel under ctest -j)
+     * with zero collisions: no two share a fixed port, and a lingering
+     * TIME_WAIT socket from a previous run can't make bind fail or let the
+     * client connect to a stale server. We read the real port back from the
+     * server (server_get_port) and connect the in-process client to it. */
+    (void)port;                          /* harness ignores any --port; uses ephemeral */
     ServerArgs* sargs = malloc(sizeof(ServerArgs));
-    sargs->port = port;
+    sargs->port = 0;                     /* OS-assigned ephemeral port */
     sargs->max  = SERVER_MAX_CLIENTS;
     sargs->seed = WORLD_SEED;
     sargs->save_path[0] = '\0';          /* legacy world.dat overlay */
@@ -1838,7 +1845,14 @@ static int run_headless_harness(uint16_t port)
     sargs->gamemode = GAMEMODE_SURVIVAL;
     PT_Thread server_thread = {0};
     pt_thread_create(&server_thread, server_thread_func, sargs);
-    pt_sleep_ms(200);                    /* let it bind before connecting */
+
+    /* Wait for the server to bind and publish its actual ephemeral port. */
+    uint16_t srv_port = 0;
+    for (int tries = 0; tries < 4000 && !srv_port; tries++) {
+        pt_sleep_ms(1);
+        srv_port = server_get_port();
+    }
+    if (!srv_port) { fprintf(stderr, "[harness] server never bound a port\n"); return 1; }
 
     /* --- Client simulation (connects to localhost over real UDP) --- */
     int net_fd = net_socket_client();
@@ -1846,7 +1860,7 @@ static int run_headless_harness(uint16_t port)
     net_thread_start(&net_thread, net_fd);
 
     struct sockaddr_in srv_addr = {0};
-    if (net_resolve("127.0.0.1", port, &srv_addr) != NET_RESOLVE_OK) {
+    if (net_resolve("127.0.0.1", srv_port, &srv_addr) != NET_RESOLVE_OK) {
         fprintf(stderr, "[harness] could not resolve localhost\n");
         return 1;
     }
@@ -1923,9 +1937,63 @@ static int run_headless_harness(uint16_t port)
         tick++; \
     } while (0)
 
-    /* Settle: a few ticks so the connect handshake completes + the spawn column
-     * generates before the first command. */
-    for (int i = 0; i < 10; i++) { HARNESS_SIM_TICK(); pt_sleep_ms(5); }
+    /* Live in-process server handle for tick-synchronized stepping. The server
+     * runs on its own thread at 20 Hz; rather than sleep a fixed wall-clock
+     * duration and HOPE it processed our packets (the old flaky behaviour), we
+     * block on its monotonic tick counter so a step provably reflects N
+     * fully-processed server ticks. */
+    Server* sv = server_get_instance();
+    for (int tries = 0; tries < 4000 && !sv; tries++) { pt_sleep_ms(1); sv = server_get_instance(); }
+    if (!sv) { fprintf(stderr, "[harness] server instance never appeared\n"); return 1; }
+
+    /* Advance `n` server ticks SYNCHRONOUSLY on the server's REAL progress —
+     * no fixed wall-clock sleep that races the 20 Hz server thread.
+     *
+     * Pacing matters: we run exactly ONE local sim tick (which sends one
+     * position packet + polls) per OBSERVED server tick. Spamming
+     * client_send_position in a tight 1ms loop floods both UDP socket buffers
+     * (server broadcasts world/mob state every tick too), overflowing the
+     * kernel receive queue and DROPPING reliable inventory/health packets
+     * faster than the 0.1s retransmit recovers — which is exactly what made the
+     * scenarios flaky. So between server ticks we only client_poll() + yield
+     * 1ms (draining inbound, sending acks, applying snapshots) and we send a
+     * new position only when the server tick advances.
+     *
+     * After hitting the target tick we poll once more so the client has applied
+     * the snapshot the server produced AT/AFTER the barrier. A generous 5s
+     * wall-clock safety timeout turns a genuine server hang into a clear error
+     * + non-zero exit rather than wedging the whole ctest suite forever. */
+    #define HARNESS_SYNC_TICKS(n) do { \
+        uint64_t _target = server_current_tick(sv) + (uint64_t)(n); \
+        double _deadline = net_time() + 5.0; \
+        uint64_t _last_seen = server_current_tick(sv); \
+        HARNESS_SIM_TICK(); /* send our latest position + poll at least once */ \
+        while (server_current_tick(sv) < _target) { \
+            uint64_t _cur = server_current_tick(sv); \
+            if (_cur != _last_seen) { \
+                _last_seen = _cur; \
+                HARNESS_SIM_TICK();   /* one sim tick per real server tick */ \
+            } else { \
+                client_poll(&client); /* just drain/ack between ticks */ \
+            } \
+            if (net_time() > _deadline) { \
+                fprintf(stderr, "[harness] FATAL: server tick stalled " \
+                        "(have %llu, want %llu) after 5s — aborting\n", \
+                        (unsigned long long)server_current_tick(sv), \
+                        (unsigned long long)_target); \
+                fflush(stderr); \
+                exit(2); \
+            } \
+            pt_sleep_ms(1); \
+        } \
+        /* Settle: a few more polls so any reliable snapshot in flight (and its \
+         * possible retransmit) lands and is applied before state is emitted. */ \
+        for (int _s = 0; _s < 5; _s++) { client_poll(&client); pt_sleep_ms(2); } \
+    } while (0)
+
+    /* Settle: wait for the connect handshake + spawn-column generation, synced
+     * on real server progress rather than a guessed sleep. */
+    HARNESS_SYNC_TICKS(10);
 
     agent_emit_ready();
 
@@ -1949,17 +2017,17 @@ static int run_headless_harness(uint16_t port)
         if (!running) break;
 
         if (cmd.type == CMD_STEP) {
-            for (int i = 0; i < step_ticks; i++) {
-                HARNESS_SIM_TICK();
-                /* Pace ~1 server tick of real time so the wall-clock 20 Hz
-                 * server thread processes our packets between sim ticks. */
-                pt_sleep_ms(1000 / SERVER_TICK_RATE);
-            }
+            /* Block until the server has genuinely advanced step_ticks ticks
+             * (deterministic — no wall-clock race), then the client has the
+             * resulting snapshot. */
+            HARNESS_SYNC_TICKS(step_ticks);
         } else {
-            /* Non-step commands advance one tick so the action's packet is sent
-             * and any immediate reply is polled before the state is emitted. */
-            HARNESS_SIM_TICK();
-            pt_sleep_ms(1000 / SERVER_TICK_RATE);
+            /* Mutating commands (place/break/attack/craft/give/...): wait the
+             * same tick-synchronized way for a few ticks so the server has
+             * processed the request AND the client has applied the resulting
+             * authoritative snapshot before the get_state below emits. 3 ticks
+             * covers request -> server apply -> snapshot -> client apply. */
+            HARNESS_SYNC_TICKS(3);
         }
 
         /* Emit a fresh state line after every command. */
@@ -1969,6 +2037,7 @@ static int run_headless_harness(uint16_t port)
         agent_emit_snapshot(&snap);
     }
 
+    #undef HARNESS_SYNC_TICKS
     #undef HARNESS_SIM_TICK
 
     /* Teardown. */
