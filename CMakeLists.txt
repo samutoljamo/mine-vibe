@@ -150,6 +150,7 @@ add_executable(minecraft
     src/pipeline.c
     src/texture.c
     src/camera.c
+    src/camera_third.c
     src/frustum.c
     src/block.c
     src/chunk.c
@@ -327,6 +328,20 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_remote_player PRIVATE m)
 endif()
 add_test(NAME remote_player COMMAND test_remote_player)
+
+add_executable(test_camera_third
+    tests/test_camera_third.c
+    src/camera_third.c
+)
+target_include_directories(test_camera_third PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${cglm_SOURCE_DIR}/include
+)
+target_link_libraries(test_camera_third PRIVATE cglm)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_camera_third PRIVATE m)
+endif()
+add_test(NAME camera_third COMMAND test_camera_third)
 
 add_executable(test_mob
     tests/test_mob.c

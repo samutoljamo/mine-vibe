@@ -22,6 +22,7 @@
 #include "client.h"
 #include "remote_player.h"
 #include "player_model.h"
+#include "camera_third.h"
 #include "particle.h"
 #include "mob_render.h"
 #include "platform_thread.h"
@@ -53,6 +54,13 @@ static uint16_t g_target_mob = 0; /* nearest mob under the crosshair, 0 = none *
  * in main() once the client is up. */
 static ClientMobSet*    g_mobs = NULL;
 static bool g_show_stats = false; /* perf overlay visibility; toggled with F3 */
+
+/* Camera mode, cycled by F5: first-person (default) -> third-back ->
+ * third-front -> first-person. In any third-person mode the local player body
+ * is drawn; in first-person it is hidden (camera sits inside the head). */
+static CameraMode g_camera_mode = CAMERA_FIRST_PERSON;
+/* Distance the third-person camera sits from the player eye (blocks). */
+#define CAMERA_THIRD_DISTANCE 3.5f
 
 /* Hold-to-eat state. Eating is no longer instant: while the eat key (F) is held
  * over a food item, g_eating accumulates toward EAT_DURATION_SEC. The SFX plays
@@ -264,6 +272,8 @@ static void key_callback(GLFWwindow* window, int key, int scancode,
     }
     if (key == GLFW_KEY_F3 && action == GLFW_PRESS)
         g_show_stats = !g_show_stats;   /* toggle the perf overlay */
+    if (key == GLFW_KEY_F5 && action == GLFW_PRESS)
+        g_camera_mode = camera_mode_next(g_camera_mode); /* cycle view */
     if (key == GLFW_KEY_M && action == GLFW_PRESS) {
         /* M is a global mute hotkey. Flip the audio engine's mute and mirror the
          * new state into the HUD so the Options screen reflects it. */
@@ -1339,7 +1349,23 @@ int main(int argc, char *argv[])
         world_get_meshes(world, &meshes, &mesh_count);
 
         mat4 view, proj;
-        camera_get_view(&g_player.camera, g_player.eye_pos, view);
+        /* Camera mode (F5): first-person uses the player eye directly; the
+         * third-person modes offset the eye behind/ahead and look back via the
+         * pure camera_third_person() helper, then build the view with lookat.
+         * Follow-up (dwk): no collision pull-in yet — the third-person eye can
+         * clip into terrain when a wall is behind/ahead of the player. */
+        if (g_camera_mode == CAMERA_FIRST_PERSON) {
+            camera_get_view(&g_player.camera, g_player.eye_pos, view);
+        } else {
+            vec3 cam_eye, cam_dir, cam_center;
+            camera_third_person(g_player.eye_pos,
+                                g_player.camera.yaw, g_player.camera.pitch,
+                                g_camera_mode, CAMERA_THIRD_DISTANCE,
+                                cam_eye, cam_dir);
+            glm_vec3_add(cam_eye, cam_dir, cam_center);
+            vec3 up = { 0.0f, 1.0f, 0.0f };
+            glm_lookat(cam_eye, cam_center, up, view);
+        }
         float aspect = (float)renderer.swapchain.extent.width
                      / (float)renderer.swapchain.extent.height;
         camera_get_proj(&g_player.camera, aspect, proj);
@@ -1369,10 +1395,9 @@ int main(int argc, char *argv[])
                                                               local_walk_speed, dt);
             player_anim_walk(local_limb_angle, local_walk_phase, local_walk_speed);
         }
-        (void)local_limb_angle;  /* consumed when dwk.3 draws the local body */
-
-        /* Collect remote player states for rendering */
-        PlayerRenderState rp_states[REMOTE_PLAYER_MAX + MOB_MAX];
+        /* Collect remote player states for rendering. +1 slot for the local
+         * player body, drawn in third-person (see below). */
+        PlayerRenderState rp_states[REMOTE_PLAYER_MAX + MOB_MAX + 1];
         uint32_t rcount = 0;
         if (networking) {
             for (int i = 0; i < REMOTE_PLAYER_MAX; i++) {
@@ -1452,6 +1477,28 @@ int main(int argc, char *argv[])
                 rp_states[rcount].head_yaw = 0.0f;
                 rcount++;
             }
+        }
+
+        /* Local player body (dwk.3): drawn only in third-person, using the SAME
+         * humanoid mesh + real skin as remote players. Feet at g_player.position,
+         * facing the camera yaw (the exact value other clients render for us),
+         * with the dwk.2 walk-cycle angles. Hidden in first-person so the camera
+         * never sits inside the head. */
+        if (g_camera_mode != CAMERA_FIRST_PERSON
+            && rcount < REMOTE_PLAYER_MAX + MOB_MAX + 1) {
+            PlayerRenderState* ls = &rp_states[rcount];
+            ls->pos[0] = g_player.position[0];
+            ls->pos[1] = g_player.position[1];
+            ls->pos[2] = g_player.position[2];
+            ls->yaw    = g_player.camera.yaw;
+            ls->tint[0] = 0.0f; ls->tint[1] = 0.0f;     /* a=0 → real player skin */
+            ls->tint[2] = 0.0f; ls->tint[3] = 0.0f;
+            ls->tint2[0] = 0.0f; ls->tint2[1] = 0.0f; ls->tint2[2] = 0.0f;
+            ls->scale[0] = 1.0f; ls->scale[1] = 1.0f; ls->scale[2] = 1.0f;
+            ls->mesh_type = -1;                          /* humanoid player mesh */
+            memcpy(ls->limb_angle, local_limb_angle, sizeof(ls->limb_angle));
+            ls->head_yaw = 0.0f;
+            rcount++;
         }
 
         /* Underwater fade factor: 0 when the eye is at or above the water
