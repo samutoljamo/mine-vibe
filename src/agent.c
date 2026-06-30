@@ -378,6 +378,18 @@ bool agent_parse_command(const char *line, AgentCommand *out)
             out->set_weather.kind = 0;
         return true;
     }
+    if (strcmp(cmd_str, "set_food") == 0) {
+        out->type = CMD_SET_FOOD;
+        out->set_food.value = 20;
+        json_int(line, "value", &out->set_food.value);
+        return true;
+    }
+    if (strcmp(cmd_str, "set_health") == 0) {
+        out->type = CMD_SET_HEALTH;
+        out->set_health.value = 20;
+        json_int(line, "value", &out->set_health.value);
+        return true;
+    }
     return false;
 }
 
