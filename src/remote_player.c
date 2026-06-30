@@ -1,4 +1,5 @@
 #include "remote_player.h"
+#include "player_anim.h"
 #include <math.h>
 #include <string.h>
 
@@ -129,6 +130,25 @@ void remote_player_interpolate(RemotePlayer* p, float dt,
         if (pv < -HALF_PI_F) pv = -HALF_PI_F;
         *out_pitch = pv;
     }
+}
+
+void remote_player_update_anim(RemotePlayer* p, float dt,
+                               float* out_phase, float* out_speed)
+{
+    /* Horizontal speed from the most recent snapshot pair. */
+    float target = 0.0f;
+    double dt_snap = p->snapshot_times[1] - p->snapshot_times[0];
+    if (p->snapshot_count >= 2 && dt_snap > 0.0) {
+        float dx = p->positions[1][0] - p->positions[0][0];
+        float dz = p->positions[1][2] - p->positions[0][2];
+        target = sqrtf(dx * dx + dz * dz) / (float)dt_snap;
+    }
+
+    p->walk_speed = player_anim_speed_smooth(p->walk_speed, target, dt);
+    p->walk_phase = player_anim_walk_phase_advance(p->walk_phase, p->walk_speed, dt);
+
+    *out_phase = p->walk_phase;
+    *out_speed = p->walk_speed;
 }
 
 RemotePlayer* remote_player_set_get(RemotePlayerSet* s, uint8_t pid)

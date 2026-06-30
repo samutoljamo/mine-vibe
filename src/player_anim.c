@@ -80,3 +80,48 @@ void player_anim_walk(float limb_angle[ANIM_PART_COUNT], float phase, float spee
     limb_angle[ANIM_PART_LEG_R] = -s;
     limb_angle[ANIM_PART_LEG_L] =  s;
 }
+
+/* Cadence: radians of phase per second per unit speed. At a normal walk
+ * (~4 m/s) this gives a brisk but readable step frequency. */
+#define PLAYER_ANIM_PHASE_RATE 2.0f
+/* A tiny floor below which an entity is treated as standing still (m/s). */
+#define PLAYER_ANIM_MOVE_EPS   0.05f
+/* Smoothing time constant for the locomotion speed ramp (seconds). */
+#define PLAYER_ANIM_SPEED_TAU  0.12f
+#define PLAYER_ANIM_TWO_PI     6.2831853071795864769f
+
+float player_anim_walk_phase_advance(float phase, float speed, float dt)
+{
+    if (dt <= 0.0f)
+        return phase;
+    /* Standing still: freeze the phase (no continued cycling at rest). */
+    if (speed <= PLAYER_ANIM_MOVE_EPS)
+        return phase;
+
+    phase += (PLAYER_ANIM_PHASE_RATE * speed) * dt;
+
+    /* Wrap into [0, 2π) without an unbounded loop for huge dt*speed. */
+    if (phase >= PLAYER_ANIM_TWO_PI || phase < 0.0f) {
+        phase = fmodf(phase, PLAYER_ANIM_TWO_PI);
+        if (phase < 0.0f)
+            phase += PLAYER_ANIM_TWO_PI;
+    }
+    return phase;
+}
+
+float player_anim_speed_smooth(float current, float target, float dt)
+{
+    if (dt <= 0.0f)
+        return current;
+    if (target < 0.0f)
+        target = 0.0f;
+    /* Exponential approach toward target; framerate-independent. */
+    float a = 1.0f - expf(-dt / PLAYER_ANIM_SPEED_TAU);
+    if (a > 1.0f) a = 1.0f;
+    float next = current + (target - current) * a;
+    /* Snap to exact 0 once we are within the move floor of rest so a stopped
+     * entity returns to the all-zero (rigid) pose rather than asymptoting. */
+    if (target == 0.0f && next < PLAYER_ANIM_MOVE_EPS)
+        next = 0.0f;
+    return next;
+}

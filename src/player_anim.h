@@ -51,4 +51,24 @@ void player_anim_transform_vertex(int part, float pitch, float head_yaw,
  * are left at 0. Pure: deterministic in (phase, speed). */
 void player_anim_walk(float limb_angle[ANIM_PART_COUNT], float phase, float speed);
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * Walk-cycle driving helpers (PURE — no Vulkan/GLFW). These maintain the
+ * per-entity walk PHASE and a smoothed locomotion SPEED so that callers can
+ * drive player_anim_walk() each frame from an entity's horizontal motion.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Advance a walk phase (radians) by one frame. The angular frequency scales
+ * with `speed` (steps/sec ∝ pace) so a faster walk swings faster. While the
+ * entity is moving the phase increases monotonically; when `speed` is ~0 the
+ * phase is frozen (returned unchanged) so a stopped entity does not keep
+ * cycling. Result is wrapped into [0, 2π). Deterministic in (phase,speed,dt).*/
+float player_anim_walk_phase_advance(float phase, float speed, float dt);
+
+/* Ease a smoothed locomotion speed toward `target` over dt (exponential
+ * approach, ~PLAYER_ANIM_SPEED_TAU time constant). Feeding target=0 decays the
+ * smoothed speed toward 0, which (via player_anim_walk) shrinks the swing
+ * amplitude back to the rigid rest pose instead of snapping. With target>0 it
+ * rises toward target. Monotonic toward the target; deterministic. */
+float player_anim_speed_smooth(float current, float target, float dt);
+
 #endif /* PLAYER_ANIM_H */

@@ -1344,6 +1344,33 @@ int main(int argc, char *argv[])
                      / (float)renderer.swapchain.extent.height;
         camera_get_proj(&g_player.camera, aspect, proj);
 
+        /* Per-mob walk-cycle state, indexed by mob slot (ClientMob has no room
+         * for it and lives in an out-of-scope header). Persists across frames;
+         * a slot reused for a new mob simply re-seeds from rest. */
+        static float mob_walk_phase[MOB_MAX] = {0};
+        static float mob_walk_speed[MOB_MAX] = {0};
+        static vec3  mob_prev_pos[MOB_MAX]   = {{0}};
+        static bool  mob_prev_valid[MOB_MAX] = {0};
+
+        /* Local player walk-cycle state. Advanced every frame from the local
+         * horizontal velocity so it is correct the moment the third-person /
+         * front camera (dwk.3) draws the local body. The angles are written
+         * into local_limb_angle each frame; dwk.3 attaches them to the local
+         * player's render state. */
+        static float local_walk_phase = 0.0f;
+        static float local_walk_speed = 0.0f;
+        float local_limb_angle[ANIM_PART_COUNT];
+        {
+            float vx = g_player.velocity[0];
+            float vz = g_player.velocity[2];
+            float hspeed = sqrtf(vx * vx + vz * vz);
+            local_walk_speed = player_anim_speed_smooth(local_walk_speed, hspeed, dt);
+            local_walk_phase = player_anim_walk_phase_advance(local_walk_phase,
+                                                              local_walk_speed, dt);
+            player_anim_walk(local_limb_angle, local_walk_phase, local_walk_speed);
+        }
+        (void)local_limb_angle;  /* consumed when dwk.3 draws the local body */
+
         /* Collect remote player states for rendering */
         PlayerRenderState rp_states[REMOTE_PLAYER_MAX + MOB_MAX];
         uint32_t rcount = 0;
@@ -1368,11 +1395,19 @@ int main(int argc, char *argv[])
                 rp_states[rcount].scale[1] = 1.0f;
                 rp_states[rcount].scale[2] = 1.0f;
                 rp_states[rcount].mesh_type = -1;   /* humanoid player mesh */
+                /* Walk cycle: phase/speed from interpolated snapshot motion. */
+                float wphase, wspeed;
+                remote_player_update_anim(rp, dt, &wphase, &wspeed);
+                player_anim_walk(rp_states[rcount].limb_angle, wphase, wspeed);
+                rp_states[rcount].head_yaw = 0.0f;
                 rcount++;
             }
             for (int i = 0; i < MOB_MAX && rcount < REMOTE_PLAYER_MAX + MOB_MAX; i++) {
                 ClientMob* m = &mob_set.mobs[i];
-                if (!m->active || m->snapshot_count < 2) continue;
+                if (!m->active || m->snapshot_count < 2) {
+                    mob_prev_valid[i] = false;  /* reset gait when slot idles */
+                    continue;
+                }
                 vec3 pos; float yaw;
                 client_mob_interpolate(m, dt, pos, &yaw);
                 /* Per-type two-tone colours + body silhouette from the render
@@ -1399,6 +1434,22 @@ int main(int argc, char *argv[])
                 rp_states[rcount].scale[2] = fit[2];
                 /* Draw this mob with its own per-type baked mesh. */
                 rp_states[rcount].mesh_type = (int)m->type;
+                /* Walk cycle: horizontal speed from the interpolated position
+                 * delta vs. the previous frame, smoothed + phase-advanced. */
+                float mtarget = 0.0f;
+                if (mob_prev_valid[i] && dt > 0.0f) {
+                    float dx = pos[0] - mob_prev_pos[i][0];
+                    float dz = pos[2] - mob_prev_pos[i][2];
+                    mtarget = sqrtf(dx * dx + dz * dz) / dt;
+                }
+                mob_walk_speed[i] = player_anim_speed_smooth(mob_walk_speed[i], mtarget, dt);
+                mob_walk_phase[i] = player_anim_walk_phase_advance(mob_walk_phase[i],
+                                                                   mob_walk_speed[i], dt);
+                glm_vec3_copy(pos, mob_prev_pos[i]);
+                mob_prev_valid[i] = true;
+                player_anim_walk(rp_states[rcount].limb_angle,
+                                 mob_walk_phase[i], mob_walk_speed[i]);
+                rp_states[rcount].head_yaw = 0.0f;
                 rcount++;
             }
         }

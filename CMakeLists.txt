@@ -319,6 +319,7 @@ add_test(NAME ui COMMAND test_ui)
 add_executable(test_remote_player
     tests/test_remote_player.c
     src/remote_player.c
+    src/player_anim.c
 )
 target_include_directories(test_remote_player PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_remote_player PRIVATE cglm)
