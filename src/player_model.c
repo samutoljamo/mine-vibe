@@ -55,7 +55,7 @@ static void add_face(PlayerVertex* verts, uint32_t* vi,
                      float v1x, float v1y, float v1z,
                      float v2x, float v2y, float v2z,
                      float v3x, float v3y, float v3z,
-                     UVRect uv, bool mirror_u, uint8_t face_idx)
+                     UVRect uv, bool mirror_u, uint8_t face_idx, uint8_t part)
 {
     float u0 = uv.u0/64.f, v0 = uv.v0/32.f;
     float u1 = uv.u1/64.f, v1 = uv.v1/32.f;
@@ -63,10 +63,10 @@ static void add_face(PlayerVertex* verts, uint32_t* vi,
 
     uint32_t base = *vi;
     /* UVs paired with each corner (image-V grows downward, so v1 > v0). */
-    verts[(*vi)++] = (PlayerVertex){v0x,v0y,v0z, u0,v1, face_idx, {0}}; /* BL */
-    verts[(*vi)++] = (PlayerVertex){v1x,v1y,v1z, u1,v1, face_idx, {0}}; /* BR */
-    verts[(*vi)++] = (PlayerVertex){v2x,v2y,v2z, u1,v0, face_idx, {0}}; /* TR */
-    verts[(*vi)++] = (PlayerVertex){v3x,v3y,v3z, u0,v0, face_idx, {0}}; /* TL */
+    verts[(*vi)++] = (PlayerVertex){v0x,v0y,v0z, u0,v1, face_idx, part, {0}}; /* BL */
+    verts[(*vi)++] = (PlayerVertex){v1x,v1y,v1z, u1,v1, face_idx, part, {0}}; /* BR */
+    verts[(*vi)++] = (PlayerVertex){v2x,v2y,v2z, u1,v0, face_idx, part, {0}}; /* TR */
+    verts[(*vi)++] = (PlayerVertex){v3x,v3y,v3z, u0,v0, face_idx, part, {0}}; /* TL */
 
     idxs[(*ii)++] = base+0; idxs[(*ii)++] = base+1; idxs[(*ii)++] = base+2;
     idxs[(*ii)++] = base+0; idxs[(*ii)++] = base+2; idxs[(*ii)++] = base+3;
@@ -78,37 +78,37 @@ static void add_box(PlayerVertex* verts, uint32_t* vi,
                     uint32_t* idxs, uint32_t* ii,
                     float x0, float y0, float z0,
                     float x1, float y1, float z1,
-                    const BoxUV* uv, bool mirror_x)
+                    const BoxUV* uv, bool mirror_x, uint8_t part)
 {
     /* +X face (right), face_idx=0. View from +X: up=+Y, right=+Z. */
     add_face(verts,vi,idxs,ii,
         x1,y0,z0, x1,y0,z1, x1,y1,z1, x1,y1,z0,
-        mirror_x ? uv->mx : uv->px, mirror_x, 0);
+        mirror_x ? uv->mx : uv->px, mirror_x, 0, part);
 
     /* -X face (left), face_idx=1. View from -X: up=+Y, right=-Z. */
     add_face(verts,vi,idxs,ii,
         x0,y0,z1, x0,y0,z0, x0,y1,z0, x0,y1,z1,
-        mirror_x ? uv->px : uv->mx, mirror_x, 1);
+        mirror_x ? uv->px : uv->mx, mirror_x, 1, part);
 
     /* +Y face (top), face_idx=2. View from above: up=-Z, right=-X. */
     add_face(verts,vi,idxs,ii,
         x1,y1,z1, x0,y1,z1, x0,y1,z0, x1,y1,z0,
-        uv->top, mirror_x, 2);
+        uv->top, mirror_x, 2, part);
 
     /* -Y face (bottom), face_idx=3. View from below: up=-Z, right=+X. */
     add_face(verts,vi,idxs,ii,
         x0,y0,z1, x1,y0,z1, x1,y0,z0, x0,y0,z0,
-        uv->bot, mirror_x, 3);
+        uv->bot, mirror_x, 3, part);
 
     /* +Z face (front), face_idx=4. View from +Z: up=+Y, right=-X. */
     add_face(verts,vi,idxs,ii,
         x1,y0,z1, x0,y0,z1, x0,y1,z1, x1,y1,z1,
-        uv->frt, mirror_x, 4);
+        uv->frt, mirror_x, 4, part);
 
     /* -Z face (back), face_idx=5. View from -Z: up=+Y, right=+X. */
     add_face(verts,vi,idxs,ii,
         x0,y0,z0, x1,y0,z0, x1,y1,z0, x0,y1,z0,
-        uv->bck, mirror_x, 5);
+        uv->bck, mirror_x, 5, part);
 }
 
 static void build_player_mesh(PlayerVertex* verts, uint32_t* idxs)
@@ -116,17 +116,17 @@ static void build_player_mesh(PlayerVertex* verts, uint32_t* idxs)
     uint32_t vi = 0, ii = 0;
 
     /* Head: 0.5×0.5×0.5, center (0, 1.50, 0) */
-    add_box(verts,&vi,idxs,&ii, -0.25f,1.25f,-0.25f, 0.25f,1.75f,0.25f, &HEAD_UV, false);
+    add_box(verts,&vi,idxs,&ii, -0.25f,1.25f,-0.25f, 0.25f,1.75f,0.25f, &HEAD_UV, false, ANIM_PART_HEAD);
     /* Torso: 0.5×0.75×0.25, center (0, 0.875, 0) */
-    add_box(verts,&vi,idxs,&ii, -0.25f,0.50f,-0.125f, 0.25f,1.25f,0.125f, &BODY_UV, false);
+    add_box(verts,&vi,idxs,&ii, -0.25f,0.50f,-0.125f, 0.25f,1.25f,0.125f, &BODY_UV, false, ANIM_PART_TORSO);
     /* Right arm: 0.25×0.75×0.25, center (+0.375, 0.875, 0) */
-    add_box(verts,&vi,idxs,&ii,  0.25f,0.50f,-0.125f, 0.50f,1.25f,0.125f, &ARM_UV, false);
+    add_box(verts,&vi,idxs,&ii,  0.25f,0.50f,-0.125f, 0.50f,1.25f,0.125f, &ARM_UV, false, ANIM_PART_ARM_R);
     /* Left arm (mirrored): center (-0.375, 0.875, 0) */
-    add_box(verts,&vi,idxs,&ii, -0.50f,0.50f,-0.125f,-0.25f,1.25f,0.125f, &ARM_UV, true);
+    add_box(verts,&vi,idxs,&ii, -0.50f,0.50f,-0.125f,-0.25f,1.25f,0.125f, &ARM_UV, true, ANIM_PART_ARM_L);
     /* Right leg: 0.25×0.75×0.25, center (+0.125, 0.25, 0) */
-    add_box(verts,&vi,idxs,&ii,  0.00f,-0.125f,-0.125f, 0.25f,0.625f,0.125f, &LEG_UV, false);
+    add_box(verts,&vi,idxs,&ii,  0.00f,-0.125f,-0.125f, 0.25f,0.625f,0.125f, &LEG_UV, false, ANIM_PART_LEG_R);
     /* Left leg (mirrored): center (-0.125, 0.25, 0) */
-    add_box(verts,&vi,idxs,&ii, -0.25f,-0.125f,-0.125f, 0.00f,0.625f,0.125f, &LEG_UV, true);
+    add_box(verts,&vi,idxs,&ii, -0.25f,-0.125f,-0.125f, 0.00f,0.625f,0.125f, &LEG_UV, true, ANIM_PART_LEG_L);
 
     assert(vi == PLAYER_VERTEX_COUNT);
     assert(ii == PLAYER_INDEX_COUNT);
@@ -202,6 +202,31 @@ bool player_model_init(Renderer* r, PlayerModel* m)
     return true;
 }
 
+/* Map a mob box (its part role + side) to an AnimPart so the per-limb shader
+ * applies the matching joint. Arms/legs split left/right by box X sign (cx>=0 =>
+ * right). Roles without a dedicated joint (snout/beak/wing/horn) ride with the
+ * head, so they inherit head yaw and never animate independently. With all-zero
+ * angles every mapping is a no-op, so the static silhouette is unchanged. */
+static uint8_t mob_box_anim_part(MobPartRole role, float cx)
+{
+    bool right = (cx >= 0.0f);
+    switch (role) {
+        case MOB_PART_HEAD:
+        case MOB_PART_SNOUT:
+        case MOB_PART_BEAK:
+        case MOB_PART_HORN:
+            return ANIM_PART_HEAD;
+        case MOB_PART_ARM:
+        case MOB_PART_WING:
+            return right ? ANIM_PART_ARM_R : ANIM_PART_ARM_L;
+        case MOB_PART_LEG:
+            return right ? ANIM_PART_LEG_R : ANIM_PART_LEG_L;
+        case MOB_PART_TORSO:
+        default:
+            return ANIM_PART_TORSO;
+    }
+}
+
 /* ── Per-type mob mesh baker (0xm) ──────────────────────────────────────────
  * Bakes an arbitrary MobModel box list into a PlayerModel using the SAME
  * PlayerVertex format + player pipeline. Each box -> 6 faces (24 verts / 36
@@ -236,7 +261,8 @@ bool mob_mesh_bake(Renderer* r, const MobModel* model, PlayerModel* out)
         /* Route to a skin half so the shader's v<0.5 split picks primary for
          * upper parts and secondary for legs. */
         const BoxUV* uv = mob_part_is_upper_tone(box->role) ? &HEAD_UV : &LEG_UV;
-        add_box(verts, &vi, idxs, &ii, x0, y0, z0, x1, y1, z1, uv, false);
+        uint8_t part = mob_box_anim_part(box->role, box->cx);
+        add_box(verts, &vi, idxs, &ii, x0, y0, z0, x1, y1, z1, uv, false, part);
     }
     assert(vi == vcap && ii == icap);
 
@@ -287,11 +313,17 @@ void player_model_draw_one(Renderer* r, VkCommandBuffer cmd,
     float sz = state->scale[2] != 0.0f ? state->scale[2] : 1.0f;
     glm_scale(model, (vec3){sx, sy, sz});
 
-    /* 96-byte push block: mat4 model (64) then vec4 tint (16) then vec4
-     * tint2 (16), laid out as a flat float array so there is no struct-
-     * alignment padding (cglm may over-align mat4, which would bloat a
-     * struct past the push range and corrupt the tints). */
-    float pc[24];
+    /* 124-byte push block, laid out as a flat float array so there is no
+     * struct-alignment padding (cglm may over-align mat4, which would bloat a
+     * struct past the push range and corrupt later fields):
+     *   [0..15]  mat4 model        (64 B)
+     *   [16..19] vec4 tint         (16 B)
+     *   [20..23] vec4 tint2        (16 B)
+     *   [24..29] float limb_angle[ANIM_PART_COUNT] (24 B, per-part pitch)
+     *   [30]     float head_yaw    (4 B)
+     * Within the 128-byte guaranteed push range. All-zero angles => identity
+     * limb transform in the shader => old rigid pose. */
+    float pc[31];
     memcpy(pc, model, sizeof(model));   /* 64 bytes: the model matrix */
     pc[16] = state->tint[0];
     pc[17] = state->tint[1];
@@ -301,6 +333,9 @@ void player_model_draw_one(Renderer* r, VkCommandBuffer cmd,
     pc[21] = state->tint2[1];
     pc[22] = state->tint2[2];
     pc[23] = 0.0f;
+    for (int i = 0; i < ANIM_PART_COUNT; i++)
+        pc[24 + i] = state->limb_angle[i];
+    pc[30] = state->head_yaw;
 
     vkCmdPushConstants(cmd, r->player_pipeline_layout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
