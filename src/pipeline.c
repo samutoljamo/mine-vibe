@@ -306,19 +306,21 @@ bool player_pipeline_create(VkDevice device, VkRenderPass render_pass,
           .stage=VK_SHADER_STAGE_FRAGMENT_BIT, .module=frag_mod, .pName="main" },
     };
 
-    /* PlayerVertex: pos(vec3)@0, uv(vec2)@12, face_idx(uint8)@20 — no AO */
+    /* PlayerVertex: pos(vec3)@0, uv(vec2)@12, face_idx(uint8)@20,
+     * part(uint8)@21 — the limb id used by the per-part joint transform. */
     VkVertexInputBindingDescription binding = {
         .binding = 0, .stride = 24, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
-    VkVertexInputAttributeDescription attrs[3] = {
+    VkVertexInputAttributeDescription attrs[4] = {
         { .location=0, .binding=0, .format=VK_FORMAT_R32G32B32_SFLOAT, .offset=0  },
         { .location=1, .binding=0, .format=VK_FORMAT_R32G32_SFLOAT,    .offset=12 },
         { .location=2, .binding=0, .format=VK_FORMAT_R8_UINT,          .offset=20 },
+        { .location=3, .binding=0, .format=VK_FORMAT_R8_UINT,          .offset=21 },
     };
     VkPipelineVertexInputStateCreateInfo vertex_input = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount   = 1, .pVertexBindingDescriptions = &binding,
-        .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = attrs,
+        .vertexAttributeDescriptionCount = 4, .pVertexAttributeDescriptions = attrs,
     };
 
     /* Input assembly */
@@ -390,13 +392,14 @@ bool player_pipeline_create(VkDevice device, VkRenderPass render_pass,
         .pDynamicStates    = dynamic_states,
     };
 
-    /* Push constant: mat4 model (64) + vec4 tint (16) + vec4 tint2 (16) = 96
-     * bytes. The tints are read in the fragment stage, so the range spans both
-     * stages. */
+    /* Push constant: mat4 model (64) + vec4 tint (16) + vec4 tint2 (16) +
+     * float limb_angle[6] (24) + float head_yaw (4) = 124 bytes, within the
+     * 128-byte guaranteed range. The tints are read in the fragment stage and
+     * the limb angles in the vertex stage, so the range spans both. */
     VkPushConstantRange push_range = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset     = 0,
-        .size       = 96,
+        .size       = 124,
     };
 
     /* Pipeline layout */

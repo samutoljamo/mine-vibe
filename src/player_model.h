@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "mob_model.h"   /* MobModel (per-type box data the baker consumes) */
+#include "player_anim.h" /* AnimPart / ANIM_PART_COUNT */
 
 typedef struct Renderer Renderer;
 
@@ -13,7 +14,8 @@ typedef struct {
     float   x, y, z;
     float   u, v;
     uint8_t face_idx;
-    uint8_t _pad[3];
+    uint8_t part;        /* AnimPart this vertex belongs to (limb id, 0..ANIM_PART_COUNT) */
+    uint8_t _pad[2];
 } PlayerVertex;
 
 _Static_assert(sizeof(PlayerVertex) == 24, "PlayerVertex must be 24 bytes");
@@ -28,6 +30,15 @@ typedef struct {
                      * Mobs scale the shared box to their silhouette. */
     int   mesh_type; /* which baked mesh to draw: -1 = humanoid player model;
                       * >= 0 = MobType, drawn with its per-type baked mesh. */
+
+    /* Per-limb animation. limb_angle[part] is a pitch (radians, rotation about
+     * the part's pivot on the X axis); head_yaw is an extra yaw (radians, about
+     * Y) applied only to the head. Each part rotates about its joint pivot (see
+     * player_anim_pivot) before model*yaw*scale. ALL-ZERO == rigid default pose
+     * (no visual change vs. the old single-mesh look). Callers that leave this
+     * zero-initialized get the static pose. Fill via player_anim_walk() etc. */
+    float limb_angle[ANIM_PART_COUNT];
+    float head_yaw;
 } PlayerRenderState;
 
 typedef struct {

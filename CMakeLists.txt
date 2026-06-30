@@ -177,6 +177,7 @@ add_executable(minecraft
     src/ui/ui.c
     src/agent.c
     src/player_model.c
+    src/player_anim.c
     src/net.c
     src/reliable.c
     src/net_thread.c
@@ -466,6 +467,16 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_ore PRIVATE m)
 endif()
 add_test(NAME ore COMMAND test_ore)
+
+# Per-limb animation math (pure: pivots + joint vertex transform + walk cycle).
+# CRITICAL: asserts the identity (all-zero) transform is a no-op, guaranteeing
+# the default pose renders identically to the old rigid mesh. No Vulkan needed.
+add_executable(test_player_anim tests/test_player_anim.c src/player_anim.c)
+target_include_directories(test_player_anim PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_player_anim PRIVATE m)
+endif()
+add_test(NAME player_anim COMMAND test_player_anim)
 
 # Cave carving (pure 3D-noise model, no Vulkan/GLFW required). Uses
 # FastNoiseLite (header-only) for its noise fields, hence the include dir.
