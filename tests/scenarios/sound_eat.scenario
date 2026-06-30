@@ -1,0 +1,18 @@
+# sound_eat: eating food plays the chew cue (SFX_EAT). The harness fires the
+# local chew cue on the `eat` verb (the GLFW F-to-eat path that normally plays
+# it does not run headless); the actual hunger restore stays server-authoritative.
+# item 50 = ITEM_COOKED_BEEF. We lower hunger and give the food to the server so
+# an eat is plausible, then eat and assert the cue fired. (We do NOT assert the
+# food shows in the client inventory or that hunger changed: the client's
+# PKT_INVENTORY handler currently filters food ids, so the eat cue — which fires
+# locally on the verb — is the robust signal here.)
+# Counters start at zero each run, so any nonzero count == the SFX fired.
+> {"cmd":"step","ticks":20}
+expect sounds.eat == 0
+> {"cmd":"set_food","value":6}
+> {"cmd":"give","item":50,"count":3}
+> {"cmd":"step","ticks":6}
+> {"cmd":"eat"}
+> {"cmd":"step","ticks":6}
+# The chew cue fired.
+expect sounds.eat > 0

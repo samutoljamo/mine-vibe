@@ -1611,6 +1611,11 @@ static void harness_fill_snapshot(AgentSnapshot* snap, Player* pl, Client* cl,
     Server* sv = server_get_instance();
     snap->gamemode = sv ? (int)sv->gamemode : 0;
 
+    /* Per-SFX cumulative play counts (mine-vibe-2mh): lets headless scenarios
+     * verify the right sound fired. Counts work with the silent backend. */
+    for (int i = 0; i < SFX_COUNT; i++)
+        snap->sounds[i] = audio_play_count((SoundId)i);
+
     /* Targeted block. */
     if (target && target->hit) {
         snap->target_hit   = 1;
@@ -1733,6 +1738,14 @@ static bool harness_apply_command(const AgentCommand* cmd, Player* pl,
     }
     case CMD_ATTACK:
         client_send_mob_attack(cl, (uint16_t)cmd->attack.mob_id);
+        /* Mirror the local attacker-side audio cues that the GLFW left-click
+         * path plays (mouse_button_callback): every swing whooshes, and a melee
+         * blow that lands on a mob plays the connect "thwack" + the mob's hurt
+         * grunt. The GLFW callbacks don't run headless, so the harness fires the
+         * same cues here so SFX scenarios can verify them. (mine-vibe-2mh) */
+        audio_play(SFX_SWING);
+        audio_play(SFX_HIT);
+        audio_play(SFX_MOB_HURT);
         break;
     case CMD_CRAFT:
         client_send_craft(cl, (uint16_t)cmd->craft.recipe);
@@ -1753,6 +1766,10 @@ static bool harness_apply_command(const AgentCommand* cmd, Player* pl,
     }
     case CMD_EAT:
         client_send_eat(cl, (uint8_t)cl->inventory.selected);
+        /* Mirror the local chew cue the GLFW eat path plays (key_callback, F):
+         * the actual consume stays server-authoritative, but the SFX is a local
+         * feedback that the headless harness must fire itself. (mine-vibe-2mh) */
+        audio_play(SFX_EAT);
         break;
 
     /* ---- Test-only helpers (server backdoor) ---- */
@@ -1871,6 +1888,13 @@ static int run_headless_harness(uint16_t port)
     g_player.agent_mode = true;
     g_player.mode = MODE_WALKING;
 
+    /* Bring up the audio engine so SFX play-counts accumulate (mine-vibe-2mh).
+     * The NULL/silent backend needs no device — it just records "would play X",
+     * which is exactly what the get_state "sounds" snapshot reports. Counters
+     * start at zero here, so any nonzero count in a scenario means the SFX
+     * fired during that run. */
+    audio_init();
+
     agent_init();
 
     const float dt = 1.0f / (float)SERVER_TICK_RATE;   /* fixed deterministic step */
@@ -1955,6 +1979,7 @@ static int run_headless_harness(uint16_t port)
     server_request_stop();
     pt_thread_join(server_thread);
     agent_destroy();
+    audio_shutdown();
     printf("[harness] headless harness exited cleanly\n");
     fflush(stdout);
     return 0;

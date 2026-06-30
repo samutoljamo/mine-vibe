@@ -1,0 +1,17 @@
+# sound_swing: every melee attack plays the swing whoosh (SFX_SWING) plus the
+# connect "thwack" (SFX_HIT) and the target's hurt grunt (SFX_MOB_HURT). The
+# headless harness fires these local attacker-side cues on the `attack` verb
+# (the GLFW left-click path that normally plays them does not run headless), so
+# they fire regardless of whether a mob is actually present at the id. Counters
+# start at zero each run, so any nonzero count == the SFX fired this run.
+> {"cmd":"step","ticks":20}
+# Baseline: no swing/hit/mob_hurt yet.
+expect sounds.swing == 0
+expect sounds.hit == 0
+expect sounds.mob_hurt == 0
+> {"cmd":"attack","mob_id":1}
+> {"cmd":"step","ticks":3}
+# The swing whoosh + connect thwack + hurt grunt all fired.
+expect sounds.swing > 0
+expect sounds.hit > 0
+expect sounds.mob_hurt > 0

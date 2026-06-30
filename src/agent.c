@@ -455,6 +455,23 @@ void agent_format_snapshot(const AgentSnapshot *snap, char *buf, size_t buf_size
     }
     APP("],");
 
+    /* Per-SFX cumulative play counts (mine-vibe-2mh). Short, stable key names so
+     * scenarios can assert e.g. `sounds.swing > 0` after a melee. The counters
+     * are zero at audio_init(), so any nonzero value means the SFX fired. */
+    APP("\"sounds\":{"
+        "\"block_break\":%" PRIu64 ","
+        "\"block_place\":%" PRIu64 ","
+        "\"step\":%" PRIu64 ","
+        "\"hurt\":%" PRIu64 ","
+        "\"mob_hurt\":%" PRIu64 ","
+        "\"eat\":%" PRIu64 ","
+        "\"hit\":%" PRIu64 ","
+        "\"swing\":%" PRIu64 "},",
+        snap->sounds[SFX_BLOCK_BREAK], snap->sounds[SFX_BLOCK_PLACE],
+        snap->sounds[SFX_STEP],       snap->sounds[SFX_HURT],
+        snap->sounds[SFX_MOB_HURT],   snap->sounds[SFX_EAT],
+        snap->sounds[SFX_HIT],        snap->sounds[SFX_SWING]);
+
     /* Open container contents, if any. */
     if (snap->container_open) {
         APP("\"container\":{\"type\":\"%s\",\"slots\":[",
