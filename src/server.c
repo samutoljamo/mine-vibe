@@ -28,6 +28,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
+#ifdef _WIN32
+#  include <winsock2.h>     /* getsockname, ntohs */
+#else
+#  include <sys/socket.h>   /* getsockname */
+#  include <arpa/inet.h>    /* ntohs        */
+#endif
 
 /* Cross-thread shutdown signal. The integrated server runs server_run() on its
  * own thread (host mode); the main thread calls server_request_stop() before
@@ -60,6 +66,25 @@ Server* server_get_instance(void) {
     return atomic_load_explicit(&g_server_instance, memory_order_acquire);
 }
 
+/* Actual UDP port the server bound to, published once the socket is bound. When
+ * the caller passes port 0 (OS-assigned ephemeral — used by the headless
+ * harness so back-to-back runs never collide on a fixed port / TIME_WAIT
+ * socket) the in-process client reads this to learn where to connect. 0 before
+ * bind / after teardown. */
+static _Atomic(uint16_t) g_server_port = 0;
+
+uint16_t server_get_port(void) {
+    return atomic_load_explicit(&g_server_port, memory_order_acquire);
+}
+
+uint64_t server_current_tick(const Server* s) {
+    if (!s) return 0;
+    /* Acquire pairs with the release-store at the end of server_tick so that,
+     * once the harness observes the bumped count, all of that tick's writes
+     * (snapshot, world edits) are visible to it. */
+    return atomic_load_explicit(&s->tick_count, memory_order_acquire);
+}
+
 /* ---- TEST-ONLY backdoor helpers (see server.h declarations below) ---------
  * These mutate authoritative state in-process and request the same client
  * snapshots a real action would. Forward-declared statics are defined further
@@ -74,9 +99,26 @@ static ServerClient* server_first_active_client(Server* s) {
     return NULL;
 }
 
-bool server_test_give(Server* s, int item, int count) {
+/* Enqueue a deferred backdoor op for the server thread to apply. Returns true
+ * if accepted (server exists + queue has room). Thread-safe (producer side). */
+static bool server_backdoor_enqueue(Server* s, const ServerBackdoorOp* op) {
+    if (!s || !s->backdoor_inited) return false;
+    bool ok = false;
+    pt_mutex_lock(&s->backdoor_lock);
+    if (s->backdoor_count < SERVER_BACKDOOR_QUEUE_CAP) {
+        s->backdoor_queue[s->backdoor_head] = *op;
+        s->backdoor_head = (s->backdoor_head + 1) % SERVER_BACKDOOR_QUEUE_CAP;
+        s->backdoor_count++;
+        ok = true;
+    }
+    pt_mutex_unlock(&s->backdoor_lock);
+    return ok;
+}
+
+/* ---- Actual mutations, run ONLY on the server thread (from the drain). ---- */
+static void backdoor_apply_give(Server* s, int item, int count) {
     ServerClient* c = server_first_active_client(s);
-    if (!c) return false;
+    if (!c) return;
     int remaining = count;
     while (remaining > 0) {
         uint8_t chunk = (uint8_t)(remaining > 255 ? 255 : remaining);
@@ -86,64 +128,116 @@ bool server_test_give(Server* s, int item, int count) {
         if (leftover) break;
     }
     server_send_inventory(s, c);
-    return true;
 }
-
-bool server_test_tp(Server* s, float x, float y, float z) {
+static void backdoor_apply_tp(Server* s, float x, float y, float z) {
     ServerClient* c = server_first_active_client(s);
-    if (!c) return false;
+    if (!c) return;
     c->x = x; c->y = y; c->z = z;
     c->prev_pos_valid = false;   /* don't bill the jump as a fall */
     c->falling = false;
     c->position_received = true; /* allow break/place even before first PKT */
-    return true;
 }
-
-int server_test_spawn_mob(Server* s, int type, float x, float y, float z) {
-    if (!s) return 0;
+static void backdoor_apply_spawn_mob(Server* s, int type, float x, float y, float z) {
     vec3 pos = { x, y, z };
-    Mob* m = mob_set_spawn(&s->mobs, (MobType)type, pos);
-    return m ? (int)m->id : 0;
+    mob_set_spawn(&s->mobs, (MobType)type, pos);
 }
-
-bool server_test_set_time(Server* s, uint32_t ticks) {
-    if (!s) return false;
+static void backdoor_apply_set_time(Server* s, uint32_t ticks) {
     s->world_ticks = ticks;
-    return true;
 }
-
-bool server_test_set_weather(Server* s, int kind) {
-    if (!s) return false;
+static void backdoor_apply_set_weather(Server* s, int kind) {
     s->weather.kind = (WeatherKind)kind;
     s->weather.time_left = 60.0f;            /* hold the forced phase a while */
     /* Force a broadcast next tick by faking a transition from a different kind. */
     s->weather_last_kind = (kind == WEATHER_CLEAR) ? WEATHER_RAIN : WEATHER_CLEAR;
-    return true;
 }
-
-bool server_test_set_food(Server* s, int food) {
+static void backdoor_apply_set_food(Server* s, int food) {
     ServerClient* c = server_first_active_client(s);
-    if (!c) return false;
+    if (!c) return;
     if (food < 0) food = 0;
     if (food > SURVIVAL_MAX_FOOD) food = SURVIVAL_MAX_FOOD;
     c->survival.food = (float)food;
-    /* Keep the hidden saturation reserve <= food so the next regen/exhaustion
-     * tick behaves as if the player naturally reached this hunger level. */
     if (c->survival.saturation > c->survival.food)
         c->survival.saturation = c->survival.food;
-    c->needs_health_sync = true;             /* push the new food to the client */
-    return true;
+    c->needs_health_sync = true;
 }
-
-bool server_test_set_health(Server* s, int hp) {
+static void backdoor_apply_set_health(Server* s, int hp) {
     ServerClient* c = server_first_active_client(s);
-    if (!c) return false;
+    if (!c) return;
     if (hp < 0) hp = 0;
     if (hp > PLAYER_MAX_HEALTH) hp = PLAYER_MAX_HEALTH;
     c->health = (int16_t)hp;
-    c->respawn_grace = 0.0f;                  /* clear post-respawn invuln    */
-    c->needs_health_sync = true;             /* push the new health to client */
-    return true;
+    c->respawn_grace = 0.0f;
+    c->needs_health_sync = true;
+}
+
+/* Drain + apply all queued backdoor ops. Called at the top of server_tick on
+ * the server thread, so every mutation + reliable send happens single-threaded.
+ * We copy ops out under the lock, then apply outside it (apply may itself queue
+ * reliable sends; never holds the lock during network work). */
+static void server_backdoor_drain(Server* s) {
+    if (!s->backdoor_inited) return;
+    ServerBackdoorOp ops[SERVER_BACKDOOR_QUEUE_CAP];
+    int n = 0;
+    pt_mutex_lock(&s->backdoor_lock);
+    while (s->backdoor_count > 0 && n < SERVER_BACKDOOR_QUEUE_CAP) {
+        int tail = (s->backdoor_head - s->backdoor_count + SERVER_BACKDOOR_QUEUE_CAP)
+                   % SERVER_BACKDOOR_QUEUE_CAP;
+        ops[n++] = s->backdoor_queue[tail];
+        s->backdoor_count--;
+    }
+    pt_mutex_unlock(&s->backdoor_lock);
+    for (int i = 0; i < n; i++) {
+        const ServerBackdoorOp* o = &ops[i];
+        switch (o->kind) {
+        case SBD_GIVE:        backdoor_apply_give(s, o->ia, o->ib); break;
+        case SBD_TP:          backdoor_apply_tp(s, o->fx, o->fy, o->fz); break;
+        case SBD_SPAWN_MOB:   backdoor_apply_spawn_mob(s, o->ia, o->fx, o->fy, o->fz); break;
+        case SBD_SET_TIME:    backdoor_apply_set_time(s, (uint32_t)o->ia); break;
+        case SBD_SET_WEATHER: backdoor_apply_set_weather(s, o->ia); break;
+        case SBD_SET_FOOD:    backdoor_apply_set_food(s, o->ia); break;
+        case SBD_SET_HEALTH:  backdoor_apply_set_health(s, o->ia); break;
+        case SBD_NONE: default: break;
+        }
+    }
+}
+
+bool server_test_give(Server* s, int item, int count) {
+    ServerBackdoorOp op = { .kind = SBD_GIVE, .ia = item, .ib = count };
+    return server_backdoor_enqueue(s, &op);
+}
+
+bool server_test_tp(Server* s, float x, float y, float z) {
+    ServerBackdoorOp op = { .kind = SBD_TP, .fx = x, .fy = y, .fz = z };
+    return server_backdoor_enqueue(s, &op);
+}
+
+int server_test_spawn_mob(Server* s, int type, float x, float y, float z) {
+    ServerBackdoorOp op = { .kind = SBD_SPAWN_MOB, .ia = type, .fx = x, .fy = y, .fz = z };
+    /* The applied mob id is no longer returned synchronously (it's created on
+     * the server thread next tick); scenarios verify the spawn via a subsequent
+     * get_state. Return nonzero on successful enqueue so callers' "failed"
+     * branch still triggers only when there's no server. */
+    return server_backdoor_enqueue(s, &op) ? 1 : 0;
+}
+
+bool server_test_set_time(Server* s, uint32_t ticks) {
+    ServerBackdoorOp op = { .kind = SBD_SET_TIME, .ia = (int)ticks };
+    return server_backdoor_enqueue(s, &op);
+}
+
+bool server_test_set_weather(Server* s, int kind) {
+    ServerBackdoorOp op = { .kind = SBD_SET_WEATHER, .ia = kind };
+    return server_backdoor_enqueue(s, &op);
+}
+
+bool server_test_set_food(Server* s, int food) {
+    ServerBackdoorOp op = { .kind = SBD_SET_FOOD, .ia = food };
+    return server_backdoor_enqueue(s, &op);
+}
+
+bool server_test_set_health(Server* s, int hp) {
+    ServerBackdoorOp op = { .kind = SBD_SET_HEALTH, .ia = hp };
+    return server_backdoor_enqueue(s, &op);
 }
 
 void server_set_gamemode(Server* s, GameMode gm) {
@@ -1748,6 +1842,11 @@ static void server_tick(Server* s, int tick_num)
 {
     double now = net_time();
 
+    /* 0. Apply any deferred test-backdoor ops (give/tp/spawn/set_*) on THIS
+     * thread, before touching the reliable channel below, so backdoor mutation
+     * + its reliable inventory/health send never race the harness thread. */
+    server_backdoor_drain(s);
+
     /* 1. Drain inbound queue */
     NetMsg* msg;
     while ((msg = net_thread_pop_inbound(s->net)) != NULL) {
@@ -1949,6 +2048,14 @@ static void server_tick(Server* s, int tick_num)
             net_thread_push_outbound(s->net, mbuf, (int)mlen, &s->clients[i].addr);
         }
     }
+
+    /* Publish completion of this tick LAST, after inbound packets were drained,
+     * authoritative state mutated, and the resulting snapshot queued. The
+     * headless harness blocks on this counter (server_current_tick) so a
+     * `step N` provably reflects N fully-processed server ticks rather than a
+     * raced wall-clock sleep. Release-store pairs with the harness's read so
+     * everything this tick wrote is visible once the count is observed. */
+    atomic_fetch_add_explicit(&s->tick_count, 1, memory_order_release);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1969,6 +2076,20 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
     int fd = net_socket_server(port);
     if (fd < 0) { fprintf(stderr, "[server] bind failed on port %d\n", port); return; }
 
+    /* Resolve the ACTUAL bound port. When port==0 the OS assigns an ephemeral
+     * one (the headless harness uses this so back-to-back / parallel test runs
+     * never collide on a fixed port or a lingering TIME_WAIT socket). Publish it
+     * so the in-process harness client can connect to the right place. */
+    {
+        struct sockaddr_in bound = {0};
+        socklen_t blen = sizeof(bound);
+        uint16_t actual = port;
+        if (getsockname(fd, (struct sockaddr*)&bound, &blen) == 0)
+            actual = ntohs(bound.sin_port);
+        atomic_store_explicit(&g_server_port, actual, memory_order_release);
+        port = actual;   /* use the real port in the listening log below */
+    }
+
     NetThread nt;
     if (!net_thread_start(&nt, fd)) {
         fprintf(stderr, "[server] failed to start net thread\n");
@@ -1983,6 +2104,14 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
     s.running     = true;
     atomic_store(&g_server_stop, false);   /* reset for a clean (re)start */
     atomic_store(&g_server_save_req, false);
+
+    /* Deferred test-backdoor queue (harness producer / server-thread consumer).
+     * Init the mutex BEFORE publishing g_server_instance so an enqueue can never
+     * race construction. */
+    pt_mutex_init(&s.backdoor_lock);
+    s.backdoor_head = 0;
+    s.backdoor_count = 0;
+    s.backdoor_inited = true;
 
     /* Deliver the world's game mode BEFORE the first tick so creative worlds
      * take zero damage from the very first server_tick (gamemode_allows_damage
@@ -2085,11 +2214,15 @@ void server_run_ex(uint16_t port, int max_clients, int seed,
      * shutdown order). */
     atomic_store_explicit(&g_server_instance, NULL, memory_order_release);
     atomic_store_explicit(&g_server_world, NULL, memory_order_release);
+    atomic_store_explicit(&g_server_port, 0, memory_order_release);
     if (s.world) {
         world_set_overlay(s.world, NULL);
         world_destroy(s.world);
     }
     if (s.overlay_active) overlay_free(&s.overlay);
+    /* Instance is already unpublished above, so no enqueue can be in flight. */
+    s.backdoor_inited = false;
+    pt_mutex_destroy(&s.backdoor_lock);
     net_thread_stop(&nt);
     net_socket_close(fd);
 }

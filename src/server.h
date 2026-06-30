@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #  include <winsock2.h>
 #else
@@ -18,6 +19,29 @@
 #include "chunk_stream.h"   /* ChunkCoord + streaming-policy diff */
 #include "worldsave.h"      /* GameMode + gamemode_allows_damage (read-only) */
 #include "weather.h"        /* server-authoritative WeatherState */
+#include "platform_thread.h" /* PT_Mutex for the deferred test-backdoor queue */
+
+/* TEST-ONLY: a single deferred backdoor op (give/tp/spawn/set_*). The headless
+ * harness runs on a DIFFERENT thread than the server loop; applying these
+ * directly (the old behaviour) raced the server thread's use of the same
+ * authoritative state + reliable send channel, intermittently corrupting the
+ * reliable window so inventory/snapshot packets were lost — the scenario
+ * flakiness. Instead the harness ENQUEUES an op and the server thread drains +
+ * applies it at the top of server_tick, so all authoritative mutation and
+ * reliable sends happen on one thread. */
+typedef enum {
+    SBD_NONE = 0,
+    SBD_GIVE, SBD_TP, SBD_SPAWN_MOB,
+    SBD_SET_TIME, SBD_SET_WEATHER, SBD_SET_FOOD, SBD_SET_HEALTH
+} ServerBackdoorKind;
+
+typedef struct {
+    ServerBackdoorKind kind;
+    int   ia, ib;        /* generic int args (item/count, type, ticks, kind, value) */
+    float fx, fy, fz;    /* generic float args (positions)                          */
+} ServerBackdoorOp;
+
+#define SERVER_BACKDOOR_QUEUE_CAP 64
 
 typedef struct Renderer Renderer;
 
@@ -91,6 +115,24 @@ typedef struct {
     float        passive_spawn_timer; /* accumulates toward PASSIVE_SPAWN_INTERVAL */
     uint32_t     world_ticks;    /* day/night clock; advances once per tick  */
 
+    /* Monotonic server-tick counter, incremented exactly once per server_tick
+     * and NEVER reset/mutated by test backdoors (unlike world_ticks, which
+     * server_test_set_time clobbers). The headless harness reads this via
+     * server_current_tick() to step synchronously on the server thread's real
+     * progress instead of racing a fixed wall-clock sleep. Atomic so the
+     * harness (client thread) and server thread can read/write it concurrently;
+     * a relaxed read is fine — it's a one-way barrier, not a lock. */
+    atomic_uint_least64_t tick_count;
+
+    /* TEST-ONLY deferred backdoor queue (see ServerBackdoorOp). Mutex-guarded
+     * ring; producer = harness thread (enqueue), consumer = server thread
+     * (drain at top of server_tick). Empty/unused in production. */
+    PT_Mutex          backdoor_lock;
+    ServerBackdoorOp  backdoor_queue[SERVER_BACKDOOR_QUEUE_CAP];
+    int               backdoor_head;   /* next slot to write */
+    int               backdoor_count;  /* pending ops        */
+    bool              backdoor_inited;  /* mutex initialized  */
+
     /* Server-authoritative weather. Seeded from the world seed at startup and
      * ticked once per server tick (the rng stays here, never sent). Only the
      * observable {kind,time_left} is broadcast (PKT_WEATHER): on every KIND
@@ -152,6 +194,22 @@ World* server_get_world(void);
  * is in the same process. NOT for gameplay; production code must go through the
  * client->server packet path. Thread-safe publish; the harness owns the timing. */
 Server* server_get_instance(void);
+
+/* Monotonic server-tick count: increments exactly once per server_tick on the
+ * server thread and never decreases (test backdoors do NOT touch it). The
+ * headless harness uses this as a synchronization barrier — it records T0, then
+ * blocks until server_current_tick() >= T0 + N — so a `step N` reflects the
+ * server having genuinely processed N ticks rather than a guessed sleep.
+ * Thread-safe (relaxed atomic read). Returns 0 if s is NULL. */
+uint64_t server_current_tick(const Server* s);
+
+/* The actual UDP port the server bound to (published once the socket is bound).
+ * When server_run_ex is started with port 0 the OS assigns an ephemeral port —
+ * the headless harness uses this so back-to-back / parallel runs never collide
+ * on a fixed port or a lingering TIME_WAIT socket. The in-process harness client
+ * spins on this to learn where to connect. Returns 0 before bind / after
+ * teardown. Thread-safe (acquire atomic). */
+uint16_t server_get_port(void);
 
 /* TEST-ONLY backdoor mutators. Apply directly to the authoritative state of the
  * (single) integrated client / world and request the same client snapshots a
