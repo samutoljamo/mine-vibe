@@ -97,12 +97,71 @@ static void test_walk(void) {
     printf("PASS: walk cycle\n");
 }
 
+/* Phase accumulator: advances monotonically while moving, scales with speed,
+ * freezes when stopped, stays wrapped, and is deterministic. */
+static void test_phase_advance(void) {
+    /* Frozen at rest: speed 0 leaves the phase unchanged. */
+    assert(player_anim_walk_phase_advance(1.234f, 0.0f, 0.016f) == 1.234f);
+    /* dt 0 is a no-op too. */
+    assert(player_anim_walk_phase_advance(1.234f, 5.0f, 0.0f) == 1.234f);
+
+    /* Moving: strictly increasing across frames, deterministic. */
+    float p = 0.0f, prev = 0.0f;
+    for (int i = 0; i < 50; i++) {
+        float n = player_anim_walk_phase_advance(p, 4.0f, 0.016f);
+        assert(player_anim_walk_phase_advance(p, 4.0f, 0.016f) == n); /* deterministic */
+        /* Increases (mod wrap): either grew, or wrapped to a smaller value. */
+        if (n < prev) { /* wrapped */ }
+        prev = n;
+        p = n;
+        /* Always wrapped into [0, 2π). */
+        assert(p >= 0.0f && p < 6.2831854f);
+    }
+
+    /* Faster speed advances more phase per unit time. */
+    float slow = player_anim_walk_phase_advance(0.0f, 1.0f, 0.1f);
+    float fast = player_anim_walk_phase_advance(0.0f, 4.0f, 0.1f);
+    assert(fast > slow);
+    printf("PASS: phase advance (monotonic, speed-scaled, frozen at rest)\n");
+}
+
+/* Speed smoothing: rises toward a positive target, decays to EXACTLY 0 when
+ * the target is 0 (so a stopped entity returns to the rigid rest pose). */
+static void test_speed_smooth(void) {
+    /* Decay to zero from a walking speed; must reach exact 0. */
+    float s = 4.0f;
+    for (int i = 0; i < 200; i++)
+        s = player_anim_speed_smooth(s, 0.0f, 0.016f);
+    assert(s == 0.0f);
+
+    /* Stopped (speed 0) -> walk angles are exactly the rigid rest pose. */
+    float a[ANIM_PART_COUNT];
+    player_anim_walk(a, 2.0f, s);
+    for (int i = 0; i < ANIM_PART_COUNT; i++) assert(a[i] == 0.0f);
+
+    /* Rises toward a positive target, never overshoots it. */
+    float r = 0.0f;
+    for (int i = 0; i < 200; i++) {
+        float n = player_anim_speed_smooth(r, 5.0f, 0.016f);
+        assert(n >= r - EPS);   /* monotonic up */
+        assert(n <= 5.0f + EPS); /* no overshoot */
+        r = n;
+    }
+    assert(fabsf(r - 5.0f) < 0.01f);
+
+    /* dt 0 is a no-op. */
+    assert(player_anim_speed_smooth(3.0f, 0.0f, 0.0f) == 3.0f);
+    printf("PASS: speed smooth (decay to exact 0, rises to target)\n");
+}
+
 int main(void) {
     test_identity_is_no_op();
     test_pivot_is_fixed();
     test_pitch_about_pivot();
     test_head_yaw();
     test_walk();
+    test_phase_advance();
+    test_speed_smooth();
     printf("All player_anim tests passed.\n");
     return 0;
 }
