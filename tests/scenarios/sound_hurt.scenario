@@ -1,0 +1,18 @@
+# sound_hurt: when the local player's health drops, the client plays the hurt
+# grunt (SFX_HURT) as it applies the server's PKT_PLAYER_HEALTH. Driven entirely
+# through the authoritative health path (no physics/reach race). set_health is
+# sent twice with steps between: the first can no-op if the client isn't fully
+# active yet under load, so the second guarantees the drop lands. The client
+# fires SFX_HURT in client_poll when it sees health fall, so a nonzero hurt count
+# is proof the drop reached the client. Counters start at zero each run.
+> {"cmd":"step","ticks":15}
+# Player spawns at full health; no hurt yet.
+expect health == 20
+expect sounds.hurt == 0
+> {"cmd":"set_health","value":6}
+> {"cmd":"step","ticks":3}
+> {"cmd":"set_health","value":6}
+> {"cmd":"step","ticks":12}
+# Health dropped -> the hurt grunt fired.
+expect health == 6
+expect sounds.hurt > 0

@@ -220,6 +220,7 @@ static void test_format_snapshot_rich(void) {
     snap.mobs[0].pos[0] = 2.0f; snap.mobs[0].pos[1] = 64.0f; snap.mobs[0].pos[2] = 2.0f;
     snap.container_open = 1; snap.container_type = 1; snap.container_slots = 3;
     snap.container[0].item = 50; snap.container[0].count = 8;
+    snap.sounds[SFX_SWING] = 3; snap.sounds[SFX_BLOCK_BREAK] = 7; snap.sounds[SFX_EAT] = 1;
 
     char buf[4096];
     agent_format_snapshot(&snap, buf, sizeof(buf));
@@ -232,6 +233,9 @@ static void test_format_snapshot_rich(void) {
     assert(strstr(buf, "\"target\":{\"x\":0,\"y\":64,\"z\":-1,\"block\":2}") != NULL);
     assert(strstr(buf, "\"mobs\":[{\"id\":1,\"type\":0,\"health\":20") != NULL);
     assert(strstr(buf, "\"container\":{\"type\":\"furnace\"") != NULL);
+    assert(strstr(buf, "\"sounds\":{\"block_break\":7,") != NULL);
+    assert(strstr(buf, "\"swing\":3}") != NULL);
+    assert(strstr(buf, "\"eat\":1,") != NULL);
     printf("PASS: test_format_snapshot_rich\n");
 }
 

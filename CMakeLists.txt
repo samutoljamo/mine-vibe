@@ -902,6 +902,9 @@ if(ENABLE_SCENARIO_TESTS)
             spawn_passive_mob
             weather_control
             set_time_of_day
+            sound_swing
+            sound_hurt
+            sound_eat
         )
         foreach(sc ${SCENARIO_NAMES})
             add_test(NAME scenario_${sc}

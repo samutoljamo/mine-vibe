@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "ui/hud.h"
+#include "audio.h"   /* SoundId / SFX_COUNT for the per-SFX play-count snapshot */
 
 /* ------------------------------------------------------------------ */
 /*  Command types                                                      */
@@ -127,6 +128,14 @@ typedef struct AgentSnapshot {
     int                 container_type; /* 0=chest, 1=furnace */
     AgentContainerSlot  container[AGENT_MAX_CONTAINER];
     int                 container_slots;
+
+    /* --- Cumulative per-SFX play counts (mine-vibe-2mh) ---------------- *
+     * audio_play_count(id) since audio_init(), indexed by SoundId. Lets
+     * headless scenarios verify that the right sound effect fired (the silent
+     * backend still counts). Populated by the harness; the formatter emits a
+     * compact "sounds" object with short stable key names for the meaningful
+     * ids (block_break/place, hurt, mob_hurt, eat, hit, swing, step). */
+    uint64_t sounds[SFX_COUNT];
 } AgentSnapshot;
 
 /* ------------------------------------------------------------------ */
