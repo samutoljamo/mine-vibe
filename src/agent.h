@@ -36,6 +36,8 @@ typedef enum AgentCommandType {
     CMD_SPAWN_MOB,
     CMD_SET_TIME,
     CMD_SET_WEATHER,
+    CMD_SET_FOOD,
+    CMD_SET_HEALTH,
 } AgentCommandType;
 
 typedef struct AgentCommand {
@@ -59,6 +61,8 @@ typedef struct AgentCommand {
         struct { int   type; float x, y, z;   } spawn_mob;
         struct { int   ticks;                 } set_time;  /* world_ticks of day */
         struct { int   kind;                  } set_weather;
+        struct { int   value;                 } set_food;   /* 0..20 hunger      */
+        struct { int   value;                 } set_health; /* 0..20 hit points  */
     };
 } AgentCommand;
 

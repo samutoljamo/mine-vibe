@@ -79,6 +79,19 @@ static int g_craft_count = 0;
  * while g_client->container_open. */
 static int g_container_x, g_container_y, g_container_z;
 
+/* Headless-harness position hold (fn8). The shared-world headless sim runs the
+ * player's physics LOCALLY and reports it to the authoritative server, so any
+ * residual horizontal velocity/inertia makes the reported position drift over
+ * ticks — which races the server's reach validation and makes place/break/open
+ * non-reproducible. When `g_harness_hold` is set, every sim tick pins the
+ * player's XZ to the held position and zeros horizontal velocity AFTER the
+ * physics step. Vertical motion is left to gravity, so a player tp'd onto solid
+ * ground rests in place (reach-stable) while one tp'd into the air still falls
+ * (fall-damage scenarios work). Movement verbs (move/jump) release the hold;
+ * `tp` re-asserts it at the new position. */
+static bool  g_harness_hold = true;
+static float g_harness_hold_x, g_harness_hold_z;
+
 /* Game-UI state machine. Starts at the main menu; Play enters PLAYING, Esc
  * toggles the pause overlay, E toggles the inventory screen. The cursor is
  * captured only in PLAYING (mouselook); freed in every menu/overlay. */
@@ -1662,12 +1675,21 @@ static bool harness_apply_command(const AgentCommand* cmd, Player* pl,
     case CMD_MOVE:
         pl->agent_forward = cmd->move.forward;
         pl->agent_right   = cmd->move.right;
+        /* Any nonzero movement releases the position hold so the player can
+         * actually walk; a zero move re-pins them where they stand. */
+        if (cmd->move.forward != 0.0f || cmd->move.right != 0.0f) {
+            g_harness_hold = false;
+        } else {
+            g_harness_hold = true;
+            g_harness_hold_x = pl->position[0];
+            g_harness_hold_z = pl->position[2];
+        }
         break;
     case CMD_LOOK:
         pl->camera.yaw   = cmd->look.yaw   * (3.14159265f / 180.0f);
         pl->camera.pitch = cmd->look.pitch * (3.14159265f / 180.0f);
         break;
-    case CMD_JUMP:    pl->agent_jump   = true; break;
+    case CMD_JUMP:    pl->agent_jump   = true; g_harness_hold = false; break;
     case CMD_SPRINT:  pl->agent_sprint = (cmd->sprint.active != 0); break;
     case CMD_MODE:
         pl->mode = (cmd->mode.mode == 0) ? MODE_FREE : MODE_WALKING;
@@ -1747,6 +1769,12 @@ static bool harness_apply_command(const AgentCommand* cmd, Player* pl,
         pl->position[0] = cmd->tp.x; pl->position[1] = cmd->tp.y; pl->position[2] = cmd->tp.z;
         glm_vec3_zero(pl->velocity);
         pl->on_ground = false;
+        /* fn8: re-assert the position hold at the tp target so subsequent
+         * `step`s keep the player there (reach-stable). Vertical physics still
+         * runs, so a tp into the air falls (fall-damage scenarios). */
+        g_harness_hold   = true;
+        g_harness_hold_x = cmd->tp.x;
+        g_harness_hold_z = cmd->tp.z;
         break;
     }
     case CMD_SPAWN_MOB: {
@@ -1761,6 +1789,14 @@ static bool harness_apply_command(const AgentCommand* cmd, Player* pl,
         break;
     case CMD_SET_WEATHER:
         server_test_set_weather(server_get_instance(), cmd->set_weather.kind);
+        break;
+    case CMD_SET_FOOD:
+        if (!server_test_set_food(server_get_instance(), cmd->set_food.value))
+            agent_emit_error("set_food: no server/client");
+        break;
+    case CMD_SET_HEALTH:
+        if (!server_test_set_health(server_get_instance(), cmd->set_health.value))
+            agent_emit_error("set_health: no server/client");
         break;
 
     case CMD_QUIT:
@@ -1848,6 +1884,12 @@ static int run_headless_harness(uint16_t port)
                              g_player.position[2], g_player.camera.yaw, g_player.camera.pitch); \
         g_player.agent_jump = (g_player.agent_jump); /* edge handled by player_update */ \
         player_update(&g_player, NULL, world, dt); \
+        if (g_harness_hold) { /* fn8: pin XZ, kill horizontal drift; let gravity run */ \
+            g_player.position[0] = g_harness_hold_x; \
+            g_player.position[2] = g_harness_hold_z; \
+            g_player.velocity[0] = 0.0f; \
+            g_player.velocity[2] = 0.0f; \
+        } \
         { vec3 d; camera_get_front(&g_player.camera, d); \
           target = raycast_voxel(world, g_player.eye_pos, d, MAX_REACH); } \
         client_poll(&client); \

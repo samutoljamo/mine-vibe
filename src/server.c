@@ -121,6 +121,31 @@ bool server_test_set_weather(Server* s, int kind) {
     return true;
 }
 
+bool server_test_set_food(Server* s, int food) {
+    ServerClient* c = server_first_active_client(s);
+    if (!c) return false;
+    if (food < 0) food = 0;
+    if (food > SURVIVAL_MAX_FOOD) food = SURVIVAL_MAX_FOOD;
+    c->survival.food = (float)food;
+    /* Keep the hidden saturation reserve <= food so the next regen/exhaustion
+     * tick behaves as if the player naturally reached this hunger level. */
+    if (c->survival.saturation > c->survival.food)
+        c->survival.saturation = c->survival.food;
+    c->needs_health_sync = true;             /* push the new food to the client */
+    return true;
+}
+
+bool server_test_set_health(Server* s, int hp) {
+    ServerClient* c = server_first_active_client(s);
+    if (!c) return false;
+    if (hp < 0) hp = 0;
+    if (hp > PLAYER_MAX_HEALTH) hp = PLAYER_MAX_HEALTH;
+    c->health = (int16_t)hp;
+    c->respawn_grace = 0.0f;                  /* clear post-respawn invuln    */
+    c->needs_health_sync = true;             /* push the new health to client */
+    return true;
+}
+
 void server_set_gamemode(Server* s, GameMode gm) {
     if (s) s->gamemode = gm;
 }

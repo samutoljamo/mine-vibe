@@ -162,6 +162,8 @@ bool server_test_tp(Server* s, float x, float y, float z);
 int  server_test_spawn_mob(Server* s, int type, float x, float y, float z);
 bool server_test_set_time(Server* s, uint32_t ticks);
 bool server_test_set_weather(Server* s, int kind);
+bool server_test_set_food(Server* s, int food);
+bool server_test_set_health(Server* s, int hp);
 
 /* Set the world's game mode. In GAMEMODE_CREATIVE the server applies zero
  * player damage from every source (mob/fall/drown/lava/starve). main.c should
